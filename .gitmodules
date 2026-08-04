@@ -1,0 +1,12 @@
+[submodule "extern/libman"]
+	path = extern/libman
+	url = https://github.com/witchcraft2001/sprinter-libman.git
+[submodule "extern/esp_net"]
+	path = extern/esp_net
+	url = https://github.com/witchcraft2001/sprinter_net.git
+[submodule "extern/rtl_net"]
+	path = extern/rtl_net
+	url = https://github.com/witchcraft2001/sprinter-rtl8019a.git
+[submodule "extern/sprinter-libs"]
+	path = extern/sprinter-libs
+	url = https://github.com/witchcraft2001/sprinter-libs.git

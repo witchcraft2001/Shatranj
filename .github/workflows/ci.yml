@@ -17,6 +17,17 @@ env:
   QT_QPA_PLATFORM: offscreen
 
 jobs:
+  sprinter-dependencies:
+    name: Sprinter pinned dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Verify submodules and committed DLLs
+        run: make sprinter-deps-check
+
   spectrum-and-host:
     name: Spectrum and host contracts
     runs-on: ubuntu-24.04

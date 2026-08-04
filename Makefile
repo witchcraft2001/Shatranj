@@ -29,6 +29,8 @@ CLIENT_MSVC_CONFIG ?= Release
 CLIENT_MSVC_DEPLOY_TIMEOUT ?= 120
 CLIENT_MSVC_CLEAN_TIMEOUT ?= 30
 CLIENT_MAC_APPLICATIONS_DIR ?= /Applications
+MFORMAT ?= mformat
+MCOPY ?= mcopy
 HOST_UNAME := $(shell uname -s 2>/dev/null || echo unknown)
 CLIENT_HOST_IS_WINDOWS := $(if $(filter Windows_NT,$(OS)),1,$(if $(COMSPEC),1,$(if $(ComSpec),1,$(if $(filter MINGW% MSYS% CYGWIN%,$(HOST_UNAME)),1,))))
 HOST_GC_CFLAGS := -ffunction-sections -fdata-sections
@@ -43,6 +45,21 @@ MQTT_PORT ?= 1883
 MQTT_CODE ?= DEVROOM
 ZX_NAME := SHATRANJ
 APP_VERSION := $(strip $(shell cat VERSION))
+SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
+SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
+SPRINTER_COLD_EXE := $(SPRINTER_BUILD_DIR)/SHATRANJ_COLD.EXE
+SPRINTER_MAP := $(SPRINTER_BUILD_DIR)/SHATRANJ_COLD.map
+SPRINTER_RUNTIME_BIN := $(SPRINTER_BUILD_DIR)/SHATRANJ_COLD_SPRINTER_RUNTIME.bin
+SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
+SPRINTER_GFX := $(SPRINTER_RELEASE_DIR)/GFX320.DLL
+SPRINTER_SMOKE_IMAGE := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
+SPRINTER_SRC := asm/sprinter/runtime_origin.asm src/sprinter/bootstrap.asm
+SPRINTER_ZCCFLAGS := -vn -m -compiler=sdcc -clib=default \
+                     -Cs--reserve-regs-iy -Cs--no-reg-params \
+                     -DNETCHESSZX_SPRINTER -DNETCHESSZX_SDCC_IY \
+                     -pragma-define:CRT_STACK=0xBFF0 \
+                     -pragma-define:CRT_ENABLE_COMMANDLINE=0 \
+                     -Ca-Iextern/libman/libman/z80asm
 ZX_ORG := 28672
 ASSET_ASM := assets/spectrum/ui_runtime_assets.asm
 ABOUT_BOARD := assets/spectrum/about_board.bin
@@ -365,9 +382,44 @@ MQTT_CONNECT_OVL_CFLAGS := -DNETCHESSZX_MQTT_PORT=$(MQTT_PORT)
 
 .NOTPARALLEL:
 
-.PHONY: all check full-check module-guards layering-check layering-report overlay-cap-check overlay-cap-report overlay-entry-abi-check transport-contract-check mqtt-client-id-check pc-direct-policy-check pc-policy-guard spectrum-direct-policy-check session-boundaries-check test session-core-test session-mqtt-parity-test session-direct-core-test session-direct-parity-test rules-oracle session-spectrum-pair-test tap tap-direct-overlay tap-divmmc tap-next next nex nex-size-report sdcc-iy-contract-check abi-manifest abi-next-manifest abi-baseline abi-next-baseline abi-check abi-next-check size-report size-baseline size-check literal-report client qt-client pc-client mac-client client-msvc client-cmake clean clean-spectrum clean-client FORCE
+.PHONY: all check full-check module-guards layering-check layering-report overlay-cap-check overlay-cap-report overlay-entry-abi-check transport-contract-check mqtt-client-id-check pc-direct-policy-check pc-policy-guard spectrum-direct-policy-check session-boundaries-check test session-core-test session-mqtt-parity-test session-direct-core-test session-direct-parity-test rules-oracle session-spectrum-pair-test tap tap-direct-overlay tap-divmmc tap-next next nex nex-size-report sdcc-iy-contract-check abi-manifest abi-next-manifest abi-baseline abi-next-baseline abi-check abi-next-check size-report size-baseline size-check literal-report exe sprinter-deps-check sprinter-check sprinter-smoke-image client qt-client pc-client mac-client client-msvc client-cmake clean clean-spectrum clean-client FORCE
 
 all: check clean test tap nex client
+
+sprinter-deps-check: tools/check_sprinter_deps.py docs/sprinter-dependencies.json .gitmodules
+	$(PYTHON) tools/check_sprinter_deps.py --root .
+
+$(SPRINTER_BUILD_DIR):
+	mkdir -p $(SPRINTER_BUILD_DIR)
+
+$(SPRINTER_RELEASE_DIR):
+	mkdir -p $(SPRINTER_RELEASE_DIR)
+
+$(SPRINTER_EXE): FORCE $(SPRINTER_SRC) src/sprinter/unet_abi.h \
+		extern/libman/libman/z80asm/libman.asm tools/make_sprinter_exe.py \
+		extern/sprinter-libs/gfx320/GFX320.DLL | $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
+	rm -f $(SPRINTER_COLD_EXE) $(SPRINTER_MAP) $(SPRINTER_RUNTIME_BIN)
+	$(ZCC) +pps_low $(SPRINTER_ZCCFLAGS) $(SPRINTER_SRC) -o $(SPRINTER_COLD_EXE)
+	$(PYTHON) tools/make_sprinter_exe.py --cold $(SPRINTER_COLD_EXE) \
+		--runtime $(SPRINTER_RUNTIME_BIN) --map $(SPRINTER_MAP) --output $(SPRINTER_EXE)
+	cp -f extern/sprinter-libs/gfx320/GFX320.DLL $(SPRINTER_GFX)
+
+$(SPRINTER_GFX): $(SPRINTER_EXE)
+	@test -f $@
+
+exe: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX)
+
+sprinter-check: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX)
+	$(PYTHON) -m unittest discover -s extern/libman/tests -p "test_z80asm_export.py" -v
+	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) --map $(SPRINTER_MAP)
+
+$(SPRINTER_SMOKE_IMAGE): $(SPRINTER_EXE) $(SPRINTER_GFX) \
+		extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL \
+		tools/make_sprinter_smoke_image.py | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/make_sprinter_smoke_image.py --output $@ \
+		$(SPRINTER_EXE) $(SPRINTER_GFX) extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
+
+sprinter-smoke-image: sprinter-check $(SPRINTER_SMOKE_IMAGE)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -874,6 +926,7 @@ ifneq ($(CLIENT_HOST_IS_WINDOWS),)
 else
 	rm -rf $(BUILD_DIR) dist
 	rm -rf build-next build-nex release/next release/nex release/Next $(BUILD_DIR)/next $(BUILD_DIR)/nex
+	rm -rf $(SPRINTER_RELEASE_DIR)
 	find src -name '*.c.asm' -delete
 	rm -f $(RELEASE_DIR)/$(ZX_NAME).tap $(RELEASE_DIR)/$(ZX_NAME).OVL $(RELEASE_DIR)/$(ZX_NAME).DAT
 	rm -f $(RELEASE_DIR)/NCHESSZX.tap $(RELEASE_DIR)/NCHESSZX.OVL $(RELEASE_DIR)/NCHESSZX.DAT

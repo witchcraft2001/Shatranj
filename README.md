@@ -218,6 +218,8 @@ The repository Makefile is the supported entry point:
 ```sh
 make tap              # classic TAP + OVL + DAT
 make nex              # self-contained Spectrum Next NEX
+make exe              # Sprinter stage-0 diagnostic EXE + GFX320.DLL
+make sprinter-check   # pinned deps, libman parity, EXE header and map gates
 make client-test      # Qt build and tests
 make client           # Qt release packaging
 make test             # shared and Spectrum host tests
@@ -230,6 +232,10 @@ together. `make nex` writes the self-contained Next image to
 ```sh
 PORT=5000 MQTT_HOST=broker.example MQTT_PORT=1883 MQTT_CODE=ABC123 make tap
 ```
+
+The Sprinter target is currently a hardware/bootstrap diagnostic rather than a
+playable fourth client. Its scope, outputs and validation matrix are documented
+in [`docs/sprinter-stage0.md`](docs/sprinter-stage0.md).
 
 For prerequisites, the Qt development loop, and platform-specific packaging,
 see [`client/README.md`](client/README.md). The complete validation and release

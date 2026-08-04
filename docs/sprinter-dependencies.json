@@ -1,0 +1,46 @@
+{
+  "submodules": {
+    "esp_net": {
+      "path": "extern/esp_net",
+      "commit": "9b08bd4d1b3a2643471f80a17c0ac9a9aa3f20ec"
+    },
+    "libman": {
+      "path": "extern/libman",
+      "commit": "d392c938d3235a8c6db09a5421c674631dfa1f23"
+    },
+    "rtl_net": {
+      "path": "extern/rtl_net",
+      "commit": "7c710357d56899d625d0ad052ef5bd673076723d"
+    },
+    "sprinter_libs": {
+      "path": "extern/sprinter-libs",
+      "commit": "a1604d7a4dc9258617e8c2b7b0e53d8eb04d1868"
+    }
+  },
+  "artifacts": {
+    "AFNT320.DLL": {
+      "path": "extern/sprinter-libs/afnt320/AFNT320.DLL",
+      "size": 9120,
+      "sha256": "9c4532a32953e8877c6cad2ce49ee4437e3f5f876613cbfc54f7384534109e4c",
+      "format": "L0"
+    },
+    "GFX320.DLL": {
+      "path": "extern/sprinter-libs/gfx320/GFX320.DLL",
+      "size": 6676,
+      "sha256": "fc7c0271e20e93be520933f193d0e70a7883940a5b5b131de34fddad333b1f48",
+      "format": "L0"
+    },
+    "UNETESP.DLL": {
+      "path": "extern/esp_net/UNETESP.DLL",
+      "size": 10720,
+      "sha256": "f03352df4f4af42683d1fde4a8260d0bd3a55f51b1366f10b5467b38566e9abc",
+      "format": "L1"
+    },
+    "UNETRTL.DLL": {
+      "path": "extern/rtl_net/UNETRTL.DLL",
+      "size": 13972,
+      "sha256": "7f4bfbbb38d5363d6fc0dfc4a0f972fda5f04ac94dcc58dde9d569c21fc81b82",
+      "format": "L1"
+    }
+  }
+}
