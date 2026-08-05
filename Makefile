@@ -56,24 +56,56 @@ SPRINTER_LAYOUT_STAMP := $(SPRINTER_BUILD_DIR)/sprinter_layout.stamp
 SPRINTER_LOADER_BIN := $(SPRINTER_BUILD_DIR)/preload_loader.bin
 SPRINTER_LOADER_MAP := $(SPRINTER_BUILD_DIR)/preload_loader.map
 SPRINTER_BASE_BIN := $(SPRINTER_BUILD_DIR)/base_bank.bin
-SPRINTER_BASE_MAP := $(SPRINTER_BUILD_DIR)/base_bank.map
+SPRINTER_BASE_MAP := $(SPRINTER_BUILD_DIR)/client.map
+SPRINTER_CLIENT_DATA := $(SPRINTER_BUILD_DIR)/client_DATA.bin
 SPRINTER_RUNTIME_BIN := $(SPRINTER_BUILD_DIR)/runtime.bin
 SPRINTER_RUNTIME_MAP := $(SPRINTER_BUILD_DIR)/runtime.map
 SPRINTER_ATLAS_INC := $(SPRINTER_BUILD_DIR)/sprinter_atlas.inc
 SPRINTER_FAR_THUNKS_INC := $(SPRINTER_BUILD_DIR)/sprinter_far_thunks.inc
 SPRINTER_BANK_MANIFEST := $(SPRINTER_BUILD_DIR)/bank_manifest.json
+SPRINTER_IMPORT_MANIFEST := $(SPRINTER_BUILD_DIR)/cold_import_manifest.json
+SPRINTER_ASSET_MANIFEST := $(SPRINTER_BUILD_DIR)/asset_manifest.json
 SPRINTER_MONOBLOCK_MANIFEST := $(SPRINTER_BUILD_DIR)/monoblock_manifest.json
 SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
 SPRINTER_GFX := $(SPRINTER_RELEASE_DIR)/GFX320.DLL
 SPRINTER_SMOKE_IMAGE := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
-SPRINTER_SRC := asm/sprinter/preload_loader.asm \
-                 asm/sprinter/base_bank.asm \
-                 asm/sprinter/runtime.asm \
-                 asm/sprinter/runtime_api.inc \
-                 asm/sprinter/cold/saveload_bank.asm \
-                 asm/sprinter/cold/fileui_bank.asm \
+SPRINTER_SRC := $(wildcard src/sprinter/*.c src/sprinter/*.h) \
+                 $(wildcard asm/sprinter/*.asm asm/sprinter/*.inc) \
+                 $(wildcard asm/sprinter/cold/*.asm) \
+                 $(wildcard asm/overlay/*/*.asm) \
+                 $(wildcard src/spectrum/overlay/*_ovl.c) \
+                 src/spectrum/lowram_map.h src/spectrum/config/session.c \
+                 src/spectrum/config/session.h src/spectrum/ui/gui.c \
+                 src/spectrum/board/board.c src/spectrum/board/san.c \
+                 src/spectrum/saveload/saveload.c \
+                 src/spectrum/fileui/fileui.c \
+                 src/spectrum/restore/restore.c \
+                 src/common/protocol/game_protocol.c \
                  src/sprinter/fixed_layout.json \
-                 src/sprinter/base_exports.json
+                 tools/build_sprinter_stage2.py tools/build_sprinter_assets.py \
+                 tools/compose_sprinter_pages.py tools/gen_sprinter_cold_imports.py \
+                 tools/pack_sprinter_banks.py tools/make_sprinter_exe.py
+SPRINTER_COLD_POLICY_SRC := asm/overlay/rules/rules_stub.asm \
+                 asm/overlay/board/entry_board.asm \
+                 asm/overlay/gui_log/entry_gui_log.asm \
+                 asm/sprinter/cold/menu_config.asm \
+                 asm/overlay/menu_logic/entry_menu_logic.asm \
+                 asm/overlay/setup/entry_setup.asm \
+                 asm/overlay/input_edit/entry_input_edit.asm \
+                 asm/overlay/saveload/entry_saveload.asm \
+                 asm/overlay/restore/entry_restore.asm \
+                 asm/overlay/about/entry_about.asm \
+                 asm/overlay/fileui/entry_fileui.asm \
+                 asm/overlay/control/entry_control.asm \
+                 asm/sprinter/cold/control_helpers.asm \
+                 src/spectrum/overlay/board_apply_ovl.c \
+                 src/spectrum/overlay/gui_log_ovl.c \
+                 src/spectrum/overlay/status_ovl.c \
+                 src/spectrum/overlay/input_edit_ovl.c \
+                 src/spectrum/overlay/saveload_ovl.c \
+                 src/spectrum/overlay/restore_ovl.c \
+                 src/spectrum/overlay/fileui_ovl.c \
+                 src/spectrum/overlay/control_ovl.c
 ZX_ORG := 28672
 ASSET_ASM := assets/spectrum/ui_runtime_assets.asm
 ABOUT_BOARD := assets/spectrum/about_board.bin
@@ -406,8 +438,15 @@ sprinter-deps-check: tools/check_sprinter_deps.py docs/sprinter-dependencies.jso
 sprinter-toolchain-check: $(SPRINTER_LAYOUT_STAMP) tools/check_sprinter_toolchain.py
 	$(PYTHON) tools/check_sprinter_toolchain.py --zcc "$(SPRINTER_ZCC)" --root . --build-dir $(SPRINTER_BUILD_DIR)
 
-sprinter-tools-test:
-	$(PYTHON) -m unittest tests.tools.test_sprinter_stage1 -v
+sprinter-tools-test: | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) -m unittest tests.tools.test_sprinter_stage1 \
+		tests.tools.test_sprinter_assets tests.tools.test_sprinter_libman -v
+	$(CC) $(CFLAGS) src/sprinter/echo_link.c tests/sprinter/test_echo_link.c \
+		-o $(SPRINTER_BUILD_DIR)/test_echo_link
+	$(SPRINTER_BUILD_DIR)/test_echo_link
+	$(CC) $(CFLAGS) src/sprinter/render_layout.c \
+		tests/sprinter/test_render_layout.c -o $(SPRINTER_BUILD_DIR)/test_render_layout
+	$(SPRINTER_BUILD_DIR)/test_render_layout
 
 $(SPRINTER_BUILD_DIR):
 	mkdir -p $(SPRINTER_BUILD_DIR)
@@ -421,46 +460,25 @@ $(SPRINTER_LAYOUT_STAMP): src/sprinter/fixed_layout.json tools/gen_sprinter_layo
 	touch $@
 
 $(SPRINTER_EXE): FORCE $(SPRINTER_SRC) tools/gen_sprinter_layout.py \
-		tools/gen_sprinter_thunks.py tools/pack_sprinter_banks.py \
-		tools/make_sprinter_exe.py tools/check_sprinter_build.py \
-		tools/check_sprinter_imports.py tools/check_sprinter_forbidden_dss.py \
-		extern/sprinter-libs/gfx320/GFX320.DLL \
-		$(SPRINTER_LAYOUT_STAMP) | $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
-	rm -f $(SPRINTER_BUILD_DIR)/preload_loader.* $(SPRINTER_BUILD_DIR)/base_bank.* \
-		$(SPRINTER_BUILD_DIR)/runtime.* $(SPRINTER_BUILD_DIR)/*bank.bin \
-		$(SPRINTER_BUILD_DIR)/*bank.map $(SPRINTER_BUILD_DIR)/cold_page_*.bin \
-		$(SPRINTER_BUILD_DIR)/SHATRANJ_COLD.* \
-		$(SPRINTER_ATLAS_INC) $(SPRINTER_FAR_THUNKS_INC) \
-		$(SPRINTER_BANK_MANIFEST) $(SPRINTER_MONOBLOCK_MANIFEST)
-	cd $(SPRINTER_BUILD_DIR) && $(SPRINTER_Z80ASM) -I=$(CURDIR) -I=. -O=. -b -m \
-		-r=0x4000 -o=base_bank.bin $(CURDIR)/asm/sprinter/base_bank.asm
-	$(PYTHON) tools/gen_sprinter_thunks.py --map $(SPRINTER_BASE_MAP) \
-		--exports src/sprinter/base_exports.json --asm-out $(SPRINTER_FAR_THUNKS_INC)
-	$(PYTHON) tools/pack_sprinter_banks.py --root . --build-dir $(SPRINTER_BUILD_DIR) \
-		--z80asm $(SPRINTER_Z80ASM) \
-		--module 10:saveload:asm/sprinter/cold/saveload_bank.asm \
-		--module 13:fileui:asm/sprinter/cold/fileui_bank.asm \
-		--atlas-out $(SPRINTER_ATLAS_INC) --manifest-out $(SPRINTER_BANK_MANIFEST) \
-		--page-prefix $(SPRINTER_BUILD_DIR)/cold_page_
-	cd $(SPRINTER_BUILD_DIR) && $(SPRINTER_Z80ASM) -I=$(CURDIR) -I=. -O=. -b -m \
-		-r=0x8000 -o=runtime.bin $(CURDIR)/asm/sprinter/runtime.asm
-	cd $(SPRINTER_BUILD_DIR) && $(SPRINTER_Z80ASM) -I=$(CURDIR) -I=. -O=. -b -m \
-		-r=0x8100 -o=preload_loader.bin $(CURDIR)/asm/sprinter/preload_loader.asm
-	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
-		--base $(SPRINTER_BASE_BIN) --runtime $(SPRINTER_RUNTIME_BIN) \
-		--bank-manifest $(SPRINTER_BANK_MANIFEST) --manifest-out $(SPRINTER_MONOBLOCK_MANIFEST) \
-		--output $(SPRINTER_EXE)
-	rm -f $(SPRINTER_RELEASE_DIR)/SHATRANJ.OVL $(SPRINTER_RELEASE_DIR)/SHATRANJ.DAT
-	cp -f extern/sprinter-libs/gfx320/GFX320.DLL $(SPRINTER_GFX)
+		tools/check_sprinter_build.py tools/check_sprinter_imports.py \
+		tools/check_sprinter_forbidden_dss.py extern/sprinter-libs/gfx320/GFX320.DLL \
+		| $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
+	$(PYTHON) tools/build_sprinter_stage2.py --root . \
+		--build-dir $(SPRINTER_BUILD_DIR) --release-dir $(SPRINTER_RELEASE_DIR) \
+		--z88dk $(SPRINTER_Z88DK)
 	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) \
 		--loader-map $(SPRINTER_LOADER_MAP) --runtime-map $(SPRINTER_RUNTIME_MAP) \
-		--base-map $(SPRINTER_BASE_MAP) --bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--base-map $(SPRINTER_BASE_MAP) --client-data $(SPRINTER_CLIENT_DATA) \
+		--bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--import-manifest $(SPRINTER_IMPORT_MANIFEST) \
+		--asset-manifest $(SPRINTER_ASSET_MANIFEST) \
 		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST) \
 		--layout src/sprinter/fixed_layout.json --release-dir $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/check_sprinter_imports.py --manifest $(SPRINTER_BANK_MANIFEST) \
-		--source asm/sprinter/cold/saveload_bank.asm \
-		--source asm/sprinter/cold/fileui_bank.asm
-	$(PYTHON) tools/check_sprinter_forbidden_dss.py asm/sprinter src/sprinter
+		--imports $(SPRINTER_IMPORT_MANIFEST) \
+		$(foreach source,$(SPRINTER_COLD_POLICY_SRC),--source $(source))
+	$(PYTHON) tools/check_sprinter_forbidden_dss.py asm/sprinter src/sprinter \
+		$(SPRINTER_BUILD_DIR)/libman
 
 $(SPRINTER_GFX): $(SPRINTER_EXE)
 	@test -f $@
@@ -468,27 +486,32 @@ $(SPRINTER_GFX): $(SPRINTER_EXE)
 exe: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX)
 
 sprinter-check: sprinter-deps-check sprinter-toolchain-check $(SPRINTER_EXE) $(SPRINTER_GFX)
-	$(PYTHON) -m unittest tests.tools.test_sprinter_stage1 -v
+	$(MAKE) sprinter-tools-test
 	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) \
 		--loader-map $(SPRINTER_LOADER_MAP) --runtime-map $(SPRINTER_RUNTIME_MAP) \
-		--base-map $(SPRINTER_BASE_MAP) --bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--base-map $(SPRINTER_BASE_MAP) --client-data $(SPRINTER_CLIENT_DATA) \
+		--bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--import-manifest $(SPRINTER_IMPORT_MANIFEST) \
+		--asset-manifest $(SPRINTER_ASSET_MANIFEST) \
 		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST) \
 		--layout src/sprinter/fixed_layout.json --release-dir $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/check_sprinter_imports.py --manifest $(SPRINTER_BANK_MANIFEST) \
-		--source asm/sprinter/cold/saveload_bank.asm \
-		--source asm/sprinter/cold/fileui_bank.asm
-	$(PYTHON) tools/check_sprinter_forbidden_dss.py asm/sprinter src/sprinter
+		--imports $(SPRINTER_IMPORT_MANIFEST) \
+		$(foreach source,$(SPRINTER_COLD_POLICY_SRC),--source $(source))
+	$(PYTHON) tools/check_sprinter_forbidden_dss.py asm/sprinter src/sprinter \
+		$(SPRINTER_BUILD_DIR)/libman
 
 sprinter-determinism-check: exe
 	$(PYTHON) tools/check_sprinter_determinism.py --root . --make "$(MAKE)" \
 		--exe $(SPRINTER_EXE) --bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--import-manifest $(SPRINTER_IMPORT_MANIFEST) \
+		--asset-manifest $(SPRINTER_ASSET_MANIFEST) \
 		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST)
 
 $(SPRINTER_SMOKE_IMAGE): $(SPRINTER_EXE) $(SPRINTER_GFX) \
-		extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL \
 		tools/make_sprinter_smoke_image.py | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_smoke_image.py --output $@ \
-		$(SPRINTER_EXE) $(SPRINTER_GFX) extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
+		$(SPRINTER_EXE) $(SPRINTER_GFX)
 
 sprinter-smoke-image: exe $(SPRINTER_SMOKE_IMAGE)
 

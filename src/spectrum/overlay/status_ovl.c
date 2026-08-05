@@ -20,6 +20,25 @@ static char *status_append(char *p, const char *src, char *end)
     return p;
 }
 
+#ifdef NETCHESSZX_SPRINTER_STAGE2_ECHO
+static void status_build_phase(uint8_t phase)
+{
+    const char *text = "LOCAL HOT-SEAT";
+
+    if (phase == STATUS_PHASE_CONNECTION_SETUP) {
+        text = "LOCAL SETUP";
+    } else if (phase == STATUS_PHASE_GAME_SETUP) {
+        text = "GAME SETUP";
+    } else if (phase == STATUS_PHASE_CONNECTING) {
+        text = "LOCAL LINK";
+    } else if (phase == STATUS_PHASE_CONNECTED) {
+        text = "LOCAL LINK READY";
+    }
+    status_line_ovl[0] = '\0';
+    (void)status_append(status_line_ovl, text,
+                        status_line_ovl + SPECTRUM_OVL_STATUS_LINE_TEXT_SIZE);
+}
+#else
 static char *status_append_char(char *p, char c, char *end)
 {
     if (p < end) {
@@ -137,6 +156,7 @@ static void status_build_phase(uint8_t phase)
         }
     }
 }
+#endif
 
 uint8_t status_phase_ovl(uint8_t *ctx) __z88dk_fastcall
 {

@@ -1,4 +1,4 @@
-; Shatranj Sprinter Stage-1 permanent WIN2 runtime.
+; Shatranj Sprinter Stage-2 permanent WIN2 runtime.
 ;
 ; WIN0 remains DSS.  WIN1 is the permanent base bank except while a cold bank
 ; is executing.  This page owns IM2, dispatch/far-call gates, all mutable state
@@ -7,6 +7,7 @@
 SECTION code_user
 
 INCLUDE "sprinter_layout.inc"
+INCLUDE "asm/sprinter/image_layout.inc"
 
 DEFC PORT_WIN1 = 0xA2
 DEFC PORT_WIN2 = 0xC2
@@ -18,8 +19,8 @@ DEFC CBL_IDLE = 0x80
 
 DEFC DSS_CREATE = 0x0A
 DEFC DSS_DELETE = 0x0E
-DEFC DSS_OPEN = 0x11
-DEFC DSS_CLOSE = 0x12
+DEFC SPR_DSS_OPEN = 0x11
+DEFC SPR_DSS_CLOSE = 0x12
 DEFC DSS_READ = 0x13
 DEFC DSS_WRITE = 0x14
 DEFC DSS_MOVE_FP = 0x15
@@ -66,12 +67,80 @@ PUBLIC _spectrum_fileui_used_mask
 PUBLIC _spectrum_net_runtime_fat_date
 PUBLIC _spectrum_net_runtime_fat_time
 PUBLIC _spectrum_net_runtime_clock_ready
-PUBLIC _spectrum_net_background_drain
-PUBLIC _spectrum_render_ikkle_at
-PUBLIC _spectrum_render_fileui_frame
-PUBLIC _spectrum_render_fileui_select
+PUBLIC _last_ip
+PUBLIC _setup_choice
+PUBLIC _setup_focus_choice
+PUBLIC _setup_focus_board_theme
+PUBLIC _setup_defined_mask
+PUBLIC _setup_visible_mask
+PUBLIC _setup_cursor
+PUBLIC _setup_room_editing
+PUBLIC _setup_edit_row
+PUBLIC _setup_port_text
+PUBLIC _local_input_len
+PUBLIC _local_input_cursor
+PUBLIC _local_input_mode
+PUBLIC _input_history_count
+PUBLIC _input_history_pos
 PUBLIC _spectrum_frame_wait
-PUBLIC _spectrum_key_poll
+PUBLIC _sprinter_key_scan_raw
+PUBLIC _sprinter_clean_exit
+PUBLIC _sprinter_video_graphics
+PUBLIC sprinter_disk_gate
+
+EXTERN _spectrum_input_frame_tick
+EXTERN _spectrum_input_poll_event
+EXTERN _spectrum_input_flush_until_release
+EXTERN _spectrum_input_suppress_until_release
+EXTERN _spectrum_input_parse_move
+EXTERN _spectrum_assets_load
+EXTERN _spectrum_assets_fatal
+EXTERN _spectrum_key_edit_pressed
+EXTERN _netchesszx_board_theme_apply
+EXTERN _netchesszx_piece_set_load
+EXTERN _spectrum_render_board
+EXTERN _spectrum_render_board_area
+EXTERN _spectrum_render_board_coords
+EXTERN _spectrum_render_board_coord_mark
+EXTERN _spectrum_render_status
+EXTERN _spectrum_render_status_error
+EXTERN _spectrum_render_clock
+EXTERN _spectrum_render_game_timer_clear
+EXTERN _spectrum_render_game_timer_char
+EXTERN _spectrum_render_menu_timer_char
+EXTERN _spectrum_render_turn_label
+EXTERN _spectrum_render_notice
+EXTERN _spectrum_render_notice_error
+EXTERN _spectrum_render_notice_success
+EXTERN _spectrum_render_connection
+EXTERN _spectrum_render_menu
+EXTERN _spectrum_render_square
+EXTERN _spectrum_render_square_attr
+EXTERN _spectrum_render_square_with_hint
+EXTERN _spectrum_render_square_mark
+EXTERN _spectrum_render_square_mark_with_hint
+EXTERN _spectrum_render_moves
+EXTERN _spectrum_render_move_at
+EXTERN _spectrum_render_moves_scroll
+EXTERN _spectrum_render_chat
+EXTERN _spectrum_render_chat_at
+EXTERN _spectrum_render_chat_scroll
+EXTERN _spectrum_render_input
+EXTERN _spectrum_render_input_cell
+EXTERN _spectrum_render_about
+EXTERN _spectrum_render_ikkle_at
+EXTERN _spectrum_render_fileui_frame
+EXTERN _spectrum_render_fileui_select
+EXTERN _spectrum_info_show_game
+EXTERN _spectrum_info_show_setup
+EXTERN _spectrum_info_show_game_setup
+EXTERN _spectrum_info_show_preflight
+EXTERN _spectrum_info_clear_tail
+EXTERN _spectrum_info_line
+EXTERN _sprinter_render_present
+EXTERN _sprinter_gfx_start
+EXTERN _sprinter_gfx_stop
+EXTERN SPRINTER_CLIENT_ENTRY
 
 DEFC _overlay_code_slot = 0x4000
 DEFC _spectrum_overlay_loaded_id = SPRINTER_OVERLAY_LOADED_ID
@@ -92,15 +161,27 @@ DEFC _esx_opendir = 0x8218
 DEFC _esx_readdir = 0x821B
 DEFC _spectrum_fileui_count = SPRINTER_FILEUI_COUNT
 DEFC _spectrum_fileui_used_mask = SPRINTER_FILEUI_USED_MASK
-DEFC _spectrum_net_runtime_fat_date = 0x8224
-DEFC _spectrum_net_runtime_fat_time = 0x8227
-DEFC _spectrum_net_background_drain = 0x822A
-DEFC _spectrum_render_ikkle_at = 0x822D
-DEFC _spectrum_render_fileui_frame = 0x8230
-DEFC _spectrum_render_fileui_select = 0x8233
-DEFC _spectrum_net_runtime_clock_ready = 0x8236
-DEFC _spectrum_frame_wait = 0x8239
-DEFC _spectrum_key_poll = 0x823C
+DEFC _spectrum_net_runtime_fat_date = 0x8221
+DEFC _spectrum_net_runtime_fat_time = 0x8224
+DEFC _spectrum_net_runtime_clock_ready = 0x8227
+DEFC _spectrum_frame_wait = 0x822A
+; State imported by production setup/input overlays.  It remains in WIN2 and
+; aliases transient buffers that are never live during those overlay calls.
+DEFC _last_ip = SPRINTER_STATUS_BUFFER
+DEFC _setup_choice = SPRINTER_DIRENT_BUFFER
+DEFC _setup_focus_choice = SPRINTER_DIRENT_BUFFER + 6
+DEFC _setup_focus_board_theme = SPRINTER_DIRENT_BUFFER + 12
+DEFC _setup_defined_mask = SPRINTER_DIRENT_BUFFER + 13
+DEFC _setup_visible_mask = SPRINTER_DIRENT_BUFFER + 15
+DEFC _setup_cursor = SPRINTER_DIRENT_BUFFER + 17
+DEFC _setup_room_editing = SPRINTER_DIRENT_BUFFER + 18
+DEFC _setup_edit_row = SPRINTER_DIRENT_BUFFER + 19
+DEFC _setup_port_text = SPRINTER_DIRENT_BUFFER + 20
+DEFC _local_input_len = SPRINTER_OVERLAY_CONTEXT + 8
+DEFC _local_input_cursor = SPRINTER_OVERLAY_CONTEXT + 9
+DEFC _local_input_mode = SPRINTER_OVERLAY_CONTEXT + 10
+DEFC _input_history_count = SPRINTER_OVERLAY_CONTEXT + 11
+DEFC _input_history_pos = SPRINTER_OVERLAY_CONTEXT + 12
 
 sprinter_runtime_page_start:
     ; Every possible IM2 vector byte resolves to #8181.
@@ -135,140 +216,137 @@ sprinter_im2_chain:
     JP sprinter_esx_funlink
     JP sprinter_esx_opendir
     JP sprinter_esx_readdir
-    JP sprinter_far_base_probe
-    JP sprinter_puts
+    JP sprinter_esx_move_fp
     JP sprinter_fat_date
     JP sprinter_fat_time
-    JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
     JP sprinter_clock_ready
     JP sprinter_frame_wait
-    JP sprinter_key_poll_c
+    JP sprinter_key_poll
+    JP _spectrum_input_frame_tick
+    JP _spectrum_input_poll_event
+    JP _spectrum_input_flush_until_release
+    JP _spectrum_input_suppress_until_release
+    JP _spectrum_input_parse_move
+    JP _spectrum_assets_load
+    JP _spectrum_assets_fatal
+    JP _spectrum_key_edit_pressed
+    JP _netchesszx_board_theme_apply
+    JP _netchesszx_piece_set_load
+    JP _spectrum_render_board
+    JP _spectrum_render_board_area
+    JP _spectrum_render_board_coords
+    JP _spectrum_render_board_coord_mark
+    JP _spectrum_render_status
+    JP _spectrum_render_status_error
+    JP _spectrum_render_clock
+    JP _spectrum_render_game_timer_clear
+    JP _spectrum_render_game_timer_char
+    JP _spectrum_render_menu_timer_char
+    JP _spectrum_render_turn_label
+    JP _spectrum_render_notice
+    JP _spectrum_render_notice_error
+    JP _spectrum_render_notice_success
+    JP _spectrum_render_connection
+    JP _spectrum_render_menu
+    JP _spectrum_render_square
+    JP _spectrum_render_square_attr
+    JP _spectrum_render_square_with_hint
+    JP _spectrum_render_square_mark
+    JP _spectrum_render_square_mark_with_hint
+    JP _spectrum_render_moves
+    JP _spectrum_render_move_at
+    JP _spectrum_render_moves_scroll
+    JP _spectrum_render_chat
+    JP _spectrum_render_chat_at
+    JP _spectrum_render_chat_scroll
+    JP _spectrum_render_input
+    JP _spectrum_render_input_cell
+    JP _spectrum_render_about
+    JP _spectrum_render_ikkle_at
+    JP _spectrum_render_fileui_frame
+    JP _spectrum_render_fileui_select
+    JP _spectrum_info_show_game
+    JP _spectrum_info_show_setup
+    JP _spectrum_info_show_game_setup
+    JP _spectrum_info_show_preflight
+    JP _spectrum_info_clear_tail
+    JP _spectrum_info_line
+    JP sprinter_noop
+    JP sprinter_noop
+    JP sprinter_noop
+    JP sprinter_noop
+    JP sprinter_noop
+    JP sprinter_noop
+    JP sprinter_noop
+    JP sprinter_noop
 
-    DEFS 0x0240-$,0
+    DEFS (SPRINTER_RUNTIME_ENTRY-0x8000)-$,0
 
 sprinter_runtime_start:
     DI
     LD SP,SPRINTER_STACK_TOP
+    ; Do not erase loader metadata, the palette, or preloaded DATA images.
     LD HL,SPRINTER_OVERLAY_CONTEXT
     XOR A
     LD (HL),A
     LD DE,SPRINTER_OVERLAY_CONTEXT+1
-    LD BC,0x01A8
+    LD BC,SPRINTER_APP_DIR-SPRINTER_OVERLAY_CONTEXT-1
+    LDIR
+    LD HL,SPRINTER_CONFIG_DIR
+    LD (HL),A
+    LD DE,SPRINTER_CONFIG_DIR+1
+    LD BC,SPRINTER_GFX_PALETTE-SPRINTER_CONFIG_DIR-1
+    LDIR
+    LD HL,SPRINTER_GFX_CONFIG
+    LD (HL),A
+    LD DE,SPRINTER_GFX_CONFIG+1
+    LD BC,SPRINTER_BASE_DATA-SPRINTER_GFX_CONFIG-1
+    LDIR
+    LD HL,SPRINTER_BASE_BSS
+    LD (HL),A
+    LD DE,SPRINTER_BASE_BSS+1
+    LD BC,0x0180-1
     LDIR
     LD A,OVL_INVALID
     LD (SPRINTER_OVERLAY_LOADED_ID),A
     LD (SPRINTER_OVERLAY_CACHE_ID),A
-    CALL sprinter_copy_save_payload
-    CALL sprinter_cbl_arm
+    EI
 
+    ; Keep DSS and GFX320 initialization in the launcher's IM1 environment.
+    ; SetVMod reaches BIOS and libman performs several DSS calls; switching to
+    ; IM2 before those calls lets a system interrupt return through our vector
+    ; while DSS is temporarily using its own mappings.
+    CALL sprinter_read_rtc
+    JR C,sprinter_start_fail
+    CALL sprinter_init_config_path
+    JR C,sprinter_start_fail
+    CALL _sprinter_gfx_start
+    LD A,L
+    OR A
+    JR Z,sprinter_start_fail
+    CALL sprinter_cbl_arm
     LD A,0x80
     LD I,A
     IM 2
     EI
-
-    LD HL,msg_banner
-    CALL sprinter_puts
-    CALL sprinter_validate_base
-    JR C,sprinter_fail_bank
-    LD HL,msg_base_ok
-    CALL sprinter_puts
-    CALL sprinter_frame_wait
-    JR C,sprinter_fail_frame
-    CALL sprinter_frame_wait
-    JR C,sprinter_fail_frame
-    LD HL,msg_frame_ok
-    CALL sprinter_puts
-    CALL sprinter_read_rtc
-    JR C,sprinter_fail_rtc
-    LD HL,msg_rtc_ok
-    CALL sprinter_puts
-    CALL sprinter_run_file_diagnostic
-    JR C,sprinter_fail_file
-    CALL sprinter_validate_base
-    JR C,sprinter_fail_bank
-    LD HL,msg_tests_ok
-    CALL sprinter_puts
-    ; Do not let the key used to launch the program, or a stale Esc from DSS,
-    ; terminate keyboard echo before the user can inspect the results.
-    CALL sprinter_key_clear
-
-sprinter_keyboard_loop:
-    CALL sprinter_frame_wait
-    JR C,sprinter_fail_frame
-    CALL sprinter_key_poll
+    ; Call the portable application body, not z88dk's CRT entry at #4100.
+    ; The CRT entry installs SP=#0000 and halts instead of returning; this
+    ; runtime already owns initialization and the permanent WIN2 stack.
+    CALL SPRINTER_CLIENT_ENTRY
     LD A,L
-    OR A
-    JR Z,sprinter_keyboard_loop
-    CP 0x8A
-    JR Z,sprinter_pass
-    LD (SPRINTER_KEY_MAPPED),A
-    LD HL,msg_key
-    CALL sprinter_puts
-    LD A,(SPRINTER_KEY_MAPPED)
-    CALL sprinter_put_hex8
-    LD HL,msg_crlf
-    CALL sprinter_puts
-    JR sprinter_keyboard_loop
+    LD (SPRINTER_DIAG_RESULT),A
+    JR sprinter_cleanup
 
-sprinter_pass:
-    XOR A
-    LD (SPRINTER_DIAG_RESULT),A
-    LD HL,msg_pass
-    CALL sprinter_puts
-    LD HL,msg_exit_wait
-    CALL sprinter_puts
-    CALL sprinter_wait_ack
-    JP sprinter_cleanup
-sprinter_fail_bank:
+sprinter_start_fail:
     LD A,1
-    JR sprinter_set_failure
-sprinter_fail_frame:
-    LD A,2
-    JR sprinter_set_failure
-sprinter_fail_file:
-    LD A,3
-    JR sprinter_set_failure
-sprinter_fail_rtc:
-    LD A,4
-sprinter_set_failure:
     LD (SPRINTER_DIAG_RESULT),A
-    ; Report and acknowledge while the current DSS console is still visible.
-    ; SetVMod in final cleanup clears both screens on real hardware.
-    LD HL,msg_fail
-    CALL sprinter_puts
-    LD A,(SPRINTER_DIAG_RESULT)
-    CALL sprinter_put_hex8
-    LD HL,msg_crlf
-    CALL sprinter_puts
-    LD HL,msg_exit_wait
-    CALL sprinter_puts
-    CALL sprinter_wait_ack
+    JR sprinter_cleanup
+
+_sprinter_clean_exit:
+    LD A,L
+    LD (SPRINTER_DIAG_RESULT),A
 
 sprinter_cleanup:
-    ; Erase only the file this process successfully created.
-    LD A,(SPRINTER_FILE_CREATED)
-    OR A
-    JR Z,sprinter_cleanup_map
-    LD A,OVL_SAVELOAD
-    LD E,2
-    CALL sprinter_overlay_dispatch_cached_ae
-    LD A,L
-    OR A
-    JR NZ,sprinter_cleanup_map
-    LD A,5
-    LD (SPRINTER_DIAG_RESULT),A
-sprinter_cleanup_map:
-    IN A,(PORT_WIN1)
-    LD HL,SPRINTER_PAGE_TABLE
-    CP (HL)
-    JR Z,sprinter_cleanup_video
-    LD A,5
-    LD (SPRINTER_DIAG_RESULT),A
-
-sprinter_cleanup_video:
     ; Cleanup stays in IM1 permanently.  SetVMod is issued for both screens;
     ; PORT_Y is parked and front buffer zero is selected before DSS.Exit.
     DI
@@ -297,6 +375,9 @@ sprinter_cleanup_screen_zero:
 sprinter_cleanup_screen_zero_clear:
     CALL sprinter_clear_text_screen
 sprinter_cleanup_video_done:
+    ; GFX320 free does not depend on graphics mode.  Restore DSS text mode
+    ; first so a libman/DSS failure can never strand the user on a black page.
+    CALL _sprinter_gfx_stop
     IN A,(PORT_RGMOD)
     AND 0xFE
     OUT (PORT_RGMOD),A
@@ -326,6 +407,11 @@ sprinter_cleanup_win1_ok:
     LD A,5
     LD (SPRINTER_DIAG_RESULT),A
 sprinter_cleanup_maps_done:
+    LD A,(SPRINTER_DIAG_RESULT)
+    OR A
+    JR Z,sprinter_exit
+    LD HL,msg_stage2_fail
+    CALL sprinter_puts
 sprinter_exit:
     LD A,(SPRINTER_DIAG_RESULT)
     LD B,A
@@ -333,6 +419,45 @@ sprinter_exit:
     RST 0x10
     DI
     HALT
+
+; Enter 320x256x256 mode on both display pages from permanent WIN2.  SetVMod
+; temporarily changes WIN1, so reinstall the base page after each call.
+_sprinter_video_graphics:
+    ; This routine is called from SDCC-generated code.  SetVMod is allowed to
+    ; clobber both index registers, while SDCC keeps its frame pointer in IX.
+    PUSH IX
+    PUSH IY
+    LD A,0x81
+    LD B,1
+    LD C,DSS_SETVMOD
+    RST 0x10
+    JR C,sprinter_video_fail
+    LD A,(SPRINTER_PAGE_TABLE)
+    OUT (PORT_WIN1),A
+    LD A,0x81
+    LD B,0
+    LD C,DSS_SETVMOD
+    RST 0x10
+    JR C,sprinter_video_fail
+    LD A,(SPRINTER_PAGE_TABLE)
+    OUT (PORT_WIN1),A
+    IN A,(PORT_RGMOD)
+    AND 0xFE
+    OUT (PORT_RGMOD),A
+    ; GFX320 maps #50 into WIN3 for each bounded operation and restores the
+    ; previous page itself.  Leaving WIN3 as DSS's ordinary page between calls
+    ; keeps all system services away from VRAM.
+    LD A,0xC0
+    OUT (PORT_Y),A
+    LD HL,1
+    POP IY
+    POP IX
+    RET
+sprinter_video_fail:
+    LD HL,0
+    POP IY
+    POP IX
+    RET
 
 ; SetVMod changes the geometry but leaves text cells with zero attributes on
 ; real DSS.  Clear each selected text page to a visible console default and
@@ -669,32 +794,16 @@ sprinter_frame_ready:
     LD A,B
     LD (SPRINTER_FRAME_BASELINE),A
     EI
+    CALL _spectrum_input_frame_tick
+    CALL _sprinter_render_present
+    LD A,0xC0
+    OUT (PORT_Y),A
     OR A
     RET
 sprinter_frame_nested:
     LD A,3
     LD (SPRINTER_PLATFORM_ERROR),A
     SCF
-    RET
-
-sprinter_key_clear:
-    LD B,DSS_SCANKEY
-    JR sprinter_key_control
-
-sprinter_wait_ack:
-    LD B,DSS_WAITKEY
-
-sprinter_key_control:
-    IN A,(PORT_WIN1)
-    PUSH AF
-    IN A,(PORT_WIN3)
-    PUSH AF
-    LD C,DSS_K_CLEAR
-    RST 0x10
-    POP AF
-    OUT (PORT_WIN3),A
-    POP AF
-    OUT (PORT_WIN1),A
     RET
 
 sprinter_key_poll:
@@ -708,6 +817,8 @@ sprinter_key_poll:
     LD C,DSS_SCANKEY
     RST 0x10
     LD (SPRINTER_KEY_ASCII),A
+    LD A,B
+    LD (SPRINTER_KEY_MODIFIERS),A
     LD A,D
     AND 0x7F
     LD (SPRINTER_KEY_SCAN),A
@@ -737,6 +848,13 @@ sprinter_key_backspace:
     LD L,0x08
     RET
 sprinter_key_escape:
+    LD A,(SPRINTER_KEY_MODIFIERS)
+    BIT 5,A
+    JR Z,sprinter_key_escape_plain
+    XOR A
+    LD (SPRINTER_DIAG_RESULT),A
+    JP sprinter_cleanup
+sprinter_key_escape_plain:
     LD L,0x8A
     RET
 sprinter_key_positional:
@@ -761,7 +879,7 @@ sprinter_key_none:
     LD L,0
     RET
 
-sprinter_key_poll_c:
+_sprinter_key_scan_raw:
     PUSH IX
     PUSH IY
     CALL sprinter_key_poll
@@ -803,7 +921,6 @@ sprinter_key_none_saved:
 ; to issue a disk RST.  It captures all results before restoring maps/IM2.
 ; ---------------------------------------------------------------------------
 sprinter_disk_gate:
-    PUSH IX
     PUSH IY
     LD (SPRINTER_DISK_IN_HL),HL
     LD (SPRINTER_DISK_IN_DE),DE
@@ -814,7 +931,7 @@ sprinter_disk_gate:
     LD (SPRINTER_DISK_IN_AF),HL
     LD A,(SPRINTER_DISK_BUSY)
     OR A
-    JR NZ,sprinter_disk_reentry
+    JP NZ,sprinter_disk_reentry
     LD A,1
     LD (SPRINTER_DISK_BUSY),A
     IN A,(PORT_WIN1)
@@ -858,7 +975,14 @@ sprinter_disk_result_saved:
     XOR A
     LD (SPRINTER_FRAME_WAKES),A
     LD (SPRINTER_DISK_BUSY),A
+    LD A,(SPRINTER_CBL_ARMED)
+    OR A
+    JR Z,sprinter_disk_restore_im1
     IM 2
+    JR sprinter_disk_restore_interrupts
+sprinter_disk_restore_im1:
+    IM 1
+sprinter_disk_restore_interrupts:
     EI
     LD IX,(SPRINTER_DISK_OUT_IX)
     LD BC,(SPRINTER_DISK_OUT_BC)
@@ -868,7 +992,8 @@ sprinter_disk_result_saved:
     POP AF
     LD HL,(SPRINTER_DISK_OUT_HL)
     POP IY
-    POP IX
+    ; IX is a DSS result register.  In particular Move_FP returns the low
+    ; 16 bits of the file size in IX, and libman consumes that value.
     RET
 sprinter_disk_reentry:
     LD A,3
@@ -876,7 +1001,6 @@ sprinter_disk_reentry:
     LD A,0xFF
     SCF
     POP IY
-    POP IX
     RET
 
 ; ---------------------------------------------------------------------------
@@ -919,7 +1043,7 @@ sprinter_esx_fopen:
     CALL sprinter_copy_path
     RET C
     LD A,1
-    LD C,DSS_OPEN
+    LD C,SPR_DSS_OPEN
     CALL sprinter_disk_gate
     RET C
     INC A
@@ -987,7 +1111,7 @@ sprinter_esx_close_file:
     OR A
     JR Z,sprinter_esx_close_bad
     DEC A
-    LD C,DSS_CLOSE
+    LD C,SPR_DSS_CLOSE
     CALL sprinter_disk_gate
     PUSH AF
     XOR A
@@ -1124,14 +1248,14 @@ sprinter_adapt_stamp:
     LDIR
     RET
 
-; Unused by the diagnostic, but kept behind the same gate for the complete
-; Stage-1 disk-call set and for the static direct-RST policy check.
+; Kept behind the same disk gate for complete production esx-style parity and
+; for the static direct-RST policy check.
 sprinter_esx_move_fp:
     LD C,DSS_MOVE_FP
     JP sprinter_disk_gate
 
 ; ---------------------------------------------------------------------------
-; RTC/FAT timestamp and NCZS/FILEUI/SAVELOAD diagnostic.
+; RTC/FAT timestamp and NCZS/FILEUI/SAVELOAD support.
 ; ---------------------------------------------------------------------------
 sprinter_read_rtc:
     IN A,(PORT_WIN1)
@@ -1235,114 +1359,6 @@ sprinter_rtc_bad:
     SCF
     RET
 
-sprinter_build_generated_path:
-    LD A,(SPRINTER_FILEUI_SLOT)
-    CP 10
-    JR Z,sprinter_slot_ten
-    LD HL,SPRINTER_GENERATED_NAME
-    LD (HL),'0'
-    INC HL
-    ADD A,'0'
-    LD (HL),A
-    JR sprinter_slot_stamp
-sprinter_slot_ten:
-    LD HL,SPRINTER_GENERATED_NAME
-    LD (HL),'1'
-    INC HL
-    LD (HL),'0'
-sprinter_slot_stamp:
-    INC HL
-    LD DE,(SPRINTER_RTC_YEAR)
-    LD BC,2020
-    EX DE,HL
-    OR A
-    SBC HL,BC
-    LD A,L
-    EX DE,HL
-    CALL sprinter_b32_char
-    LD (HL),A
-    INC HL
-    LD A,(SPRINTER_RTC_MONTH)
-    CALL sprinter_b32_char
-    LD (HL),A
-    INC HL
-    LD A,(SPRINTER_RTC_DAY)
-    CALL sprinter_b32_char
-    LD (HL),A
-    INC HL
-    LD A,(SPRINTER_RTC_HOUR)
-    CALL sprinter_b32_char
-    LD (HL),A
-    INC HL
-    LD A,(SPRINTER_RTC_MINUTE)
-    LD B,'0'
-sprinter_minute_tens:
-    CP 10
-    JR C,sprinter_minute_done
-    SUB 10
-    INC B
-    JR sprinter_minute_tens
-sprinter_minute_done:
-    LD (HL),B
-    INC HL
-    ADD A,'0'
-    LD (HL),A
-    INC HL
-    LD (HL),0
-    LD HL,SPRINTER_CONFIG_DIR
-    LD DE,SPRINTER_GENERATED_PATH
-    LD B,241
-sprinter_path_prefix_copy:
-    LD A,(HL)
-    OR A
-    JR Z,sprinter_path_prefix_done
-    LD (DE),A
-    INC HL
-    INC DE
-    DJNZ sprinter_path_prefix_copy
-    LD A,0x10
-    LD (SPRINTER_FILE_ERROR),A
-    SCF
-    RET
-sprinter_path_prefix_done:
-    LD A,'\\'
-    LD (DE),A
-    INC DE
-sprinter_path_name_copy_start:
-    LD HL,SPRINTER_GENERATED_NAME
-    LD B,8
-sprinter_path_name_copy:
-    LD A,(HL)
-    LD (DE),A
-    INC HL
-    INC DE
-    DJNZ sprinter_path_name_copy
-    LD A,'.'
-    LD (DE),A
-    INC DE
-    LD A,'S'
-    LD (DE),A
-    INC DE
-    LD A,'T'
-    LD (DE),A
-    INC DE
-    LD A,'J'
-    LD (DE),A
-    INC DE
-    XOR A
-    LD (DE),A
-    OR A
-    RET
-
-sprinter_b32_char:
-    CP 10
-    JR C,sprinter_b32_digit
-    ADD A,'A'-10
-    RET
-sprinter_b32_digit:
-    ADD A,'0'
-    RET
-
 ; Existing clock/FAT APIs used by the production SAVELOAD overlay.
 sprinter_fat_date:
     LD HL,(SPRINTER_FAT_DATE)
@@ -1358,96 +1374,7 @@ sprinter_clock_ready:
 sprinter_noop:
     RET
 
-sprinter_run_file_diagnostic:
-    XOR A
-    LD (SPRINTER_FILE_STAGE),A
-    LD (SPRINTER_FILE_ERROR),A
-    CALL sprinter_init_config_path
-    JP C,sprinter_file_fail
-    LD A,OVL_FILEUI
-    LD E,0
-    CALL sprinter_overlay_dispatch_cached_ae
-    LD A,L
-    OR A
-    JP Z,sprinter_file_fail
-    LD HL,msg_fileui_scan
-    CALL sprinter_puts
-    CALL sprinter_read_rtc
-    JP C,sprinter_file_fail
-    CALL sprinter_build_generated_path
-    JP C,sprinter_file_fail
-    LD HL,msg_saveload_path
-    CALL sprinter_puts
-    LD HL,SPRINTER_GENERATED_PATH
-    CALL sprinter_puts
-    LD HL,msg_crlf
-    CALL sprinter_puts
-    LD A,OVL_SAVELOAD
-    LD E,1
-    CALL sprinter_overlay_dispatch_cached_ae
-    LD A,L
-    OR A
-    JP Z,sprinter_file_fail
-    LD HL,msg_saveload_write
-    CALL sprinter_puts
-    LD A,OVL_FILEUI
-    LD E,1
-    CALL sprinter_overlay_dispatch_cached_ae
-    LD A,L
-    OR A
-    JP Z,sprinter_file_fail
-    LD HL,msg_fileui_find
-    CALL sprinter_puts
-    LD A,OVL_SAVELOAD
-    LD E,0
-    CALL sprinter_overlay_dispatch_cached_ae
-    LD A,L
-    OR A
-    JP Z,sprinter_file_fail
-    LD HL,SPRINTER_SAVE_PAYLOAD
-    LD DE,SPRINTER_READBACK
-    LD B,60
-sprinter_file_compare:
-    LD A,(DE)
-    CP (HL)
-    JP NZ,sprinter_file_fail
-    INC HL
-    INC DE
-    DJNZ sprinter_file_compare
-    LD HL,msg_saveload_read
-    CALL sprinter_puts
-    LD A,OVL_SAVELOAD
-    LD E,2
-    CALL sprinter_overlay_dispatch_cached_ae
-    LD A,L
-    OR A
-    JP Z,sprinter_file_fail
-    LD HL,msg_saveload_erase
-    CALL sprinter_puts
-    OR A
-    RET
-sprinter_file_fail:
-    LD HL,msg_file_detail
-    CALL sprinter_puts
-    LD A,(SPRINTER_FILE_STAGE)
-    CALL sprinter_put_hex8
-    LD HL,msg_file_dss
-    CALL sprinter_puts
-    LD A,(SPRINTER_FILE_ERROR)
-    CALL sprinter_put_hex8
-    LD HL,msg_crlf
-    CALL sprinter_puts
-    SCF
-    RET
-
-sprinter_copy_save_payload:
-    LD HL,save_payload_text
-    LD DE,SPRINTER_SAVE_PAYLOAD
-    LD BC,60
-    LDIR
-    RET
-
-; Resolve all Stage-1 files relative to the directory containing this EXE.
+; Resolve files relative to the directory containing this EXE.
 ; PRELOAD captured AppInfo into SPRINTER_APP_DIR before replacing the PSP in
 ; WIN2.  Keep enough room for both product suffixes here.
 sprinter_init_config_path:
@@ -1488,27 +1415,6 @@ sprinter_app_path_too_long:
     SCF
     RET
 
-sprinter_validate_base:
-    IN A,(PORT_WIN1)
-    LD HL,SPRINTER_PAGE_TABLE
-    CP (HL)
-    JR NZ,sprinter_base_bad
-    LD HL,(0x4030)
-    LD DE,0x5348
-    OR A
-    SBC HL,DE
-    JR NZ,sprinter_base_bad
-    CALL sprinter_far_base_probe
-    LD A,H
-    CP 0xBA
-    JR NZ,sprinter_base_bad
-    LD A,L
-    CP 0xCE
-    RET Z
-sprinter_base_bad:
-    SCF
-    RET
-
 ; ---------------------------------------------------------------------------
 ; Text helpers preserve the current WIN1/WIN3 mappings around DSS console I/O.
 ; ---------------------------------------------------------------------------
@@ -1529,108 +1435,21 @@ sprinter_puts:
     POP IX
     RET
 
-sprinter_putchar:
-    PUSH IX
-    PUSH IY
-    PUSH AF
-    IN A,(PORT_WIN1)
-    PUSH AF
-    IN A,(PORT_WIN3)
-    PUSH AF
-    POP DE
-    POP BC
-    POP AF
-    PUSH BC
-    PUSH DE
-    LD C,DSS_PUTCHAR
-    RST 0x10
-    POP AF
-    OUT (PORT_WIN3),A
-    POP AF
-    OUT (PORT_WIN1),A
-    POP IY
-    POP IX
-    RET
-
-sprinter_put_hex8:
-    PUSH AF
-    RRCA
-    RRCA
-    RRCA
-    RRCA
-    CALL sprinter_put_hex_nibble
-    POP AF
-sprinter_put_hex_nibble:
-    AND 0x0F
-    ADD A,'0'
-    CP '9'+1
-    JR C,sprinter_put_hex_emit
-    ADD A,'A'-'9'-1
-sprinter_put_hex_emit:
-    JP sprinter_putchar
-
-; IM1-only variant used after final cleanup; no mapping needs to survive.
-sprinter_put_hex8_im1:
-    PUSH AF
-    RRCA
-    RRCA
-    RRCA
-    RRCA
-    CALL sprinter_put_hex_nibble_im1
-    POP AF
-sprinter_put_hex_nibble_im1:
-    AND 0x0F
-    ADD A,'0'
-    CP '9'+1
-    JR C,sprinter_put_hex_emit_im1
-    ADD A,'A'-'9'-1
-sprinter_put_hex_emit_im1:
-    LD C,DSS_PUTCHAR
-    RST 0x10
-    RET
-
 config_suffix:
     DEFB "SYS\\CONFIG",0
-save_payload_text:
-    DEFB "uazam4iIiIgAAAAAAAAAAAAAAAAAAAAAEREREUI1YyR8_wAAAQEAAAAAOwGm"
-msg_banner:
-    DEFB "Shatranj Sprinter stage 1",13,10
-    DEFB "PRELOAD monoblock; network disabled",13,10,0
-msg_base_ok:
-    DEFB "Base bank: OK",13,10,0
-msg_frame_ok:
-    DEFB "IM2/frame source: OK",13,10,0
-msg_rtc_ok:
-    DEFB "RTC/FAT timestamp: OK",13,10,0
-msg_tests_ok:
-    DEFB "Banks, IM2, RTC, SAVELOAD and FILEUI: OK",13,10
-    DEFB "Keyboard echo active; Esc exits",13,10,0
-msg_fileui_scan:
-    DEFB "FILEUI scan: OK",13,10,0
-msg_saveload_path:
-    DEFB "SAVELOAD path: ",0
-msg_saveload_write:
-    DEFB "SAVELOAD write: OK",13,10,0
-msg_fileui_find:
-    DEFB "FILEUI find/FAT stamp: OK",13,10,0
-msg_saveload_read:
-    DEFB "SAVELOAD read/compare: OK",13,10,0
-msg_saveload_erase:
-    DEFB "SAVELOAD erase: OK",13,10,0
-msg_file_detail:
-    DEFB "File failure stage=",0
-msg_file_dss:
-    DEFB " DSS=",0
-msg_key:
-    DEFB "key=",0
-msg_pass:
-    DEFB "PASS",13,10,0
-msg_fail:
-    DEFB "FAIL exit=",0
-msg_exit_wait:
-    DEFB "Press any key to return to DSS",13,10,0
-msg_crlf:
-    DEFB 13,10,0
+msg_stage2_fail:
+    DEFB 0
+
+; Pinned libman 1.3 remains resident in WIN2.  The generated adapter changes
+; only OPEN/READ/MOVE_FP/CLOSE into calls through sprinter_disk_gate.
+PUBLIC l_load
+PUBLIC l_free
+PUBLIC l_call
+DEFC LIBMAN_MAX_LIBS = 1
+DEFC LIBMAN_APP_DIR = SPRINTER_APP_DIR
+DEFC LIBMAN_PATH_BUFFER = SPRINTER_PATH_BUFFER
+DEFC LIBMAN_PATH_CAPACITY = 256
+INCLUDE "libman.asm"
 
 INCLUDE "sprinter_atlas.inc"
 

@@ -23,7 +23,7 @@ LOADER_STACK = 0xBFF0
 PAGE_SIZE = 0x4000
 MANIFEST_SIZE = 32
 MANIFEST_MAGIC = b"STM1"
-RUNTIME_ENTRY = 0x8240
+RUNTIME_ENTRY = 0x8500
 BASE_TRANSITION = 0x4000
 BASE_RUNTIME_PATCH = 0x4001
 RUNTIME_PAGE_TABLE = 0x8101
@@ -55,36 +55,63 @@ def make_header(loader_size: int) -> bytes:
     return bytes(header)
 
 
-def make_manifest(page_count: int, cold_count: int) -> bytes:
+def make_manifest(page_count: int, cold_count: int, asset_count: int = 0,
+                  gfx_page_count: int = 0, palette_asset_index: int = 0,
+                  palette_length: int = 0,
+                  asset_page_table: int = 0,
+                  palette_destination: int = 0) -> bytes:
     if not 2 <= page_count <= MAX_PAGES:
         raise ValueError(f"monoblock page count must be 2..{MAX_PAGES}, got {page_count}")
-    if cold_count != page_count - 2:
-        raise ValueError("cold bank count does not match monoblock page count")
+    if cold_count + asset_count != page_count - 2:
+        raise ValueError("cold/asset counts do not match monoblock page count")
+    if gfx_page_count > asset_count:
+        raise ValueError("GFX page count exceeds asset page count")
+    if asset_count and palette_asset_index >= asset_count:
+        raise ValueError("palette asset index is outside the asset range")
     manifest = bytearray(MANIFEST_SIZE)
     manifest[:4] = MANIFEST_MAGIC
-    manifest[4] = 1
+    manifest[4] = 2
     manifest[5] = page_count
     manifest[6] = cold_count
+    manifest[7] = asset_count
     struct.pack_into("<H", manifest, 8, PAGE_SIZE)
     struct.pack_into("<H", manifest, 10, RUNTIME_ENTRY)
     struct.pack_into("<H", manifest, 12, BASE_TRANSITION)
     struct.pack_into("<H", manifest, 14, RUNTIME_PAGE_TABLE)
     struct.pack_into("<H", manifest, 16, MANIFEST_SIZE)
     struct.pack_into("<H", manifest, 18, BASE_RUNTIME_PATCH)
+    manifest[20] = 2
+    manifest[21] = 2 + cold_count
+    manifest[22] = gfx_page_count
+    manifest[23] = palette_asset_index
+    struct.pack_into("<H", manifest, 24, palette_length)
+    struct.pack_into("<H", manifest, 26, asset_page_table)
+    struct.pack_into("<H", manifest, 28, palette_destination)
     return bytes(manifest)
 
 
 def build_monoblock(loader: bytes, base: bytes, runtime: bytes,
-                    cold_pages: list[bytes]) -> tuple[bytes, dict[str, object]]:
-    pages = [base, runtime, *cold_pages]
-    manifest = make_manifest(len(pages), len(cold_pages))
+                    cold_pages: list[bytes], asset_pages: list[bytes] | None = None,
+                    *, gfx_page_count: int = 0,
+                    palette_asset_index: int = 0,
+                    palette_length: int = 0,
+                    asset_page_table: int = 0,
+                    palette_destination: int = 0) -> tuple[bytes, dict[str, object]]:
+    if asset_pages is None:
+        asset_pages = []
+    pages = [base, runtime, *cold_pages, *asset_pages]
+    manifest = make_manifest(
+        len(pages), len(cold_pages), len(asset_pages), gfx_page_count,
+        palette_asset_index, palette_length, asset_page_table,
+        palette_destination,
+    )
     image = make_header(len(loader)) + loader + manifest + b"".join(pages)
     expected = HEADER_SIZE + len(loader) + MANIFEST_SIZE + len(pages) * PAGE_SIZE
     if len(image) != expected:
         raise AssertionError("internal monoblock size mismatch")
     description: dict[str, object] = {
         "format": "Shatranj Sprinter monoblock",
-        "version": 1,
+        "version": 2,
         "header_size": HEADER_SIZE,
         "loader_load": LOADER_LOAD,
         "loader_size": len(loader),
@@ -94,6 +121,14 @@ def build_monoblock(loader: bytes, base: bytes, runtime: bytes,
         "base_page_index": 0,
         "runtime_page_index": 1,
         "cold_page_count": len(cold_pages),
+        "cold_page_range": [2, 2 + len(cold_pages)],
+        "asset_page_count": len(asset_pages),
+        "asset_page_range": [2 + len(cold_pages), len(pages)],
+        "gfx_page_count": gfx_page_count,
+        "palette_asset_index": palette_asset_index,
+        "palette_length": palette_length,
+        "asset_page_table": asset_page_table,
+        "palette_destination": palette_destination,
         "runtime_entry": RUNTIME_ENTRY,
         "base_transition": BASE_TRANSITION,
         "runtime_page_table": RUNTIME_PAGE_TABLE,
@@ -109,6 +144,7 @@ def main() -> int:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--cold-page", type=Path, action="append", default=[])
     parser.add_argument("--bank-manifest", type=Path)
+    parser.add_argument("--asset-manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
     args = parser.parse_args()
@@ -127,7 +163,25 @@ def main() -> int:
         else:
             cold_paths = args.cold_page
         cold_pages = [require_page(path, allow_short=False) for path in cold_paths]
-        image, description = build_monoblock(loader, base, runtime, cold_pages)
+        asset_pages: list[bytes] = []
+        asset_manifest: dict[str, object] = {}
+        if args.asset_manifest:
+            asset_manifest = json.loads(args.asset_manifest.read_text(encoding="utf-8"))
+            asset_paths = [Path(value) for value in asset_manifest["page_files"]]
+            asset_pages = [require_page(path, allow_short=False) for path in asset_paths]
+            if int(asset_manifest["page_count"]) != len(asset_pages):
+                raise ValueError("asset manifest page count is stale")
+        palette = asset_manifest.get("palette", {})
+        if not isinstance(palette, dict):
+            raise ValueError("asset palette descriptor is invalid")
+        image, description = build_monoblock(
+            loader, base, runtime, cold_pages, asset_pages,
+            gfx_page_count=int(asset_manifest.get("gfx_page_count", 0)),
+            palette_asset_index=int(palette.get("page_index", 0)),
+            palette_length=int(palette.get("length", 0)),
+            asset_page_table=0x8160 if asset_pages else 0,
+            palette_destination=0xB710 if asset_pages else 0,
+        )
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"make_sprinter_exe: {exc}") from exc
 
@@ -139,6 +193,7 @@ def main() -> int:
     )
     print(
         f"[OK] Sprinter PRELOAD monoblock: {len(cold_pages)} cold bank(s), "
+        f"{len(asset_pages)} asset page(s), "
         f"{len(image)} bytes"
     )
     return 0

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Negative and determinism tests for the Sprinter Stage-1 tooling."""
+"""Negative and determinism tests for the Sprinter monoblock tooling."""
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -26,17 +27,22 @@ class SprinterMonoblockTests(unittest.TestCase):
         base = b"base"
         runtime = b"runtime"
         cold = bytes([0xA5]) * make_sprinter_exe.PAGE_SIZE
+        asset = bytes([0x5A]) * make_sprinter_exe.PAGE_SIZE
         first, manifest1 = make_sprinter_exe.build_monoblock(
             loader,
             base.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
             runtime.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
-            [cold],
+            [cold], [asset], gfx_page_count=1, palette_asset_index=0,
+            palette_length=768, asset_page_table=0x8160,
+            palette_destination=0xB710,
         )
         second, manifest2 = make_sprinter_exe.build_monoblock(
             loader,
             base.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
             runtime.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
-            [cold],
+            [cold], [asset], gfx_page_count=1, palette_asset_index=0,
+            palette_length=768, asset_page_table=0x8160,
+            palette_destination=0xB710,
         )
         self.assertEqual(first, second)
         self.assertEqual(manifest1, manifest2)
@@ -44,8 +50,14 @@ class SprinterMonoblockTests(unittest.TestCase):
         self.assertEqual(
             len(first),
             make_sprinter_exe.HEADER_SIZE + len(loader) +
-            make_sprinter_exe.MANIFEST_SIZE + 3 * make_sprinter_exe.PAGE_SIZE,
+            make_sprinter_exe.MANIFEST_SIZE + 4 * make_sprinter_exe.PAGE_SIZE,
         )
+        manifest_offset = make_sprinter_exe.HEADER_SIZE + len(loader)
+        binary_manifest = first[manifest_offset:manifest_offset + 32]
+        self.assertEqual(binary_manifest[4], 2)
+        self.assertEqual(binary_manifest[6:8], bytes((1, 1)))
+        self.assertEqual(binary_manifest[20:24], bytes((2, 3, 1, 0)))
+        self.assertEqual(int.from_bytes(binary_manifest[24:26], "little"), 768)
 
     def test_short_packed_bank_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
@@ -60,6 +72,10 @@ class SprinterMonoblockTests(unittest.TestCase):
                 make_sprinter_exe.MAX_PAGES + 1,
                 make_sprinter_exe.MAX_PAGES - 1,
             )
+
+    def test_corrupt_asset_counts_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cold/asset counts"):
+            make_sprinter_exe.make_manifest(5, 1, 1)
 
 
 class SprinterBankTests(unittest.TestCase):
@@ -81,6 +97,51 @@ class SprinterBankTests(unittest.TestCase):
 
 
 class SprinterPolicyTests(unittest.TestCase):
+    def test_libman_bridges_preserve_sdcc_iy_frame_registers(self) -> None:
+        text = (ROOT / "asm/sprinter/gfx_bridge.asm").read_text(encoding="ascii")
+        load = text.split("_sprinter_gfx_load:", 1)[1].split(
+            "_sprinter_gfx_unload:", 1
+        )[0]
+        unload = text.split("_sprinter_gfx_unload:", 1)[1]
+        for block in (load, unload):
+            self.assertIn("PUSH IX", block)
+            self.assertIn("PUSH IY", block)
+            self.assertIn("POP IY", block)
+            self.assertIn("POP IX", block)
+
+    def test_video_mode_bridge_preserves_sdcc_frame_registers(self) -> None:
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        block = text.split("_sprinter_video_graphics:", 1)[1].split(
+            "; SetVMod changes the geometry", 1
+        )[0]
+        self.assertIn("PUSH IX", block)
+        self.assertIn("PUSH IY", block)
+        self.assertEqual(block.count("POP IY"), 2)
+        self.assertEqual(block.count("POP IX"), 2)
+
+    def test_startup_uses_gfx_window_and_clear_contract(self) -> None:
+        runtime = (ROOT / "src/sprinter/gfx_runtime.c").read_text(encoding="ascii")
+        self.assertNotIn("gfx320_set_vram_window", runtime)
+        self.assertIn("gfx320_clear(0u, GFX_TARGET_BUF0)", runtime)
+        self.assertIn("gfx320_clear(0u, GFX_TARGET_BUF1)", runtime)
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        self.assertIn("fill(0u, 0u, 320u, 256u", renderer)
+
+    def test_image_entry_constants_match_the_manifest_tool(self) -> None:
+        text = (ROOT / "asm/sprinter/image_layout.inc").read_text(encoding="ascii")
+        values = {
+            name: int(value, 16)
+            for name, value in re.findall(
+                r"DEFC\s+(SPRINTER_[A-Z_]+)\s*=\s*0x([0-9A-Fa-f]+)", text
+            )
+        }
+        self.assertEqual(
+            values["SPRINTER_RUNTIME_ENTRY"], make_sprinter_exe.RUNTIME_ENTRY
+        )
+        self.assertEqual(
+            values["SPRINTER_BASE_TRANSITION"], make_sprinter_exe.BASE_TRANSITION
+        )
+
     def test_project_fixed_layout_is_valid(self) -> None:
         symbols, stack_top, headroom = gen_sprinter_layout.load_layout(
             ROOT / "src/sprinter/fixed_layout.json"
@@ -91,10 +152,15 @@ class SprinterPolicyTests(unittest.TestCase):
 
     def test_direct_disk_rst_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
-            path = Path(temp_name) / "bad.asm"
-            path.write_text("ld c,DSS_READ\nrst 0x10\n", encoding="ascii")
-            failures = check_sprinter_forbidden_dss.scan(path)
-            self.assertEqual(len(failures), 1)
+            for index, source in enumerate((
+                "ld c,DSS_READ\nrst 0x10\n",
+                "ll0: ld c,13h\nrst 10h\n",
+                "ld c,#13\nrst #10\n",
+            )):
+                path = Path(temp_name) / f"bad-{index}.asm"
+                path.write_text(source, encoding="ascii")
+                failures = check_sprinter_forbidden_dss.scan(path)
+                self.assertEqual(len(failures), 1, source)
 
     def test_win3_and_win1_shared_imports_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:

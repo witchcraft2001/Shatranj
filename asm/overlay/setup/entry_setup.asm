@@ -15,7 +15,12 @@ EXTERN _netchesszx_mqtt_code
 EXTERN _netchesszx_direct_host
 EXTERN _netchesszx_direct_port
 
+IFDEF NETCHESSZX_SPRINTER
+INCLUDE "sprinter_layout.inc"
+CTX             EQU SPRINTER_OVERLAY_CONTEXT
+ELSE
 CTX             EQU 0x5FE0
+ENDIF
 CTX_KEY         EQU CTX + 0
 CTX_FORCE_LO    EQU CTX + 1
 CTX_FORCE_HI    EQU CTX + 2

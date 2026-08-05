@@ -16,6 +16,17 @@ DISK_FUNCTIONS = {
 }
 
 
+def normalize_function(token: str) -> str:
+    value = token.rstrip(",").upper()
+    if value.endswith("H") and re.fullmatch(r"[0-9A-F]+H", value):
+        return f"0X{int(value[:-1], 16):02X}"
+    if value.startswith("#") and re.fullmatch(r"#[0-9A-F]+", value):
+        return f"0X{int(value[1:], 16):02X}"
+    if value.startswith("0X") and re.fullmatch(r"0X[0-9A-F]+", value):
+        return f"0X{int(value, 16):02X}"
+    return value
+
+
 def scan(path: Path) -> list[str]:
     if path.name == "preload_loader.asm":
         return []
@@ -31,7 +42,7 @@ def scan(path: Path) -> list[str]:
             in_gate = False
         match = re.search(r"\bLD\s+C\s*,\s*([^\s]+)", code, re.IGNORECASE)
         if match:
-            current_c = match.group(1).rstrip(",").upper()
+            current_c = normalize_function(match.group(1))
         if re.search(r"\bRST\s+(?:0X10|#10|10H)\b", code, re.IGNORECASE):
             if not in_gate and current_c in DISK_FUNCTIONS:
                 failures.append(

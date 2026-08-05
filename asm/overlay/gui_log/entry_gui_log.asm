@@ -20,7 +20,12 @@ EXTERN _gui_log_add_chat_ovl
 EXTERN _gui_log_notify_msg_ovl
 EXTERN _gui_log_remove_last_move_ovl
 
+IFDEF NETCHESSZX_SPRINTER
+INCLUDE "sprinter_layout.inc"
+chat_clock_line_src EQU SPRINTER_CLOCK_SAVE
+ELSE
 chat_clock_line_src EQU 0x5e92
+ENDIF
 
     DEFB 4
     DW _gui_log_add_move_ovl_entry

@@ -13,6 +13,18 @@ _about_render_ovl_entry:
     ld hl, 0
     ret
 
+ELIFDEF NETCHESSZX_SPRINTER
+
+EXTERN _spectrum_render_about
+
+    DEFB 1
+    DW _about_render_ovl_entry
+
+_about_render_ovl_entry:
+    call _spectrum_render_about
+    ld hl, 1
+    ret
+
 ELSE
 
 EXTERN ovl_close_overlay_file

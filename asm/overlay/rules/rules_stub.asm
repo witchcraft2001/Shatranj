@@ -3,8 +3,9 @@ SECTION code_user
 PUBLIC _rules_hints_ovl
 PUBLIC _rules_hints_clear_ovl
 EXTERN _spectrum_board_view_redraw_square
-EXTERN _netchesszx_board_theme_index
 EXTERN _netchesszx_hinted_rows
+IFNDEF NETCHESSZX_SPRINTER
+EXTERN _netchesszx_board_theme_index
 EXTERN _spectrum_board_view_flipped
 EXTERN board_theme_hint_inks
 EXTERN compute_square_bc
@@ -14,6 +15,7 @@ EXTERN compute_screen_base
 EXTERN board_row
 EXTERN board_col
 EXTERN tmp_attr
+ENDIF
 PUBLIC _rules_play_ovl
 PUBLIC _rules_check_ovl
 
@@ -68,6 +70,10 @@ _rules_hints_ovl:
     inc de
     ldi
     ldi
+IFDEF NETCHESSZX_SPRINTER
+    xor a
+    ld (r_hint_ink), a
+ELSE
     ld a, (_netchesszx_board_theme_index)
     ld hl, board_theme_hint_inks
     ld e, a
@@ -75,6 +81,7 @@ _rules_hints_ovl:
     add hl, de
     ld a, (hl)
     ld (r_hint_ink), a
+ENDIF
     xor a
 rh_loop:
     ld (r_to), a
@@ -116,6 +123,7 @@ rh_rot_loop:
     jr nz, rh_rot_loop
     or (hl)
     ld (hl), a
+IFNDEF NETCHESSZX_SPRINTER
     ld a, (_spectrum_board_view_flipped)
     or a
     jr z, rh_store_spec
@@ -125,6 +133,7 @@ rh_rot_loop:
     ld a, 7
     sub c
     ld c, a
+ENDIF
 rh_store_spec:
     ld hl, r_tmp
     ld (hl), b
@@ -183,6 +192,16 @@ rhc_next_row:
     ret
 
 draw_square_hint:
+IFDEF NETCHESSZX_SPRINTER
+    ld a, (r_tmp + 1)
+    ld h, a
+    ld a, (r_tmp)
+    ld l, a
+    push hl
+    call _spectrum_board_view_redraw_square
+    pop bc
+    ret
+ELSE
     ld a, (hl)
     ld (board_row), a
     inc hl
@@ -247,6 +266,7 @@ draw_dot_row:
     or d
     ld (hl), a
     ret
+ENDIF
 
 
 _rules_play_ovl:
@@ -1161,7 +1181,12 @@ r_ar:           DEFB 0
 r_af:           DEFB 0
 r_scan_piece:   DEFB 0
 ; Must equal the linked _overlay_scratch_base; check_lowmem_layout.py proves it.
+IFDEF NETCHESSZX_SPRINTER
+INCLUDE "sprinter_layout.inc"
+r_tmp           EQU SPRINTER_OVERLAY_SCRATCH
+ELSE
 r_tmp           EQU 0x672B
+ENDIF
 rules_tmp_size  EQU 64
 
 r_hint_ink:

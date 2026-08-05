@@ -11,7 +11,12 @@ EXTERN _side_to_move
 EXTERN _castle_rights
 EXTERN _ep_square
 
+IFDEF NETCHESSZX_SPRINTER
+INCLUDE "sprinter_layout.inc"
+NETCHESSZX_CHESS_BOARD EQU SPRINTER_CHESS_BOARD
+ELSE
 NETCHESSZX_CHESS_BOARD EQU 0x5f60
+ENDIF
 
     DEFB 4
     DW _board_apply_ovl_entry

@@ -22,7 +22,8 @@ def map_constants(path: Path) -> dict[str, int]:
     }
 
 
-def validate(manifest: dict[str, object], sources: list[Path]) -> list[str]:
+def validate(manifest: dict[str, object], sources: list[Path],
+             imports: dict[str, object] | None = None) -> list[str]:
     failures: list[str] = []
     for source in sources:
         text = source.read_text(encoding="utf-8", errors="replace")
@@ -45,16 +46,33 @@ def validate(manifest: dict[str, object], sources: list[Path]) -> list[str]:
                 failures.append(
                     f"module {module_id}: persistent import {name}=0x{address:04X} is in WIN3"
                 )
+    if imports is not None:
+        bank_ids = [int(item["id"]) for item in manifest.get("modules", [])]
+        import_ids = [int(item["id"]) for item in imports.get("modules", [])]
+        if bank_ids != import_ids:
+            failures.append("cold atlas and import manifest cover different module IDs")
+        for module in imports.get("modules", []):
+            module_id = int(module["id"])
+            for item in module.get("imports", []):
+                address = int(item.get("address", 0))
+                if not 0x8000 <= address < 0xC000:
+                    failures.append(
+                        f"module {module_id}: undeclared/non-WIN2 import "
+                        f"{item.get('symbol')}=0x{address:04X}"
+                    )
     return failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--imports", type=Path)
     parser.add_argument("--source", type=Path, action="append", default=[])
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    failures = validate(manifest, args.source)
+    imports = json.loads(args.imports.read_text(encoding="utf-8")) \
+        if args.imports else None
+    failures = validate(manifest, args.source, imports)
     if failures:
         for failure in failures:
             print(f"[ERR] {failure}", file=sys.stderr)

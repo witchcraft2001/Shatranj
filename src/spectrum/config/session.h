@@ -107,8 +107,13 @@ const char *netchesszx_session_start_text(void);
     (netchesszx_transport == NETCHESSZX_TRANSPORT_MQTT)
 #define netchesszx_local_is_white() \
     (netchesszx_local_color == NETCHESSZX_COLOR_WHITE)
+#ifdef NETCHESSZX_SPRINTER_STAGE2_ECHO
+#define netchesszx_session_has_local_turn(white_turn) \
+    ((uint8_t)((void)(white_turn), 1u))
+#else
 #define netchesszx_session_has_local_turn(white_turn) \
     ((uint8_t)((white_turn) == netchesszx_local_is_white()))
+#endif
 #define netchesszx_remote_color() \
     (netchesszx_local_color ^ 1u)
 #define netchesszx_local_side_char() \

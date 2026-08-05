@@ -4,6 +4,7 @@
 SECTION code_user
 
 INCLUDE "sprinter_layout.inc"
+INCLUDE "asm/sprinter/image_layout.inc"
 
 PUBLIC sprinter_base_transition
 PUBLIC sprinter_base_probe
@@ -17,11 +18,11 @@ sprinter_base_transition:
     OUT (0xC2),A                  ; install the permanent WIN2 runtime page
     LD A,(SPRINTER_LOADER_WIN3)
     OUT (0xE2),A                  ; WIN3 is scratch-only after publication
-    JP 0x8240
+    JP SPRINTER_RUNTIME_ENTRY
 
     DEFS 0x0020-$,0
 
-; Used through a generated WIN2 far-call thunk from each diagnostic cold bank.
+; Used through generated WIN2 far-call thunks from production cold modules.
 sprinter_base_probe:
     LD HL,0xBACE
     XOR A
@@ -31,5 +32,4 @@ sprinter_base_probe:
 sprinter_base_canary:
     DEFW 0x5348                   ; "SH"
 
-base_banner:
-    DEFB "Shatranj Sprinter base bank",13,10,0
+    DEFS 0x0100-$,0

@@ -24,19 +24,22 @@ MAX_OVERLAY_ID = 14
 class ModuleSpec:
     overlay_id: int
     name: str
-    source: Path
+    inputs: tuple[Path, ...]
 
 
 def parse_spec(text: str) -> ModuleSpec:
     parts = text.split(":", 2)
     if len(parts) != 3:
-        raise ValueError(f"bad --module value {text!r}; expected ID:NAME:SOURCE")
+        raise ValueError(f"bad --module value {text!r}; expected ID:NAME:INPUT[,INPUT]")
     overlay_id = int(parts[0], 0)
     if not 0 <= overlay_id <= MAX_OVERLAY_ID:
         raise ValueError(f"overlay ID {overlay_id} is outside 0..{MAX_OVERLAY_ID}")
     if not re.fullmatch(r"[a-z][a-z0-9_]*", parts[1]):
         raise ValueError(f"invalid module name: {parts[1]!r}")
-    return ModuleSpec(overlay_id, parts[1], Path(parts[2]).resolve())
+    inputs = tuple(Path(item).resolve() for item in parts[2].split(",") if item)
+    if not inputs:
+        raise ValueError(f"module {parts[1]!r} has no inputs")
+    return ModuleSpec(overlay_id, parts[1], inputs)
 
 
 def allocate_modules(sizes: list[int]) -> list[tuple[int, int]]:
@@ -75,11 +78,16 @@ def validate_entry_table(data: bytes, base: int, name: str) -> tuple[int, list[i
 def assemble(z80asm: str, root: Path, build_dir: Path, spec: ModuleSpec,
              address: int, suffix: str) -> tuple[bytes, Path]:
     output = build_dir / f"{spec.name}{suffix}.bin"
+    command_inputs: list[str]
     local_source = build_dir / f"{spec.name}{suffix}.asm"
-    shutil.copyfile(spec.source, local_source)
+    if len(spec.inputs) == 1 and spec.inputs[0].suffix.lower() == ".asm":
+        shutil.copyfile(spec.inputs[0], local_source)
+        command_inputs = [local_source.name]
+    else:
+        command_inputs = [str(path) for path in spec.inputs]
     command = [
         z80asm, f"-I={root}", f"-I={build_dir}", "-O=.", "-b", "-m",
-        f"-r=0x{address:04X}", f"-o={output.name}", local_source.name,
+        f"-r=0x{address:04X}", f"-o={output.name}", *command_inputs,
     ]
     subprocess.run(command, cwd=build_dir, check=True)
     candidates = [output.with_suffix(".map"), local_source.with_suffix(".map")]
@@ -164,6 +172,7 @@ def main() -> int:
                 "entry_count": count,
                 "entries": entries,
                 "map": stable_path(map_path, root),
+                "inputs": [stable_path(path, root) for path in spec.inputs],
             }
         atlas_out = args.atlas_out.resolve()
         manifest_out = args.manifest_out.resolve()

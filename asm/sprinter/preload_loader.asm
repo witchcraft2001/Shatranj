@@ -9,6 +9,7 @@
 SECTION code_user
 
 INCLUDE "sprinter_layout.inc"
+INCLUDE "asm/sprinter/image_layout.inc"
 
 DEFC DSS_READ = 0x13
 DEFC DSS_CLOSE = 0x12
@@ -67,7 +68,7 @@ loader_magic_loop:
     INC HL
     DJNZ loader_magic_loop
     LD A,(L_MANIFEST+4)
-    CP 1
+    CP 2
     JP NZ,loader_fail_format
     LD A,(L_MANIFEST+5)
     CP 2
@@ -76,18 +77,25 @@ loader_magic_loop:
     JP NC,loader_fail_format
     LD (L_PAGE_COUNT),A
     LD B,A
+    LD A,(L_MANIFEST+6)
+    LD C,A
+    LD A,(L_MANIFEST+7)
+    ADD A,C
+    ADD A,2
+    CP B
+    JP NZ,loader_fail_format
     LD HL,(L_MANIFEST+8)
     LD DE,PAGE_SIZE
     OR A
     SBC HL,DE
     JP NZ,loader_fail_format
     LD HL,(L_MANIFEST+10)
-    LD DE,0x8240
+    LD DE,SPRINTER_RUNTIME_ENTRY
     OR A
     SBC HL,DE
     JP NZ,loader_fail_format
     LD HL,(L_MANIFEST+12)
-    LD DE,0x4000
+    LD DE,SPRINTER_BASE_TRANSITION
     OR A
     SBC HL,DE
     JP NZ,loader_fail_format
@@ -103,6 +111,42 @@ loader_magic_loop:
     JP NZ,loader_fail_format
     LD HL,(L_MANIFEST+18)
     LD DE,0x4001
+    OR A
+    SBC HL,DE
+    JP NZ,loader_fail_format
+    LD A,(L_MANIFEST+20)
+    CP 2
+    JP NZ,loader_fail_format
+    LD A,(L_MANIFEST+6)
+    ADD A,2
+    LD B,A
+    LD A,(L_MANIFEST+21)
+    CP B
+    JP NZ,loader_fail_format
+    LD A,(L_MANIFEST+22)
+    CP 5
+    JP NC,loader_fail_format
+    LD B,A
+    LD A,(L_MANIFEST+7)
+    CP 5
+    JP NZ,loader_fail_format
+    CP B
+    JP C,loader_fail_format
+    LD A,(L_MANIFEST+23)
+    CP 5
+    JP NC,loader_fail_format
+    LD HL,(L_MANIFEST+24)
+    LD DE,768
+    OR A
+    SBC HL,DE
+    JP NZ,loader_fail_format
+    LD HL,(L_MANIFEST+26)
+    LD DE,SPRINTER_ASSET_PAGE_TABLE
+    OR A
+    SBC HL,DE
+    JP NZ,loader_fail_format
+    LD HL,(L_MANIFEST+28)
+    LD DE,SPRINTER_GFX_PALETTE
     OR A
     SBC HL,DE
     JP NZ,loader_fail_format
@@ -176,12 +220,49 @@ loader_page_loop:
     LD A,(L_SAVED_WIN3)
     LD (0xC000+(SPRINTER_LOADER_WIN3-0x8000)),A
 
+    ; Convert the asset payload indexes into the physical pages expected by
+    ; GFX320.  Only graphics pages are published; the RGB888 palette page is
+    ; copied into permanent WIN2 and never exposed as a tile source.
+    LD A,(L_MANIFEST+21)
+    LD E,A
+    LD D,0
+    LD HL,L_PAGES
+    ADD HL,DE
+    LD DE,0xC000+(SPRINTER_ASSET_PAGE_TABLE-0x8000)
+    LD A,(L_MANIFEST+22)
+    LD C,A
+    LD B,0
+    LDIR
+    LD A,(L_MANIFEST+7)
+    LD (0xC000+(SPRINTER_ASSET_PAGE_COUNT-0x8000)),A
+    LD A,(L_MANIFEST+22)
+    LD (0xC000+(SPRINTER_GFX_PAGE_COUNT-0x8000)),A
+    LD A,(L_MANIFEST+23)
+    LD (0xC000+(SPRINTER_PALETTE_PAGE_INDEX-0x8000)),A
+
+    ; Stage the RGB888 palette in permanent WIN2.  The source page belongs to
+    ; the same PRELOAD allocation and is mapped only for this bounded copy.
+    LD A,(L_MANIFEST+21)
+    LD B,A
+    LD A,(L_MANIFEST+23)
+    ADD A,B
+    LD E,A
+    LD D,0
+    LD HL,L_PAGES
+    ADD HL,DE
+    LD A,(HL)
+    OUT (PORT_WIN1),A
+    LD HL,0x4000
+    LD DE,0xC000+(SPRINTER_GFX_PALETTE-0x8000)
+    LD BC,768
+    LDIR
+
     ; Patch the runtime physical page into the WIN1 transition instruction.
     LD A,(L_PAGES)
     OUT (PORT_WIN1),A
     LD A,(L_PAGES+1)
     LD (0x4001),A
-    JP 0x4000
+    JP SPRINTER_BASE_TRANSITION
 
 ; Read exactly DE bytes from the PRELOAD handle into HL.  Short reads are
 ; retried; zero-byte EOF is a format failure.

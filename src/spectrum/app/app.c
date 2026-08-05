@@ -637,9 +637,15 @@ static uint8_t session_setup_start(uint8_t key)
     netchesszx_notation = setup_notation;
     netchesszx_movement_hints = setup_hints;
     netchesszx_board_theme_apply(setup_focus_board_theme);
+#ifdef NETCHESSZX_SPRINTER_STAGE2_ECHO
+    netchesszx_session_configure(NETCHESSZX_SESSION_ROLE_HOST,
+                                  NETCHESSZX_TRANSPORT_DIRECT,
+                                  NETCHESSZX_COLOR_WHITE);
+#else
     netchesszx_session_configure(setup_role,
                                   setup_transport,
                                   setup_host_color);
+#endif
     if (setup_transport == NETCHESSZX_TRANSPORT_MQTT &&
         setup_role == NETCHESSZX_SESSION_ROLE_HOST) {
         netchesszx_mqtt_session_id = mqtt_new_session_id();
@@ -1648,7 +1654,13 @@ static void apply_pending_local_move(const char *notation)
     spectrum_gui_set_board_snapshot(spectrum_board_cells());
 
     game_ply = pending_local_ply;
-    finish_applied_move(ply_text, pending_local_move, san, san_ready, display, 0u);
+    finish_applied_move(ply_text, pending_local_move, san, san_ready, display,
+#ifdef NETCHESSZX_SPRINTER_STAGE2_ECHO
+                        1u
+#else
+                        0u
+#endif
+    );
     HOST_SESSION_OBSERVE_MOVE_RESULT(notation);
 }
 

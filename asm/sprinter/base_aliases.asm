@@ -1,0 +1,9 @@
+SECTION code_user
+
+PUBLIC _spectrum_board_view_redraw_square
+PUBLIC _spectrum_board_view_flipped
+EXTERN _spectrum_gui_redraw_square
+EXTERN _spectrum_gui_board_flipped
+
+DEFC _spectrum_board_view_redraw_square = _spectrum_gui_redraw_square
+DEFC _spectrum_board_view_flipped = _spectrum_gui_board_flipped

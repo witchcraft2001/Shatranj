@@ -19,9 +19,12 @@ def main() -> int:
     parser.add_argument("--make", default="make")
     parser.add_argument("--exe", type=Path, required=True)
     parser.add_argument("--bank-manifest", type=Path, required=True)
+    parser.add_argument("--import-manifest", type=Path, required=True)
+    parser.add_argument("--asset-manifest", type=Path, required=True)
     parser.add_argument("--monoblock-manifest", type=Path, required=True)
     args = parser.parse_args()
-    paths = [args.exe, args.bank_manifest, args.monoblock_manifest]
+    paths = [args.exe, args.bank_manifest, args.import_manifest,
+             args.asset_manifest, args.monoblock_manifest]
     before = [path.read_bytes() for path in paths]
     subprocess.run([args.make, "exe"], cwd=args.root, check=True)
     after = [path.read_bytes() for path in paths]
@@ -30,6 +33,9 @@ def main() -> int:
             raise SystemExit(f"[ERR] nondeterministic Sprinter output: {path}")
     print(f"[OK] deterministic Sprinter EXE sha256={digest(after[0])}")
     print(f"[OK] deterministic bank manifest sha256={digest(after[1])}")
+    print(f"[OK] deterministic import manifest sha256={digest(after[2])}")
+    print(f"[OK] deterministic asset manifest sha256={digest(after[3])}")
+    print(f"[OK] deterministic monoblock manifest sha256={digest(after[4])}")
     return 0
 
 
