@@ -25,8 +25,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Verify submodules and committed DLLs
-        run: make sprinter-deps-check
+      - name: Verify submodules, committed DLLs and monoblock tooling
+        run: make sprinter-deps-check sprinter-tools-test
 
   spectrum-and-host:
     name: Spectrum and host contracts

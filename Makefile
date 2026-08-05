@@ -47,19 +47,33 @@ ZX_NAME := SHATRANJ
 APP_VERSION := $(strip $(shell cat VERSION))
 SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
 SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
-SPRINTER_COLD_EXE := $(SPRINTER_BUILD_DIR)/SHATRANJ_COLD.EXE
-SPRINTER_MAP := $(SPRINTER_BUILD_DIR)/SHATRANJ_COLD.map
-SPRINTER_RUNTIME_BIN := $(SPRINTER_BUILD_DIR)/SHATRANJ_COLD_SPRINTER_RUNTIME.bin
+SPRINTER_Z88DK ?= $(abspath ../../z88dk)
+SPRINTER_ZCC ?= $(SPRINTER_Z88DK)/bin/zcc
+SPRINTER_Z80ASM ?= $(SPRINTER_Z88DK)/bin/z80asm
+SPRINTER_LAYOUT_INC := $(SPRINTER_BUILD_DIR)/sprinter_layout.inc
+SPRINTER_LAYOUT_H := $(SPRINTER_BUILD_DIR)/sprinter_layout.h
+SPRINTER_LAYOUT_STAMP := $(SPRINTER_BUILD_DIR)/sprinter_layout.stamp
+SPRINTER_LOADER_BIN := $(SPRINTER_BUILD_DIR)/preload_loader.bin
+SPRINTER_LOADER_MAP := $(SPRINTER_BUILD_DIR)/preload_loader.map
+SPRINTER_BASE_BIN := $(SPRINTER_BUILD_DIR)/base_bank.bin
+SPRINTER_BASE_MAP := $(SPRINTER_BUILD_DIR)/base_bank.map
+SPRINTER_RUNTIME_BIN := $(SPRINTER_BUILD_DIR)/runtime.bin
+SPRINTER_RUNTIME_MAP := $(SPRINTER_BUILD_DIR)/runtime.map
+SPRINTER_ATLAS_INC := $(SPRINTER_BUILD_DIR)/sprinter_atlas.inc
+SPRINTER_FAR_THUNKS_INC := $(SPRINTER_BUILD_DIR)/sprinter_far_thunks.inc
+SPRINTER_BANK_MANIFEST := $(SPRINTER_BUILD_DIR)/bank_manifest.json
+SPRINTER_MONOBLOCK_MANIFEST := $(SPRINTER_BUILD_DIR)/monoblock_manifest.json
 SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
 SPRINTER_GFX := $(SPRINTER_RELEASE_DIR)/GFX320.DLL
 SPRINTER_SMOKE_IMAGE := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
-SPRINTER_SRC := asm/sprinter/runtime_origin.asm src/sprinter/bootstrap.asm
-SPRINTER_ZCCFLAGS := -vn -m -compiler=sdcc -clib=default \
-                     -Cs--reserve-regs-iy -Cs--no-reg-params \
-                     -DNETCHESSZX_SPRINTER -DNETCHESSZX_SDCC_IY \
-                     -pragma-define:CRT_STACK=0xBFF0 \
-                     -pragma-define:CRT_ENABLE_COMMANDLINE=0 \
-                     -Ca-Iextern/libman/libman/z80asm
+SPRINTER_SRC := asm/sprinter/preload_loader.asm \
+                 asm/sprinter/base_bank.asm \
+                 asm/sprinter/runtime.asm \
+                 asm/sprinter/runtime_api.inc \
+                 asm/sprinter/cold/saveload_bank.asm \
+                 asm/sprinter/cold/fileui_bank.asm \
+                 src/sprinter/fixed_layout.json \
+                 src/sprinter/base_exports.json
 ZX_ORG := 28672
 ASSET_ASM := assets/spectrum/ui_runtime_assets.asm
 ABOUT_BOARD := assets/spectrum/about_board.bin
@@ -382,12 +396,18 @@ MQTT_CONNECT_OVL_CFLAGS := -DNETCHESSZX_MQTT_PORT=$(MQTT_PORT)
 
 .NOTPARALLEL:
 
-.PHONY: all check full-check module-guards layering-check layering-report overlay-cap-check overlay-cap-report overlay-entry-abi-check transport-contract-check mqtt-client-id-check pc-direct-policy-check pc-policy-guard spectrum-direct-policy-check session-boundaries-check test session-core-test session-mqtt-parity-test session-direct-core-test session-direct-parity-test rules-oracle session-spectrum-pair-test tap tap-direct-overlay tap-divmmc tap-next next nex nex-size-report sdcc-iy-contract-check abi-manifest abi-next-manifest abi-baseline abi-next-baseline abi-check abi-next-check size-report size-baseline size-check literal-report exe sprinter-deps-check sprinter-check sprinter-smoke-image client qt-client pc-client mac-client client-msvc client-cmake clean clean-spectrum clean-client FORCE
+.PHONY: all check full-check module-guards layering-check layering-report overlay-cap-check overlay-cap-report overlay-entry-abi-check transport-contract-check mqtt-client-id-check pc-direct-policy-check pc-policy-guard spectrum-direct-policy-check session-boundaries-check test session-core-test session-mqtt-parity-test session-direct-core-test session-direct-parity-test rules-oracle session-spectrum-pair-test tap tap-direct-overlay tap-divmmc tap-next next nex nex-size-report sdcc-iy-contract-check abi-manifest abi-next-manifest abi-baseline abi-next-baseline abi-check abi-next-check size-report size-baseline size-check literal-report exe sprinter-deps-check sprinter-toolchain-check sprinter-tools-test sprinter-check sprinter-determinism-check sprinter-smoke-image client qt-client pc-client mac-client client-msvc client-cmake clean clean-spectrum clean-client FORCE
 
 all: check clean test tap nex client
 
 sprinter-deps-check: tools/check_sprinter_deps.py docs/sprinter-dependencies.json .gitmodules
 	$(PYTHON) tools/check_sprinter_deps.py --root .
+
+sprinter-toolchain-check: $(SPRINTER_LAYOUT_STAMP) tools/check_sprinter_toolchain.py
+	$(PYTHON) tools/check_sprinter_toolchain.py --zcc "$(SPRINTER_ZCC)" --root . --build-dir $(SPRINTER_BUILD_DIR)
+
+sprinter-tools-test:
+	$(PYTHON) -m unittest tests.tools.test_sprinter_stage1 -v
 
 $(SPRINTER_BUILD_DIR):
 	mkdir -p $(SPRINTER_BUILD_DIR)
@@ -395,23 +415,74 @@ $(SPRINTER_BUILD_DIR):
 $(SPRINTER_RELEASE_DIR):
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 
-$(SPRINTER_EXE): FORCE $(SPRINTER_SRC) src/sprinter/unet_abi.h \
-		extern/libman/libman/z80asm/libman.asm tools/make_sprinter_exe.py \
-		extern/sprinter-libs/gfx320/GFX320.DLL | $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
-	rm -f $(SPRINTER_COLD_EXE) $(SPRINTER_MAP) $(SPRINTER_RUNTIME_BIN)
-	$(ZCC) +pps_low $(SPRINTER_ZCCFLAGS) $(SPRINTER_SRC) -o $(SPRINTER_COLD_EXE)
-	$(PYTHON) tools/make_sprinter_exe.py --cold $(SPRINTER_COLD_EXE) \
-		--runtime $(SPRINTER_RUNTIME_BIN) --map $(SPRINTER_MAP) --output $(SPRINTER_EXE)
+$(SPRINTER_LAYOUT_STAMP): src/sprinter/fixed_layout.json tools/gen_sprinter_layout.py | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/gen_sprinter_layout.py --layout src/sprinter/fixed_layout.json \
+		--asm-out $(SPRINTER_LAYOUT_INC) --c-out $(SPRINTER_LAYOUT_H)
+	touch $@
+
+$(SPRINTER_EXE): FORCE $(SPRINTER_SRC) tools/gen_sprinter_layout.py \
+		tools/gen_sprinter_thunks.py tools/pack_sprinter_banks.py \
+		tools/make_sprinter_exe.py tools/check_sprinter_build.py \
+		tools/check_sprinter_imports.py tools/check_sprinter_forbidden_dss.py \
+		extern/sprinter-libs/gfx320/GFX320.DLL \
+		$(SPRINTER_LAYOUT_STAMP) | $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
+	rm -f $(SPRINTER_BUILD_DIR)/preload_loader.* $(SPRINTER_BUILD_DIR)/base_bank.* \
+		$(SPRINTER_BUILD_DIR)/runtime.* $(SPRINTER_BUILD_DIR)/*bank.bin \
+		$(SPRINTER_BUILD_DIR)/*bank.map $(SPRINTER_BUILD_DIR)/cold_page_*.bin \
+		$(SPRINTER_BUILD_DIR)/SHATRANJ_COLD.* \
+		$(SPRINTER_ATLAS_INC) $(SPRINTER_FAR_THUNKS_INC) \
+		$(SPRINTER_BANK_MANIFEST) $(SPRINTER_MONOBLOCK_MANIFEST)
+	cd $(SPRINTER_BUILD_DIR) && $(SPRINTER_Z80ASM) -I=$(CURDIR) -I=. -O=. -b -m \
+		-r=0x4000 -o=base_bank.bin $(CURDIR)/asm/sprinter/base_bank.asm
+	$(PYTHON) tools/gen_sprinter_thunks.py --map $(SPRINTER_BASE_MAP) \
+		--exports src/sprinter/base_exports.json --asm-out $(SPRINTER_FAR_THUNKS_INC)
+	$(PYTHON) tools/pack_sprinter_banks.py --root . --build-dir $(SPRINTER_BUILD_DIR) \
+		--z80asm $(SPRINTER_Z80ASM) \
+		--module 10:saveload:asm/sprinter/cold/saveload_bank.asm \
+		--module 13:fileui:asm/sprinter/cold/fileui_bank.asm \
+		--atlas-out $(SPRINTER_ATLAS_INC) --manifest-out $(SPRINTER_BANK_MANIFEST) \
+		--page-prefix $(SPRINTER_BUILD_DIR)/cold_page_
+	cd $(SPRINTER_BUILD_DIR) && $(SPRINTER_Z80ASM) -I=$(CURDIR) -I=. -O=. -b -m \
+		-r=0x8000 -o=runtime.bin $(CURDIR)/asm/sprinter/runtime.asm
+	cd $(SPRINTER_BUILD_DIR) && $(SPRINTER_Z80ASM) -I=$(CURDIR) -I=. -O=. -b -m \
+		-r=0x8100 -o=preload_loader.bin $(CURDIR)/asm/sprinter/preload_loader.asm
+	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
+		--base $(SPRINTER_BASE_BIN) --runtime $(SPRINTER_RUNTIME_BIN) \
+		--bank-manifest $(SPRINTER_BANK_MANIFEST) --manifest-out $(SPRINTER_MONOBLOCK_MANIFEST) \
+		--output $(SPRINTER_EXE)
+	rm -f $(SPRINTER_RELEASE_DIR)/SHATRANJ.OVL $(SPRINTER_RELEASE_DIR)/SHATRANJ.DAT
 	cp -f extern/sprinter-libs/gfx320/GFX320.DLL $(SPRINTER_GFX)
+	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) \
+		--loader-map $(SPRINTER_LOADER_MAP) --runtime-map $(SPRINTER_RUNTIME_MAP) \
+		--base-map $(SPRINTER_BASE_MAP) --bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST) \
+		--layout src/sprinter/fixed_layout.json --release-dir $(SPRINTER_RELEASE_DIR)
+	$(PYTHON) tools/check_sprinter_imports.py --manifest $(SPRINTER_BANK_MANIFEST) \
+		--source asm/sprinter/cold/saveload_bank.asm \
+		--source asm/sprinter/cold/fileui_bank.asm
+	$(PYTHON) tools/check_sprinter_forbidden_dss.py asm/sprinter src/sprinter
 
 $(SPRINTER_GFX): $(SPRINTER_EXE)
 	@test -f $@
 
 exe: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX)
 
-sprinter-check: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX)
-	$(PYTHON) -m unittest discover -s extern/libman/tests -p "test_z80asm_export.py" -v
-	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) --map $(SPRINTER_MAP)
+sprinter-check: sprinter-deps-check sprinter-toolchain-check $(SPRINTER_EXE) $(SPRINTER_GFX)
+	$(PYTHON) -m unittest tests.tools.test_sprinter_stage1 -v
+	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) \
+		--loader-map $(SPRINTER_LOADER_MAP) --runtime-map $(SPRINTER_RUNTIME_MAP) \
+		--base-map $(SPRINTER_BASE_MAP) --bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST) \
+		--layout src/sprinter/fixed_layout.json --release-dir $(SPRINTER_RELEASE_DIR)
+	$(PYTHON) tools/check_sprinter_imports.py --manifest $(SPRINTER_BANK_MANIFEST) \
+		--source asm/sprinter/cold/saveload_bank.asm \
+		--source asm/sprinter/cold/fileui_bank.asm
+	$(PYTHON) tools/check_sprinter_forbidden_dss.py asm/sprinter src/sprinter
+
+sprinter-determinism-check: exe
+	$(PYTHON) tools/check_sprinter_determinism.py --root . --make "$(MAKE)" \
+		--exe $(SPRINTER_EXE) --bank-manifest $(SPRINTER_BANK_MANIFEST) \
+		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST)
 
 $(SPRINTER_SMOKE_IMAGE): $(SPRINTER_EXE) $(SPRINTER_GFX) \
 		extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL \
@@ -419,7 +490,7 @@ $(SPRINTER_SMOKE_IMAGE): $(SPRINTER_EXE) $(SPRINTER_GFX) \
 	$(PYTHON) tools/make_sprinter_smoke_image.py --output $@ \
 		$(SPRINTER_EXE) $(SPRINTER_GFX) extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
 
-sprinter-smoke-image: sprinter-check $(SPRINTER_SMOKE_IMAGE)
+sprinter-smoke-image: exe $(SPRINTER_SMOKE_IMAGE)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

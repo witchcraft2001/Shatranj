@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a FAT12 smoke image with stage-0 runtime dependencies."""
+"""Create the Stage-1 FAT12 smoke image and its empty SYS/CONFIG directory."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args()
-    for tool in ("mformat", "mcopy"):
+    for tool in ("mformat", "mcopy", "mmd"):
         if shutil.which(tool) is None:
             raise SystemExit(f"missing mtools command: {tool}")
     for path in args.files:
@@ -26,6 +26,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory(dir=args.output.parent) as temp_name:
         image = Path(temp_name) / args.output.name
         subprocess.run(["mformat", "-C", "-i", str(image), "-f", "1440", "::"], check=True)
+        subprocess.run(["mmd", "-i", str(image), "::SYS"], check=True)
+        subprocess.run(["mmd", "-i", str(image), "::SYS/CONFIG"], check=True)
         for path in args.files:
             subprocess.run(["mcopy", "-i", str(image), "-o", str(path), f"::{path.name}"], check=True)
         image.replace(args.output)

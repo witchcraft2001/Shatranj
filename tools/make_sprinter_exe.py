@@ -1,57 +1,146 @@
 #!/usr/bin/env python3
-"""Merge the +pps_low cold image and the named WIN2 runtime section."""
+"""Build the deterministic Shatranj DSS PRELOAD monoblock.
+
+The executable body is deliberately simple: the primary loader, a fixed-size
+manifest and an integral number of raw 16 KiB pages.  DSS reads only the
+loader before transferring control, so the loader can allocate the complete
+page block and stream the tail without ever relying on another artifact.
+"""
 
 from __future__ import annotations
 
 import argparse
-import re
+import json
+import struct
 from pathlib import Path
 
 
+EXE_SIGNATURE = b"EXE"
+EXE_VERSION = 1
 HEADER_SIZE = 512
-RUNTIME_ORG = 0x8100
-STACK_TOP = 0xBFF0
+LOADER_LOAD = 0x8100
+LOADER_STACK = 0xBFF0
+PAGE_SIZE = 0x4000
+MANIFEST_SIZE = 32
+MANIFEST_MAGIC = b"STM1"
+RUNTIME_ENTRY = 0x8240
+BASE_TRANSITION = 0x4000
+BASE_RUNTIME_PATCH = 0x4001
+RUNTIME_PAGE_TABLE = 0x8101
+MAX_PAGES = 64
 
 
-def symbol(map_text: str, name: str) -> int:
-    match = re.search(rf"^{re.escape(name)}\s+=\s+\$([0-9A-Fa-f]+)\b", map_text, re.MULTILINE)
-    if not match:
-        raise ValueError(f"missing map symbol: {name}")
-    return int(match.group(1), 16)
+def require_page(path: Path, *, allow_short: bool) -> bytes:
+    data = path.read_bytes()
+    if not data:
+        raise ValueError(f"empty page input: {path}")
+    if len(data) > PAGE_SIZE:
+        raise ValueError(f"page input exceeds 16 KiB: {path} ({len(data)} bytes)")
+    if not allow_short and len(data) != PAGE_SIZE:
+        raise ValueError(f"packed bank must be exactly 16 KiB: {path} ({len(data)} bytes)")
+    return data.ljust(PAGE_SIZE, b"\0")
+
+
+def make_header(loader_size: int) -> bytes:
+    if not 0 < loader_size <= 0x3AF0:
+        raise ValueError(f"PRELOAD loader size is outside WIN2 body bounds: {loader_size}")
+    header = bytearray(HEADER_SIZE)
+    header[:3] = EXE_SIGNATURE
+    header[3] = EXE_VERSION
+    struct.pack_into("<I", header, 4, HEADER_SIZE)
+    struct.pack_into("<H", header, 8, loader_size)
+    struct.pack_into("<H", header, 16, LOADER_LOAD)
+    struct.pack_into("<H", header, 18, LOADER_LOAD)
+    struct.pack_into("<H", header, 20, LOADER_STACK)
+    return bytes(header)
+
+
+def make_manifest(page_count: int, cold_count: int) -> bytes:
+    if not 2 <= page_count <= MAX_PAGES:
+        raise ValueError(f"monoblock page count must be 2..{MAX_PAGES}, got {page_count}")
+    if cold_count != page_count - 2:
+        raise ValueError("cold bank count does not match monoblock page count")
+    manifest = bytearray(MANIFEST_SIZE)
+    manifest[:4] = MANIFEST_MAGIC
+    manifest[4] = 1
+    manifest[5] = page_count
+    manifest[6] = cold_count
+    struct.pack_into("<H", manifest, 8, PAGE_SIZE)
+    struct.pack_into("<H", manifest, 10, RUNTIME_ENTRY)
+    struct.pack_into("<H", manifest, 12, BASE_TRANSITION)
+    struct.pack_into("<H", manifest, 14, RUNTIME_PAGE_TABLE)
+    struct.pack_into("<H", manifest, 16, MANIFEST_SIZE)
+    struct.pack_into("<H", manifest, 18, BASE_RUNTIME_PATCH)
+    return bytes(manifest)
+
+
+def build_monoblock(loader: bytes, base: bytes, runtime: bytes,
+                    cold_pages: list[bytes]) -> tuple[bytes, dict[str, object]]:
+    pages = [base, runtime, *cold_pages]
+    manifest = make_manifest(len(pages), len(cold_pages))
+    image = make_header(len(loader)) + loader + manifest + b"".join(pages)
+    expected = HEADER_SIZE + len(loader) + MANIFEST_SIZE + len(pages) * PAGE_SIZE
+    if len(image) != expected:
+        raise AssertionError("internal monoblock size mismatch")
+    description: dict[str, object] = {
+        "format": "Shatranj Sprinter monoblock",
+        "version": 1,
+        "header_size": HEADER_SIZE,
+        "loader_load": LOADER_LOAD,
+        "loader_size": len(loader),
+        "manifest_size": MANIFEST_SIZE,
+        "page_size": PAGE_SIZE,
+        "page_count": len(pages),
+        "base_page_index": 0,
+        "runtime_page_index": 1,
+        "cold_page_count": len(cold_pages),
+        "runtime_entry": RUNTIME_ENTRY,
+        "base_transition": BASE_TRANSITION,
+        "runtime_page_table": RUNTIME_PAGE_TABLE,
+        "image_size": len(image),
+    }
+    return image, description
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cold", type=Path, required=True)
+    parser.add_argument("--loader", type=Path, required=True)
+    parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--runtime", type=Path, required=True)
-    parser.add_argument("--map", dest="map_file", type=Path, required=True)
+    parser.add_argument("--cold-page", type=Path, action="append", default=[])
+    parser.add_argument("--bank-manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--manifest-out", type=Path, required=True)
     args = parser.parse_args()
 
-    cold = bytearray(args.cold.read_bytes())
-    runtime = args.runtime.read_bytes()
-    map_text = args.map_file.read_text(encoding="utf-8")
-    load_address = int.from_bytes(cold[16:18], "little")
+    try:
+        loader = args.loader.read_bytes()
+        if not loader:
+            raise ValueError("PRELOAD loader is empty")
+        base = require_page(args.base, allow_short=True)
+        runtime = require_page(args.runtime, allow_short=True)
+        if args.bank_manifest and args.cold_page:
+            raise ValueError("use either --bank-manifest or --cold-page, not both")
+        if args.bank_manifest:
+            bank_manifest = json.loads(args.bank_manifest.read_text(encoding="utf-8"))
+            cold_paths = [Path(value) for value in bank_manifest["pages"]]
+        else:
+            cold_paths = args.cold_page
+        cold_pages = [require_page(path, allow_short=False) for path in cold_paths]
+        image, description = build_monoblock(loader, base, runtime, cold_pages)
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"make_sprinter_exe: {exc}") from exc
 
-    if cold[:3] != b"EXE" or cold[3] not in (0, 1):
-        raise SystemExit("invalid DSS EXE header produced by +pps_low CRT")
-    if int.from_bytes(cold[4:8], "little") != HEADER_SIZE:
-        raise SystemExit("unexpected DSS EXE code offset")
-    if symbol(map_text, "sprinter_runtime_start") != RUNTIME_ORG:
-        raise SystemExit("SPRINTER_RUNTIME is not linked at 0x8100")
-    if symbol(map_text, "sprinter_runtime_end") - RUNTIME_ORG != len(runtime):
-        raise SystemExit("named runtime section size does not match the map")
-    if load_address != 0x4100:
-        raise SystemExit(f"unexpected +pps_low load address: 0x{load_address:04X}")
-
-    cold[20:22] = STACK_TOP.to_bytes(2, "little")
-    body = cold[HEADER_SIZE:]
-    runtime_offset = RUNTIME_ORG - load_address
-    if len(body) > runtime_offset:
-        raise SystemExit("cold WIN1 image overlaps the WIN2 runtime")
-    image = cold[:HEADER_SIZE] + body + bytes(runtime_offset - len(body)) + runtime
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(image)
+    args.manifest_out.write_text(
+        json.dumps(description, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        f"[OK] Sprinter PRELOAD monoblock: {len(cold_pages)} cold bank(s), "
+        f"{len(image)} bytes"
+    )
     return 0
 
 

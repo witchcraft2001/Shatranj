@@ -1,0 +1,8 @@
+{
+  "exports": [
+    {
+      "name": "sprinter_base_probe",
+      "thunk": "sprinter_far_base_probe"
+    }
+  ]
+}

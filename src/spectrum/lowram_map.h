@@ -1,6 +1,18 @@
 #ifndef NETCHESSZX_SPECTRUM_LOWRAM_MAP_H
 #define NETCHESSZX_SPECTRUM_LOWRAM_MAP_H
 
+#ifdef NETCHESSZX_SPRINTER
+
+/* Sprinter keeps shared overlay state in permanent WIN2.  This generated
+   header comes from src/sprinter/fixed_layout.json; none of the Spectrum
+   0x5B00-0x67FF addresses are valid on this target. */
+#include "sprinter_layout.h"
+
+#define NETCHESSZX_LOWRAM_OVERLAY_CONTEXT_ADDR SPRINTER_OVERLAY_CONTEXT
+#define NETCHESSZX_LOWRAM_OVERLAY_CONTEXT_SIZE 8u
+
+#else
+
 /* 0x5b00-0x5bff: ZX printer buffer, untouched by the ROM IM1 ISR and esxDOS.
    Reclaimed for the UART RX ring (exactly 256 bytes, ends right where the
    0x5c00 sysvars the ROM ISR does touch begin). */
@@ -123,5 +135,7 @@
 #if NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_END > 0x6800u
 #error "overlay-only scratch overlaps overlay code slot"
 #endif
+
+#endif /* NETCHESSZX_SPRINTER */
 
 #endif
