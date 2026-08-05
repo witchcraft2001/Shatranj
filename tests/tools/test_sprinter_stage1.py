@@ -119,6 +119,14 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertEqual(block.count("POP IY"), 2)
         self.assertEqual(block.count("POP IX"), 2)
 
+    def test_win1_key_poll_gate_reads_the_frame_event_queue(self) -> None:
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        gates = text.split("; Fixed three-byte WIN2 gates.", 1)[1].split(
+            "DEFS (SPRINTER_RUNTIME_ENTRY-0x8000)-$", 1
+        )[0]
+        self.assertIn("JP _spectrum_input_poll_event", gates)
+        self.assertNotIn("JP sprinter_key_poll", gates)
+
     def test_startup_uses_gfx_window_and_clear_contract(self) -> None:
         runtime = (ROOT / "src/sprinter/gfx_runtime.c").read_text(encoding="ascii")
         self.assertNotIn("gfx320_set_vram_window", runtime)

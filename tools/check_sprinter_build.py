@@ -189,7 +189,7 @@ def main() -> int:
             0x8224: "sprinter_fat_time",
             0x8227: "sprinter_clock_ready",
             0x822A: "sprinter_frame_wait",
-            0x822D: "sprinter_key_poll",
+            0x822D: "_spectrum_input_poll_event",
         }.items():
             gate = runtime_page[address - 0x8000:address - 0x8000 + 3]
             fail_if(int.from_bytes(gate[1:3], "little") != runtime.get(target_name),

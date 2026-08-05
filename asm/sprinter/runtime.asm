@@ -221,7 +221,7 @@ sprinter_im2_chain:
     JP sprinter_fat_time
     JP sprinter_clock_ready
     JP sprinter_frame_wait
-    JP sprinter_key_poll
+    JP _spectrum_input_poll_event
     JP _spectrum_input_frame_tick
     JP _spectrum_input_poll_event
     JP _spectrum_input_flush_until_release
