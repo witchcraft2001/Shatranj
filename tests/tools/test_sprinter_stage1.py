@@ -119,6 +119,20 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertEqual(block.count("POP IY"), 2)
         self.assertEqual(block.count("POP IX"), 2)
 
+    def test_fileui_disk_wrappers_preserve_sdcc_ix_frame_register(self) -> None:
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        opendir = text.split("sprinter_esx_opendir:", 1)[1].split(
+            "sprinter_esx_readdir:", 1
+        )[0]
+        readdir = text.split("sprinter_esx_readdir_fetch:", 1)[1].split(
+            "sprinter_esx_readdir_filter:", 1
+        )[0]
+        for block in (opendir, readdir):
+            self.assertIn(
+                "PUSH IX\n    CALL sprinter_disk_gate\n    POP IX\n    RET C",
+                block,
+            )
+
     def test_win1_key_poll_gate_reads_the_frame_event_queue(self) -> None:
         text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
         gates = text.split("; Fixed three-byte WIN2 gates.", 1)[1].split(
@@ -129,11 +143,32 @@ class SprinterPolicyTests(unittest.TestCase):
 
     def test_startup_uses_gfx_window_and_clear_contract(self) -> None:
         runtime = (ROOT / "src/sprinter/gfx_runtime.c").read_text(encoding="ascii")
-        self.assertNotIn("gfx320_set_vram_window", runtime)
+        self.assertIn("gfx320_set_vram_window(GFX_VRAM_WINDOW)", runtime)
         self.assertIn("gfx320_clear(0u, GFX_TARGET_BUF0)", runtime)
         self.assertIn("gfx320_clear(0u, GFX_TARGET_BUF1)", runtime)
         renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
         self.assertIn("fill(0u, 0u, 320u, 256u", renderer)
+
+    def test_fileui_uses_a_compact_aligned_window(self) -> None:
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        self.assertIn("outline(40u, 48u, 128u, 144u", renderer)
+        self.assertIn("88u + slot * 8u), 112u, 8u", renderer)
+        self.assertIn("selected ? COLOR_NOTICE : COLOR_BLACK", renderer)
+
+    def test_cursor_unmark_redraws_the_square_without_a_gray_outline(self) -> None:
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        self.assertIn("draw_square_spec(spec, (uint8_t)spec[2], 0u)", renderer)
+        self.assertIn("draw_square_spec(spec, (uint8_t)spec[2], 1u)", renderer)
+        self.assertIn("if (mark != 0u)", renderer)
+
+    def test_ctrl_escape_accepts_ascii_and_positional_dss_forms(self) -> None:
+        runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        scan = runtime.split("sprinter_key_poll:", 1)[1].split(
+            "_sprinter_key_scan_raw:", 1
+        )[0]
+        self.assertIn("BIT 5,A", scan)
+        self.assertIn("CP 0x1B\n    JR Z,sprinter_key_ctrl_escape", scan)
+        self.assertIn("CP 0x01\n    JR Z,sprinter_key_ctrl_escape", scan)
 
     def test_image_entry_constants_match_the_manifest_tool(self) -> None:
         text = (ROOT / "asm/sprinter/image_layout.inc").read_text(encoding="ascii")

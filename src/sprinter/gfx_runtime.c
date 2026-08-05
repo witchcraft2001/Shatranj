@@ -6,6 +6,7 @@
 
 #define GFX_REQUIRED_CAPS 0x00DFu
 #define GFX_ABI_1_0 0x0100u
+#define GFX_VRAM_WINDOW 3u
 
 extern uint8_t sprinter_gfx_load(const char *name) __z88dk_fastcall;
 extern void sprinter_gfx_unload(uint8_t handle) __z88dk_fastcall;
@@ -37,6 +38,15 @@ uint8_t sprinter_gfx_start(void)
         /* Startup immediately exits through DSS on failure.  Do not enter
            libman l_free from a partially initialized loader state; DSS owns
            and reclaims the process allocation at Exit. */
+        gfx_handle = 0xFFu;
+        return 0u;
+    }
+
+    /* libman invokes gfx_init while it has temporarily mapped the DLL.  The
+       automatic choice made there is therefore loader-state dependent.  WIN1
+       holds base/cold code and WIN2 holds the runtime stack, so GFX must use
+       only WIN3 as its VRAM aperture. */
+    if (gfx320_set_vram_window(GFX_VRAM_WINDOW) != 0u) {
         gfx_handle = 0xFFu;
         return 0u;
     }

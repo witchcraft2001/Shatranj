@@ -826,6 +826,19 @@ sprinter_key_poll:
     OUT (PORT_WIN3),A
     POP AF
     OUT (PORT_WIN1),A
+    ; DSS normally supplies Esc as ASCII #1B.  Some PS/2 paths (including
+    ; Ctrl-modified Escape) supply only its positional code #01, however.
+    ; Accept both forms before the generic ASCII/positional translation.
+    LD A,(SPRINTER_KEY_MODIFIERS)
+    BIT 5,A
+    JR Z,sprinter_key_ascii
+    LD A,(SPRINTER_KEY_ASCII)
+    CP 0x1B
+    JR Z,sprinter_key_ctrl_escape
+    LD A,(SPRINTER_KEY_SCAN)
+    CP 0x01
+    JR Z,sprinter_key_ctrl_escape
+sprinter_key_ascii:
     LD A,(SPRINTER_KEY_ASCII)
     OR A
     JR Z,sprinter_key_positional
@@ -851,6 +864,7 @@ sprinter_key_escape:
     LD A,(SPRINTER_KEY_MODIFIERS)
     BIT 5,A
     JR Z,sprinter_key_escape_plain
+sprinter_key_ctrl_escape:
     XOR A
     LD (SPRINTER_DIAG_RESULT),A
     JP sprinter_cleanup
@@ -992,8 +1006,6 @@ sprinter_disk_restore_interrupts:
     POP AF
     LD HL,(SPRINTER_DISK_OUT_HL)
     POP IY
-    ; IX is a DSS result register.  In particular Move_FP returns the low
-    ; 16 bits of the file size in IX, and libman consumes that value.
     RET
 sprinter_disk_reentry:
     LD A,3
@@ -1063,9 +1075,8 @@ sprinter_esx_fcreate:
     RET
 
 sprinter_esx_fread:
-    XOR A
-    LD (SPRINTER_ESX_RESULT),A
-    LD (SPRINTER_ESX_RESULT+1),A
+    LD HL,0
+    LD (SPRINTER_ESX_RESULT),HL
     LD A,(SPRINTER_ESX_HANDLE)
     OR A
     RET Z
@@ -1173,7 +1184,11 @@ sprinter_esx_dir_append:
     LD A,0x37
     LD B,1
     LD C,DSS_F_FIRST
+    ; The cold FileUI module uses IX as its SDCC frame pointer.  libman needs
+    ; IX as a DSS result, so preserve the FileUI caller around this C call.
+    PUSH IX
     CALL sprinter_disk_gate
+    POP IX
     RET C
     LD A,1
     LD (SPRINTER_ITERATOR_ACTIVE),A
@@ -1198,7 +1213,9 @@ sprinter_esx_readdir_next:
 sprinter_esx_readdir_fetch:
     LD DE,SPRINTER_FIND_BUFFER
     LD C,DSS_F_NEXT
+    PUSH IX
     CALL sprinter_disk_gate
+    POP IX
     RET C
 sprinter_esx_readdir_filter:
     LD A,(SPRINTER_FIND_BUFFER+32)

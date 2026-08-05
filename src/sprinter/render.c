@@ -172,10 +172,10 @@ static void draw_square_spec(const char *spec, uint8_t mark, uint8_t hint_piece)
     fill(sprinter_square_x(col), sprinter_square_y(row),
          SPRINTER_SQUARE_SIZE, SPRINTER_SQUARE_SIZE, color);
     draw_piece(row, col, piece);
-    if (mark) {
+    if (mark != 0u) {
         outline(sprinter_square_x(col), sprinter_square_y(row),
                 SPRINTER_SQUARE_SIZE, SPRINTER_SQUARE_SIZE,
-                spec[2] ? COLOR_NOTICE : COLOR_OUTLINE);
+                COLOR_NOTICE);
     }
 }
 
@@ -372,18 +372,12 @@ void spectrum_render_square_with_hint(const char *spec) __z88dk_fastcall
 
 void spectrum_render_square_mark(const char *spec) __z88dk_fastcall
 {
-    uint8_t row = (uint8_t)spec[0];
-    uint8_t col = (uint8_t)spec[1];
-    if (row < 8u && col < 8u) {
-        outline(sprinter_square_x(col), sprinter_square_y(row),
-                SPRINTER_SQUARE_SIZE, SPRINTER_SQUARE_SIZE,
-                spec[2] ? COLOR_NOTICE : COLOR_OUTLINE);
-    }
+    draw_square_spec(spec, (uint8_t)spec[2], 0u);
 }
 
 void spectrum_render_square_mark_with_hint(const char *spec) __z88dk_fastcall
 {
-    draw_square_spec(spec, 1u, 1u);
+    draw_square_spec(spec, (uint8_t)spec[2], 1u);
 }
 
 static void draw_move_line(const char *line, uint8_t row)
@@ -510,8 +504,7 @@ void spectrum_render_fileui_frame(void)
 {
     fill(SPRINTER_BOARD_X, SPRINTER_BOARD_Y,
          SPRINTER_BOARD_SIZE, SPRINTER_BOARD_SIZE, COLOR_BLACK);
-    outline((uint16_t)(SPRINTER_BOARD_X - 1u), (uint8_t)(SPRINTER_BOARD_Y - 1u),
-            SPRINTER_BOARD_SIZE + 2u, SPRINTER_BOARD_SIZE + 2u, COLOR_CYAN);
+    outline(40u, 48u, 128u, 144u, COLOR_CYAN);
 }
 
 void spectrum_render_fileui_select(uint16_t slot_on) __z88dk_fastcall
@@ -519,8 +512,8 @@ void spectrum_render_fileui_select(uint16_t slot_on) __z88dk_fastcall
     uint8_t slot = (uint8_t)slot_on;
     uint8_t selected = (uint8_t)(slot_on >> 8);
     if (slot < 10u) {
-        outline(16u, (uint8_t)(72u + slot * 12u), 176u, 8u,
-                selected ? COLOR_NOTICE : COLOR_CYAN);
+        outline(48u, (uint8_t)(88u + slot * 8u), 112u, 8u,
+                selected ? COLOR_NOTICE : COLOR_BLACK);
     }
 }
 
