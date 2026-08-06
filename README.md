@@ -218,7 +218,7 @@ The repository Makefile is the supported entry point:
 ```sh
 make tap              # classic TAP + OVL + DAT
 make nex              # self-contained Spectrum Next NEX
-make exe              # Sprinter Stage-2 hot-seat EXE + GFX320.DLL
+make exe              # Sprinter EXE + GFX320 and pinned uNet DLLs
 make sprinter-check   # pinned deps, full link, host tests and image gates
 make client-test      # Qt build and tests
 make client           # Qt release packaging
@@ -233,11 +233,11 @@ together. `make nex` writes the self-contained Next image to
 PORT=5000 MQTT_HOST=broker.example MQTT_PORT=1883 MQTT_CODE=ABC123 make tap
 ```
 
-The Sprinter target is currently a network-independent graphical hot-seat
-client. It provides the complete board UI, local two-player game loop and NCZS
-save browser; real uNet transport is reserved for Stage 3. Its scope, controls
-and pending real-hardware checklist are documented in
-[`docs/sprinter-stage2.md`](docs/sprinter-stage2.md).
+The Sprinter target uses the full portable application with MQTT and Direct
+guest networking through `UNETESP.DLL` or `UNETRTL.DLL`, selected by the DSS
+`NET` environment variable. Direct hosting remains unavailable until uNet gains
+listen/accept support. The Stage-3 scope and pending MAME/real-hardware stress
+checklist are documented in [`docs/sprinter-stage3.md`](docs/sprinter-stage3.md).
 
 For prerequisites, the Qt development loop, and platform-specific packaging,
 see [`client/README.md`](client/README.md). The complete validation and release

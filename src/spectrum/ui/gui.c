@@ -6,9 +6,14 @@
 #include "common/chess/move_coords.h"
 #include "spectrum/config/session.h"
 #include "spectrum/lowram_map.h"
+#include "spectrum/platform/input.h"
 #include "spectrum/platform/platform.h"
 #include "spectrum/platform/text.h"
 #include "spectrum/platform/uart.h"
+#ifdef NETCHESSZX_SPRINTER
+#include "sprinter/unet_runtime.h"
+extern uint8_t sprinter_render_present(void);
+#endif
 
 #include <string.h>
 
@@ -74,6 +79,9 @@ static uint8_t timer_force_redraw;
 static uint8_t menu_visible;
 static uint8_t menu_focus;
 static uint8_t about_visible;
+#ifdef NETCHESSZX_SPRINTER
+static uint8_t modal_slow;
+#endif
 static uint16_t notice_ticks;
 static uint8_t notice_error;
 static uint8_t notice_success;
@@ -405,6 +413,13 @@ void spectrum_gui_notify_success(const char *text) NETCHESSZX_FASTCALL
 
 void spectrum_gui_tick(void)
 {
+#ifdef NETCHESSZX_SPRINTER
+    /* WIN2 frame_wait only paces and services DSS.  Keep input polling and
+       buffer publication local to the already mapped UI bank so UI animation
+       paths never recursively enter the resident page gate. */
+    spectrum_input_frame_tick();
+    (void)sprinter_render_present();
+#endif
     if (!notice_error && notice_ticks != 0u) {
         --notice_ticks;
         if (notice_ticks == 0u) {
@@ -561,6 +576,12 @@ uint8_t spectrum_gui_show_about(void)
 {
     uint8_t was_menu_visible = menu_visible;
 
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return 0u;
+    }
+    modal_slow = 1u;
+#endif
     menu_visible = 0u;
     active_coord_valid = 0u;
     if (was_menu_visible) {
@@ -569,6 +590,10 @@ uint8_t spectrum_gui_show_about(void)
     about_visible = 1u;
     if (!spectrum_render_about()) {
         about_visible = 0u;
+#ifdef NETCHESSZX_SPRINTER
+        modal_slow = 0u;
+        (void)sprinter_rx_slow_leave();
+#endif
         return 0u;
     }
     return 1u;
@@ -585,6 +610,12 @@ uint8_t spectrum_gui_show_fileui(void)
 {
     uint8_t was_menu_visible = menu_visible;
 
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return 0u;
+    }
+    modal_slow = 1u;
+#endif
     menu_visible = 0u;
     active_coord_valid = 0u;
     if (was_menu_visible) {
@@ -666,11 +697,19 @@ void spectrum_gui_redraw_board_squares(void)
     if (about_visible) {
         return;
     }
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return;
+    }
+#endif
     for (row = 0u; row < 8u; ++row) {
         for (col = 0u; col < 8u; ++col) {
             render_square_from_board(row, col);
         }
     }
+#ifdef NETCHESSZX_SPRINTER
+    (void)sprinter_rx_slow_leave();
+#endif
 }
 
 static void spectrum_gui_redraw_board_flip_squares(void)
@@ -793,8 +832,16 @@ void spectrum_gui_prepare_move(const char *move) NETCHESSZX_FASTCALL
     if (about_visible) {
         return;
     }
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return;
+    }
+#endif
     coords = netchesszx_move_parse_coords(move);
     if (coords == NETCHESSZX_MOVE_COORDS_INVALID) {
+#ifdef NETCHESSZX_SPRINTER
+        (void)sprinter_rx_slow_leave();
+#endif
         return;
     }
     from_idx = NETCHESSZX_MOVE_FROM_INDEX(coords);
@@ -803,6 +850,9 @@ void spectrum_gui_prepare_move(const char *move) NETCHESSZX_FASTCALL
         flash_square((uint8_t)(from_idx >> 3),
                      (uint8_t)(from_idx & 7u));
     }
+#ifdef NETCHESSZX_SPRINTER
+    (void)sprinter_rx_slow_leave();
+#endif
 }
 
 void spectrum_gui_apply_move(const char *move) NETCHESSZX_FASTCALL
@@ -817,8 +867,16 @@ void spectrum_gui_apply_move(const char *move) NETCHESSZX_FASTCALL
     if (about_visible) {
         return;
     }
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return;
+    }
+#endif
     coords = netchesszx_move_parse_coords(move);
     if (coords == NETCHESSZX_MOVE_COORDS_INVALID) {
+#ifdef NETCHESSZX_SPRINTER
+        (void)sprinter_rx_slow_leave();
+#endif
         return;
     }
     from_col = NETCHESSZX_MOVE_FROM_INDEX(coords);
@@ -846,6 +904,9 @@ void spectrum_gui_apply_move(const char *move) NETCHESSZX_FASTCALL
             render_square_from_board(from_row, 3u);
         }
     }
+#ifdef NETCHESSZX_SPRINTER
+    (void)sprinter_rx_slow_leave();
+#endif
 }
 
 void spectrum_gui_draw_board(void)
@@ -870,10 +931,18 @@ void spectrum_gui_draw_board(void)
 
 void spectrum_gui_redraw_board_view(void)
 {
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return;
+    }
+#endif
     spectrum_render_board_coords();
     active_coord_valid = 0u;
     board_coords_dirty = 0u;
     spectrum_gui_redraw_board_flip_squares();
+#ifdef NETCHESSZX_SPRINTER
+    (void)sprinter_rx_slow_leave();
+#endif
 }
 
 void spectrum_gui_restore_board_area(void)
@@ -892,12 +961,23 @@ void spectrum_gui_restore_board_area(void)
     }
     active_coord_valid = 0u;
     board_coords_dirty = 0u;
+#ifdef NETCHESSZX_SPRINTER
+    if (modal_slow) {
+        modal_slow = 0u;
+        (void)sprinter_rx_slow_leave();
+    }
+#endif
 }
 
 void spectrum_gui_animate_board_pieces(void)
 {
     uint8_t i;
 
+#ifdef NETCHESSZX_SPRINTER
+    if (!sprinter_rx_slow_enter()) {
+        return;
+    }
+#endif
     if (board_coords_dirty) {
         spectrum_render_board_coords();
         active_coord_valid = 0u;
@@ -919,6 +999,9 @@ void spectrum_gui_animate_board_pieces(void)
         render_square_from_board(6u, i);
         wait_frames(5u);
     }
+#ifdef NETCHESSZX_SPRINTER
+    (void)sprinter_rx_slow_leave();
+#endif
 }
 
 void spectrum_gui_draw_status(void)

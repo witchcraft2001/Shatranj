@@ -2,6 +2,9 @@
 #include "spectrum/config/session.h"
 #include "spectrum/session/event.h"
 #include "spectrum/transport/esp_at.h"
+#ifdef NETCHESSZX_SPRINTER
+#include "sprinter/cold_text.h"
+#endif
 
 #define STATUS_PHASE_CONNECTION_SETUP 0u
 #define STATUS_PHASE_GAME_SETUP 1u
@@ -161,6 +164,13 @@ static void status_build_phase(uint8_t phase)
 uint8_t status_phase_ovl(uint8_t *ctx) __z88dk_fastcall
 {
     status_build_phase(ctx[SPECTRUM_OVL_CTX_STATUS_PHASE]);
+#ifdef NETCHESSZX_SPRINTER
+    /* This buffer belongs to the cold WIN1 overlay.  The UI gate changes
+       WIN1 to the resident UI bank before it reads the argument, therefore
+       copy it to permanent WIN2 first. */
+    spectrum_gui_set_status(sprinter_cold_text(status_line_ovl));
+#else
     spectrum_gui_set_status(status_line_ovl);
+#endif
     return 1u;
 }

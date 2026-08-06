@@ -48,3 +48,4 @@ SPRINTER-PORT.md
 AGENTS.md
 CLAUDE.md
 docs/sprinter-stage*.md
+cfg/*.cfg

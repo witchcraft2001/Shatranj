@@ -125,7 +125,11 @@ const char *netchesszx_session_start_text(void);
 #define netchesszx_notation_is_san() \
     (netchesszx_notation == NETCHESSZX_NOTATION_SAN)
 
+#ifdef NETCHESSZX_SPRINTER
+extern char netchesszx_mqtt_host[];
+#else
 extern const char netchesszx_mqtt_host[];
+#endif
 extern char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 extern const uint16_t netchesszx_mqtt_port;
 extern char netchesszx_direct_host[NETCHESSZX_DIRECT_HOST_MAX + 1u];

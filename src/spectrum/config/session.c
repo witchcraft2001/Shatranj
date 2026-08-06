@@ -54,7 +54,12 @@ const char *netchesszx_session_start_text(void)
                : "GAME START WHITE=GUEST";
 }
 
+#ifdef NETCHESSZX_SPRINTER
+/* Cold setup code reads this through permanent WIN2 DATA. */
+char netchesszx_mqtt_host[] = NETCHESSZX_MQTT_HOST;
+#else
 const char netchesszx_mqtt_host[] = NETCHESSZX_MQTT_HOST;
+#endif
 char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 const uint16_t netchesszx_mqtt_port = NETCHESSZX_MQTT_PORT;
 char netchesszx_direct_host[NETCHESSZX_DIRECT_HOST_MAX + 1u] = "";

@@ -66,7 +66,7 @@ def main() -> int:
             )
             if not object_path.is_file() or object_path.stat().st_size == 0:
                 raise SystemExit(f"[ERR] SDCC/IY produced no object for {relative}")
-    print(f"[OK] pinned z88dk SDCC/IY and Stage-2 overlay compile probe: {zcc}")
+    print(f"[OK] pinned z88dk SDCC/IY and Sprinter overlay compile probe: {zcc}")
     return 0
 
 

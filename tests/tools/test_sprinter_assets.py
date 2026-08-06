@@ -45,6 +45,11 @@ class SprinterAssetTests(unittest.TestCase):
         palette = manifest["palette"]
         self.assertEqual(palette["length"], 768)
         self.assertEqual(palette["page_index"], 4)
+        self.assertEqual(palette["encoding"], "RGB888")
+        # UI colour 6 is yellow (R=248,G=224,B=72), matching the established
+        # Stage 2 asset and GFX320 input contract.
+        self.assertEqual(pages[4][:3], bytes((0, 0, 0)))
+        self.assertEqual(pages[4][18:21], bytes((248, 224, 72)))
         about = b"".join(pages[1:4])
         self.assertNotIn(0xFF, about)
 

@@ -206,7 +206,7 @@ uint8_t input_edit_stop_clear_ovl(uint8_t *ctx) __z88dk_fastcall
     local_input_cursor = 0u;
     local_input_mode = 0u;
     edit_history_nav_reset();
-    spectrum_gui_set_input("");
+    spectrum_gui_set_input(local_input);
     return 1u;
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the Stage-2 FAT12 smoke image and its empty SYS/CONFIG directory."""
+"""Create the Stage-3 FAT12 smoke image and its empty SYS/CONFIG directory."""
 
 from __future__ import annotations
 

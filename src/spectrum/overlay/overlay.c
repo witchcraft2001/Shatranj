@@ -3,6 +3,7 @@
 #include "spectrum/session/event.h"
 #include "spectrum/ui/gui.h"
 
+#ifndef NETCHESSZX_SPRINTER
 netchesszx_session_event_t netchesszx_session_classify_game_payload(
     const char *payload)
 {
@@ -15,6 +16,7 @@ netchesszx_session_event_t netchesszx_session_classify_game_payload(
         spectrum_overlay_exec_cached(SPECTRUM_OVL_CONTROL,
                                      SPECTRUM_OVL_CONTROL_CLASSIFY);
 }
+#endif
 
 void spectrum_gui_status_phase(uint8_t phase) __z88dk_fastcall
 {

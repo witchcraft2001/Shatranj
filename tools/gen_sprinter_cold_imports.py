@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from sprinter_slow_ops import slow_ui_flags
+
 
 @dataclass(frozen=True)
 class MapSymbol:
@@ -58,7 +60,16 @@ def thunk_name(symbol: str) -> str:
 
 
 def discover(args: argparse.Namespace) -> None:
-    base = parse_map(args.base_map)
+    resident_maps = [(0, parse_map(args.base_map))]
+    for value in args.bank_map:
+        page_text, path_text = value.split(":", 1)
+        resident_maps.append((int(page_text, 0), parse_map(Path(path_text))))
+    resident: dict[str, tuple[int, MapSymbol]] = {}
+    for page, mapped_symbols in resident_maps:
+        for symbol, mapped in mapped_symbols.items():
+            if (mapped.section.startswith(("code", "data", "bss")) and
+                    symbol not in resident):
+                resident[symbol] = (page, mapped)
     modules = []
     far_symbols: dict[str, dict[str, object]] = {}
     for text in args.module:
@@ -71,27 +82,32 @@ def discover(args: argparse.Namespace) -> None:
             undefined.update(obj_undefined)
         imports = []
         for symbol in sorted(undefined - defined):
-            mapped = base.get(symbol)
-            if mapped is None:
+            resident_item = resident.get(symbol)
+            if resident_item is None:
                 resolution = {"kind": "resident", "symbol": symbol}
-            elif 0x4000 <= mapped.address < 0x8000:
+            elif 0x4000 <= resident_item[1].address < 0x8000:
+                page, mapped = resident_item
                 if not mapped.section.startswith("code"):
                     raise ValueError(
-                        f"module {module_id}: immutable WIN1 import {symbol} "
+                        f"module {module_id}: WIN1 data import {symbol} "
                         f"from section {mapped.section or '?'}"
                     )
                 thunk = thunk_name(symbol)
                 resolution = {
                     "kind": "far", "symbol": symbol, "target": mapped.address,
-                    "thunk": thunk,
+                    "thunk": thunk, "page": page,
+                    "flags": slow_ui_flags(symbol),
                 }
                 far_symbols[symbol] = resolution
-            elif 0x8000 <= mapped.address < 0xC000:
+            elif 0x8000 <= resident_item[1].address < 0xC000:
+                _, mapped = resident_item
                 resolution = {
                     "kind": "direct", "symbol": symbol,
                     "target": mapped.address,
                 }
             else:
+                assert resident_item is not None
+                _, mapped = resident_item
                 raise ValueError(
                     f"module {module_id}: unsafe import {symbol}=0x{mapped.address:04X}"
                 )
@@ -108,8 +124,10 @@ def discover(args: argparse.Namespace) -> None:
         lines.extend([
             f"PUBLIC {item['thunk']}",
             f"{item['thunk']}:",
-            f"    LD HL,0x{int(item['target']):04X}",
-            "    JP sprinter_far_call",
+            f"    LD A,{int(item['page']) | (0x80 if int(item.get('flags', 0)) & 1 else 0)}",
+            "    CALL sprinter_far_call",
+            f"    DEFW 0x{int(item['target']):04X}",
+            "    NOP",
             "",
         ])
     args.thunks_out.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +147,11 @@ def finalize(args: argparse.Namespace) -> None:
             kind = item["kind"]
             symbol = str(item["symbol"])
             if kind == "direct":
+                # Direct DATA/BSS imports were resolved from the final
+                # resident-bank map during discovery.  A same-named runtime
+                # constant is not the bank object's storage and must never
+                # override that address (doing so split setup state between
+                # the app and its cold reducer).
                 address = int(item["target"])
             elif kind == "far":
                 thunk = str(item["thunk"])
@@ -162,6 +185,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--z80nm", default="z88dk-z80nm")
     parser.add_argument("--base-map", type=Path)
+    parser.add_argument("--bank-map", action="append", default=[])
     parser.add_argument("--module", action="append", default=[])
     parser.add_argument("--thunks-out", type=Path)
     parser.add_argument("--plan-out", type=Path)

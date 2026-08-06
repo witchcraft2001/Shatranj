@@ -170,7 +170,9 @@ static uint8_t fileui_nth_name(uint8_t index, char *out)
     for (;;) {
         esx_buf = (uint16_t)ent;
         esx_readdir();
+#ifndef NETCHESSZX_SPRINTER
         spectrum_net_background_drain();
+#endif
         if (!esx_result) {
             break;
         }
@@ -327,7 +329,9 @@ uint8_t fileui_render_ovl(uint8_t *ctx) __z88dk_fastcall
         while (count < FILEUI_SLOTS) {
             esx_buf = (uint16_t)ent;
             esx_readdir();
+#ifndef NETCHESSZX_SPRINTER
             spectrum_net_background_drain();
+#endif
             if (!esx_result) {
                 break;
             }

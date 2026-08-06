@@ -237,8 +237,6 @@ loader_page_loop:
     LD (0xC000+(SPRINTER_ASSET_PAGE_COUNT-0x8000)),A
     LD A,(L_MANIFEST+22)
     LD (0xC000+(SPRINTER_GFX_PAGE_COUNT-0x8000)),A
-    LD A,(L_MANIFEST+23)
-    LD (0xC000+(SPRINTER_PALETTE_PAGE_INDEX-0x8000)),A
 
     ; Stage the RGB888 palette in permanent WIN2.  The source page belongs to
     ; the same PRELOAD allocation and is mapped only for this bounded copy.
@@ -251,6 +249,7 @@ loader_page_loop:
     LD HL,L_PAGES
     ADD HL,DE
     LD A,(HL)
+    LD (0xC000+(SPRINTER_PALETTE_PAGE_INDEX-0x8000)),A
     OUT (PORT_WIN1),A
     LD HL,0x4000
     LD DE,0xC000+(SPRINTER_GFX_PALETTE-0x8000)

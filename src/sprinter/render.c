@@ -1,12 +1,14 @@
 #include <stdint.h>
 
 #include "gfx320.h"
+#include "sprinter_layout.h"
 #include "sprinter/render_layout.h"
 #include "sprinter_assets.h"
 #include "spectrum/config/session.h"
 #include "spectrum/ui/info_panel.h"
 #include "spectrum/ui/layout.h"
 #include "spectrum/ui/render.h"
+#include "sprinter/unet_runtime.h"
 
 #define COLOR_BLACK 0u
 #define COLOR_WHITE 1u
@@ -37,6 +39,16 @@ static const uint8_t ikkle_font[128] = {
 };
 
 static uint8_t render_dirty;
+
+static uint8_t slow_begin(void)
+{
+    return sprinter_rx_slow_enter();
+}
+
+static void slow_end(void)
+{
+    (void)sprinter_rx_slow_leave();
+}
 
 void sprinter_render_row4(const uint8_t *spec) __z88dk_fastcall;
 
@@ -80,7 +92,7 @@ static void fill(uint16_t x, uint8_t y, uint16_t width, uint16_t height,
     rect.width = width;
     rect.height = height;
     rect.color = color;
-    rect.flags = GFX_TARGET_BACK;
+    rect.flags = GFX_TARGET_BUF0;
     rect.reserved[0] = rect.reserved[1] = rect.reserved[2] = 0u;
     (void)gfx320_fill_rect(&rect);
     render_dirty = 1u;
@@ -95,7 +107,7 @@ static void outline(uint16_t x, uint8_t y, uint16_t width, uint16_t height,
     rect.width = width;
     rect.height = height;
     rect.color = color;
-    rect.flags = GFX_TARGET_BACK;
+    rect.flags = GFX_TARGET_BUF0;
     rect.reserved[0] = rect.reserved[1] = rect.reserved[2] = 0u;
     (void)gfx320_draw_rect(&rect);
     render_dirty = 1u;
@@ -123,11 +135,11 @@ static void draw_char(uint16_t x, uint8_t y, char value,
     spec[1] = (uint8_t)(x >> 8);
     spec[4] = color;
     spec[5] = background;
-    spec[6] = 0u;
     for (row = 0u; row < TEXT_HEIGHT; ++row) {
         uint8_t packed = ikkle_font[(uint8_t)(glyph + (row >> 1))];
         spec[2] = (uint8_t)(y + row);
         spec[3] = (uint8_t)((row & 1u) ? packed & 0x0Fu : packed >> 4);
+        spec[6] = GFX_TARGET_BUF0;
         sprinter_render_row4(spec);
     }
     render_dirty = 1u;
@@ -153,7 +165,7 @@ static void draw_piece(uint8_t row, uint8_t col, char piece)
     uint16_t ref = sprinter_piece_ref(netchesszx_piece_set_index, piece);
     if (ref != 0xFFFFu) {
         (void)gfx320_draw_tile(ref, sprinter_piece_x(col), sprinter_piece_y(row),
-                               GFX_TARGET_BACK | GFX_KEY_FF);
+                               GFX_TARGET_BUF0 | GFX_KEY_FF);
         render_dirty = 1u;
     }
 }
@@ -185,6 +197,9 @@ void spectrum_render_board(const char *board) __z88dk_fastcall
     uint8_t col;
     char spec[3];
 
+    if (!slow_begin()) {
+        return;
+    }
     fill(0u, 0u, 320u, 256u, COLOR_BLACK);
     outline((uint16_t)(SPRINTER_BOARD_X - 1u), (uint8_t)(SPRINTER_BOARD_Y - 1u),
             SPRINTER_BOARD_SIZE + 2u, SPRINTER_BOARD_SIZE + 2u, COLOR_OUTLINE);
@@ -197,6 +212,7 @@ void spectrum_render_board(const char *board) __z88dk_fastcall
         }
     }
     spectrum_render_board_coords();
+    slow_end();
 }
 
 void spectrum_render_board_area(const char *board) __z88dk_fastcall
@@ -204,6 +220,9 @@ void spectrum_render_board_area(const char *board) __z88dk_fastcall
     uint8_t row;
     uint8_t col;
     char spec[3];
+    if (!slow_begin()) {
+        return;
+    }
     for (row = 0u; row < 8u; ++row) {
         for (col = 0u; col < 8u; ++col) {
             spec[0] = (char)row;
@@ -213,6 +232,7 @@ void spectrum_render_board_area(const char *board) __z88dk_fastcall
         }
     }
     spectrum_render_board_coords();
+    slow_end();
 }
 
 void spectrum_render_board_coords(void)
@@ -326,6 +346,9 @@ void spectrum_render_menu(uint8_t visible) __z88dk_fastcall
     static const uint8_t option_width[6] = {16u, 20u, 20u, 16u, 20u, 20u};
     uint8_t focus;
 
+    if (!slow_begin()) {
+        return;
+    }
     fill(0u, 0u, 204u, 16u, COLOR_BLACK);
     if (visible) {
         draw_text_limit(4u, 5u, "FILE DISCC RESET FLIP THEME ABOUT",
@@ -339,6 +362,7 @@ void spectrum_render_menu(uint8_t visible) __z88dk_fastcall
     } else {
         draw_text_limit(4u, 5u, "SHATRANJ", COLOR_WHITE, COLOR_BLACK, 16u);
     }
+    slow_end();
 }
 
 void spectrum_render_square(const char *spec) __z88dk_fastcall
@@ -392,10 +416,14 @@ static void draw_move_line(const char *line, uint8_t row)
 void spectrum_render_moves(const char *moves) __z88dk_fastcall
 {
     uint8_t row;
+    if (!slow_begin()) {
+        return;
+    }
     fill(SPRINTER_INFO_X, 50u, PANEL_WIDTH, 43u, COLOR_BLACK);
     for (row = 0u; row < NETCHESSZX_MOVE_ROWS; ++row) {
         draw_move_line(moves + row * NETCHESSZX_MOVE_SLOT_SIZE, row);
     }
+    slow_end();
 }
 
 void spectrum_render_move_at(const char *line) __z88dk_fastcall
@@ -418,13 +446,19 @@ static void scroll_panel(uint8_t y, uint8_t height)
     rect.dx = 0;
     rect.dy = -6;
     rect.fill_color = COLOR_BLACK;
-    rect.flags = GFX_TARGET_BACK;
+    rect.flags = GFX_TARGET_BUF0;
     rect.reserved[0] = rect.reserved[1] = rect.reserved[2] = 0u;
     (void)gfx320_scroll_rect(&rect);
     render_dirty = 1u;
 }
 
-void spectrum_render_moves_scroll(void) { scroll_panel(51u, 42u); }
+void spectrum_render_moves_scroll(void)
+{
+    if (slow_begin()) {
+        scroll_panel(51u, 42u);
+        slow_end();
+    }
+}
 
 static void draw_chat_line(const char *line, uint8_t row)
 {
@@ -438,10 +472,14 @@ static void draw_chat_line(const char *line, uint8_t row)
 void spectrum_render_chat(const char *chat) __z88dk_fastcall
 {
     uint8_t row;
+    if (!slow_begin()) {
+        return;
+    }
     fill(SPRINTER_INFO_X, 108u, PANEL_WIDTH, 67u, COLOR_BLACK);
     for (row = 0u; row < NETCHESSZX_CHAT_ROWS; ++row) {
         draw_chat_line(chat + row * NETCHESSZX_CHAT_SLOT_SIZE, row);
     }
+    slow_end();
 }
 
 void spectrum_render_chat_at(const char *line) __z88dk_fastcall
@@ -454,7 +492,13 @@ void spectrum_render_chat_at(const char *line) __z88dk_fastcall
     }
 }
 
-void spectrum_render_chat_scroll(void) { scroll_panel(110u, 54u); }
+void spectrum_render_chat_scroll(void)
+{
+    if (slow_begin()) {
+        scroll_panel(110u, 54u);
+        slow_end();
+    }
+}
 
 void spectrum_render_input(const char *text) __z88dk_fastcall
 {
@@ -477,6 +521,9 @@ uint8_t spectrum_render_about(void)
 {
     uint8_t row;
     uint8_t col;
+    if (!slow_begin()) {
+        return 0u;
+    }
     fill(0u, 0u, 320u, 224u, COLOR_BLACK);
     for (row = 0u; row < 12u; ++row) {
         for (col = 0u; col < 16u; ++col) {
@@ -484,13 +531,15 @@ uint8_t spectrum_render_about(void)
             uint16_t ref = (uint16_t)(((tile >> 6) << 8) | (tile & 63u));
             if (gfx320_draw_tile(ref, (uint16_t)(32u + col * 16u),
                                  (uint8_t)(32u + row * 16u),
-                                 GFX_TARGET_BACK) != 0u) {
+                                 GFX_TARGET_BUF0) != 0u) {
+                slow_end();
                 return 0u;
             }
         }
     }
     render_dirty = 1u;
-    return 1u;
+    slow_end();
+    return (uint8_t)!sprinter_unet_faulted();
 }
 
 void spectrum_render_ikkle_at(const char *spec) __z88dk_fastcall
@@ -502,9 +551,13 @@ void spectrum_render_ikkle_at(const char *spec) __z88dk_fastcall
 
 void spectrum_render_fileui_frame(void)
 {
+    if (!slow_begin()) {
+        return;
+    }
     fill(SPRINTER_BOARD_X, SPRINTER_BOARD_Y,
          SPRINTER_BOARD_SIZE, SPRINTER_BOARD_SIZE, COLOR_BLACK);
     outline(40u, 48u, 128u, 144u, COLOR_CYAN);
+    slow_end();
 }
 
 void spectrum_render_fileui_select(uint16_t slot_on) __z88dk_fastcall
@@ -519,8 +572,12 @@ void spectrum_render_fileui_select(uint16_t slot_on) __z88dk_fastcall
 
 static void info_header(const char *title)
 {
+    if (!slow_begin()) {
+        return;
+    }
     fill(SPRINTER_INFO_X, 24u, PANEL_WIDTH, 198u, COLOR_BLACK);
     draw_text_limit(212u, 27u, title, COLOR_CYAN, COLOR_BLACK, 27u);
+    slow_end();
 }
 
 void spectrum_info_show_game(void)
@@ -547,8 +604,9 @@ void spectrum_info_show_preflight(void)
 void spectrum_info_clear_tail(uint8_t row) __z88dk_fastcall
 {
     uint8_t y = (uint8_t)(row * 8u);
-    if (y < 224u) {
+    if (y < 224u && slow_begin()) {
         fill(SPRINTER_INFO_X, y, PANEL_WIDTH, (uint8_t)(224u - y), COLOR_BLACK);
+        slow_end();
     }
 }
 
@@ -573,10 +631,9 @@ uint8_t sprinter_render_present(void)
     if (!render_dirty) {
         return 1u;
     }
-    if (gfx320_swap_buffers() != 0u ||
-        gfx320_copy_buffer(GFX_TARGET_FRONT, GFX_TARGET_BACK) != 0u) {
-        return 0u;
-    }
+    /* The pinned DSS/MAME screen-1 descriptor path intermittently exposes a
+       partial raster although both VRAM buffers remain byte-complete.  Keep
+       the stable screen zero selected and publish primitives there directly. */
     render_dirty = 0u;
-    return 1u;
+    return (uint8_t)!sprinter_unet_faulted();
 }

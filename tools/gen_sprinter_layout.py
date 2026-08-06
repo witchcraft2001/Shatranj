@@ -26,11 +26,16 @@ def load_layout(path: Path) -> tuple[dict[str, int], int, int]:
         else int(raw_sizes.get(name, 1))
         for name in symbols
     }
-    addresses = list(symbols.values())
+    aliases = {str(name): str(target)
+               for name, target in raw.get("aliases", {}).items()}
+    for name, target in aliases.items():
+        if name not in symbols or target not in symbols or symbols[name] != symbols[target]:
+            raise ValueError(f"invalid fixed-layout alias {name} -> {target}")
+    addresses = [address for name, address in symbols.items() if name not in aliases]
     if len(addresses) != len(set(addresses)):
         raise ValueError("fixed-layout symbols contain duplicate addresses")
     for name, address in symbols.items():
-        if not 0x8000 <= address < 0xBC00:
+        if not 0x8000 <= address < stack_top - stack_headroom:
             raise ValueError(f"{name}=0x{address:04X} is outside persistent WIN2")
     if stack_top != 0xBFF0 or stack_top - stack_headroom < 0x8000:
         raise ValueError("invalid Sprinter stack contract")
@@ -38,16 +43,26 @@ def load_layout(path: Path) -> tuple[dict[str, int], int, int]:
         raise ValueError("fixed WIN2 state enters the required stack headroom")
     symbol_ranges: list[tuple[int, int, str]] = []
     for name, address in symbols.items():
+        if name in aliases:
+            continue
         size = sizes[name]
         end = address + size
         if size <= 0 or end > stack_top - stack_headroom:
             raise ValueError(f"fixed symbol {name} is outside WIN2/headroom")
         symbol_ranges.append((address, end, name))
-    for previous, current in zip(sorted(symbol_ranges), sorted(symbol_ranges)[1:]):
-        if previous[1] > current[0]:
-            raise ValueError(
-                f"fixed symbols {previous[2]} and {current[2]} overlap"
-            )
+    overlap_groups = [set(str(name) for name in group)
+                      for group in raw.get("overlap_groups", [])]
+    ordered_ranges = sorted(symbol_ranges)
+    for index, previous in enumerate(ordered_ranges):
+        for current in ordered_ranges[index + 1:]:
+            if current[0] >= previous[1]:
+                break
+            allowed = any(previous[2] in group and current[2] in group
+                          for group in overlap_groups)
+            if not allowed:
+                raise ValueError(
+                    f"fixed symbols {previous[2]} and {current[2]} overlap"
+                )
     regions: list[tuple[int, int, str]] = []
     for item in raw.get("regions", []):
         name = str(item["name"])

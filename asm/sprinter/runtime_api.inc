@@ -74,6 +74,7 @@ DEFC SPR_API_SETUP_VISIBLE = 0x82CF
 DEFC SPR_API_SETUP_RENDER = 0x82D2
 DEFC SPR_API_SETUP_PAINT = 0x82D5
 DEFC SPR_API_SETUP_ROWS = 0x82D8
+DEFC SPR_API_RAW_KEY_SCAN = 0x82DB
 
 PUBLIC _spectrum_overlay_exec, _spectrum_overlay_exec_cached
 PUBLIC _esx_fopen, _esx_fcreate, _esx_fread, _esx_fwrite, _esx_fclose
@@ -107,6 +108,7 @@ PUBLIC _spectrum_info_line, _netchesszx_setup_step_overlay
 PUBLIC _netchesszx_setup_render_edit_line, _netchesszx_setup_compute_visible
 PUBLIC _netchesszx_setup_render_overlay, _netchesszx_setup_paint_attrs
 PUBLIC _netchesszx_setup_render_rows
+PUBLIC _sprinter_key_scan_raw
 
 DEFC _spectrum_overlay_exec = SPR_API_OVERLAY_EXEC
 DEFC _spectrum_overlay_exec_cached = SPR_API_OVERLAY_CACHED
@@ -176,3 +178,4 @@ DEFC _netchesszx_setup_compute_visible = SPR_API_SETUP_VISIBLE
 DEFC _netchesszx_setup_render_overlay = SPR_API_SETUP_RENDER
 DEFC _netchesszx_setup_paint_attrs = SPR_API_SETUP_PAINT
 DEFC _netchesszx_setup_render_rows = SPR_API_SETUP_ROWS
+DEFC _sprinter_key_scan_raw = SPR_API_RAW_KEY_SCAN

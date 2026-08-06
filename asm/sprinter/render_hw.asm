@@ -1,5 +1,4 @@
-; Four-pixel Ikkle row writer.  Text is written directly into the selected
-; back buffer, updating the hardware DRAM mirror.  HL points to:
+; Four-pixel Ikkle row writer for the stable fixed buffer zero.  HL points to:
 ; x(lo,hi), y, four-bit pattern, foreground, background, reserved.
 
 SECTION code_compiler
@@ -8,7 +7,6 @@ PUBLIC _sprinter_render_row4
 
 DEFC PORT_WIN3 = 0xE2
 DEFC PORT_Y = 0x89
-DEFC PORT_RGMOD = 0xC9
 
 _sprinter_render_row4:
     DI
@@ -29,16 +27,6 @@ _sprinter_render_row4:
     INC HL
     LD A,(HL)                    ; background
     PUSH AF
-    IN A,(PORT_RGMOD)
-    AND 1
-    XOR 1                        ; back buffer
-    JR Z,srr4_buffer_ready
-    PUSH HL
-    LD HL,0x0140
-    ADD HL,DE
-    EX DE,HL
-    POP HL
-srr4_buffer_ready:
     LD HL,0xC000
     ADD HL,DE
     LD D,4

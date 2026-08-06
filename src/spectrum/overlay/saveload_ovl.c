@@ -166,7 +166,9 @@ uint8_t saveload_load_nczs_ovl(uint8_t *ctx) __z88dk_fastcall
         ctx[SPECTRUM_OVL_CTX_SAVELOAD_RESULT] = SPECTRUM_OVL_SAVELOAD_ERR_OPEN;
         return 0u;
     }
+#ifndef NETCHESSZX_SPRINTER
     spectrum_net_background_drain();
+#endif
     esx_buf = (uint16_t)buf;
     esx_count = NETCHESSZX_SAVE_WIRE_B64_SIZE;
     esx_fread();
@@ -191,7 +193,9 @@ uint8_t saveload_save_nczs_ovl(uint8_t *ctx) __z88dk_fastcall
         ctx[SPECTRUM_OVL_CTX_SAVELOAD_RESULT] = SPECTRUM_OVL_SAVELOAD_ERR_OPEN;
         return 0u;
     }
+#ifndef NETCHESSZX_SPRINTER
     spectrum_net_background_drain();
+#endif
     esx_buf = (uint16_t)buf;
     esx_count = NETCHESSZX_SAVE_WIRE_B64_SIZE;
     esx_fwrite();

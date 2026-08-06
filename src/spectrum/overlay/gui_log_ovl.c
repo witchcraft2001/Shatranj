@@ -1,4 +1,7 @@
 #include "spectrum/overlay/overlay_api.h"
+#ifdef NETCHESSZX_SPRINTER
+#include "sprinter/cold_text.h"
+#endif
 #include "spectrum/lowram_map.h"
 #include "spectrum/ui/layout.h"
 #include "common/ui_messages.h"
@@ -101,7 +104,16 @@ static void gui_log_copy_move(char *out, const char *move)
     uint8_t i;
 
     if (move == 0) {
+#ifdef NETCHESSZX_SPRINTER
+        const char *restored = NETCHESSZX_UI_EVENT_RESTORED;
+
+        while (*restored != '\0') {
+            *out++ = *restored++;
+        }
+        *out = '\0';
+#else
         (void)spectrum_append_text(out, NETCHESSZX_UI_EVENT_RESTORED);
+#endif
         return;
     }
     if (clock[0] == '\0') {
@@ -234,6 +246,9 @@ uint8_t gui_log_notify_msg_ovl(uint8_t *ctx) __z88dk_fastcall
         while (*msg++ != '\0') {
         }
     }
+#ifdef NETCHESSZX_SPRINTER
+    msg = sprinter_cold_text(msg);
+#endif
     id = ctx[SPECTRUM_OVL_CTX_GUI_MSG_KIND];
     if (id == SPECTRUM_GUI_MSG_KIND_WAIT) {
         spectrum_gui_notify_persistent(msg);

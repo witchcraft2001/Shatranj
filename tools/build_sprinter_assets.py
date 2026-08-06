@@ -169,6 +169,9 @@ def build(next_pieces: Path, next_piece_palette: Path, next_meta: Path,
                    for offset in range(0, len(about_tiles), PAGE_SIZE)]
     if len(about_pages) != ABOUT_PAGES or any(len(page) != PAGE_SIZE for page in about_pages):
         raise AssertionError("About tile pages are not exact")
+    # Keep the generated source contract byte-for-byte compatible with the
+    # established Stage 2 renderer.  GFX320 accepts RGB8 input and performs
+    # any DSS-specific register ordering internally.
     palette_raw = bytes(component for rgb in palette for component in rgb)
     palette_page = palette_raw.ljust(PAGE_SIZE, b"\0")
     pages = [piece_page, *about_pages, palette_page]

@@ -26,6 +26,12 @@ _gfx320_libman_call:
     LD (SPRINTER_GFX_REGS+2),DE
     PUSH IX
     PUSH IY
+    ; libman l_call unmaps its DLL window to #FF before returning.  This
+    ; bridge runs in WIN2, but its caller normally lives in the currently
+    ; selected WIN1 UI/cold page.  Restore that exact page before our RET so
+    ; the caller's continuation cannot be fetched from libman's #FF page.
+    IN A,(0xA2)
+    PUSH AF
     EX DE,HL
     LD A,(HL)
     LD (SPRINTER_GFX_REGS+4),A
@@ -99,6 +105,8 @@ gfx_call_ok:
     LD L,0
 gfx_call_return:
     LD H,0
+    POP AF
+    OUT (0xA2),A
     POP IY
     POP IX
     RET

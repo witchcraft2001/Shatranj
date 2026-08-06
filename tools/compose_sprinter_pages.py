@@ -10,7 +10,6 @@ from pathlib import Path
 
 PAGE_SIZE = 0x4000
 BASE_ORIGIN = 0x4000
-CLIENT_ORIGIN = 0x4100
 RUNTIME_ORIGIN = 0x8000
 
 
@@ -34,21 +33,44 @@ def insert(page: bytearray, origin: int, address: int, data: bytes,
     page[offset:offset + len(data)] = data
 
 
+def install_data(runtime_page: bytearray, data: bytes, map_path: Path,
+                 name: str) -> None:
+    data_origin = map_value(map_path, "CRT_ORG_DATA")
+    bss_origin = map_value(map_path, "CRT_ORG_BSS")
+    if data_origin + len(data) > bss_origin:
+        raise ValueError(f"{name} DATA overlaps its BSS")
+    insert(runtime_page, RUNTIME_ORIGIN, data_origin, data, f"{name} DATA")
+
+
 def compose(base_stub: bytes, client_code: bytes, runtime: bytes,
-            client_data: bytes, client_map: Path) -> tuple[bytes, bytes]:
-    if len(base_stub) != CLIENT_ORIGIN - BASE_ORIGIN:
-        raise ValueError("base transition stub must be exactly 256 bytes")
+            client_data: bytes, client_map: Path,
+            extra_banks: list[tuple[str, bytes, bytes, Path]]) \
+        -> tuple[bytes, bytes, list[tuple[str, bytes]]]:
+    client_origin = map_value(client_map, "CRT_ORG_CODE")
+    if len(base_stub) != client_origin - BASE_ORIGIN:
+        raise ValueError("base transition stub does not end at client CODE")
     base = bytearray(PAGE_SIZE)
     runtime_page = bytearray(PAGE_SIZE)
     insert(base, BASE_ORIGIN, BASE_ORIGIN, base_stub, "base transition stub")
-    insert(base, BASE_ORIGIN, CLIENT_ORIGIN, client_code, "client CODE")
+    insert(base, BASE_ORIGIN, client_origin, client_code, "client CODE")
     insert(runtime_page, RUNTIME_ORIGIN, RUNTIME_ORIGIN, runtime, "runtime")
-    data_origin = map_value(client_map, "CRT_ORG_DATA")
-    bss_origin = map_value(client_map, "CRT_ORG_BSS")
-    if data_origin + len(client_data) > bss_origin:
-        raise ValueError("client DATA overlaps client BSS")
-    insert(runtime_page, RUNTIME_ORIGIN, data_origin, client_data, "client DATA")
-    return bytes(base), bytes(runtime_page)
+    install_data(runtime_page, client_data, client_map, "client")
+    composed_banks: list[tuple[str, bytes]] = []
+    for name, code, data, map_path in extra_banks:
+        page = bytearray(PAGE_SIZE)
+        code_origin = map_value(map_path, "CRT_ORG_CODE")
+        insert(page, BASE_ORIGIN, code_origin, code, f"{name} CODE")
+        install_data(runtime_page, data, map_path, name)
+        composed_banks.append((name, bytes(page)))
+    return bytes(base), bytes(runtime_page), composed_banks
+
+
+def parse_bank(value: str) -> tuple[str, Path, Path, Path, Path]:
+    fields = value.split(":", 4)
+    if len(fields) != 5:
+        raise ValueError("--bank requires NAME:CODE:DATA:MAP:OUTPUT")
+    return (fields[0], Path(fields[1]), Path(fields[2]), Path(fields[3]),
+            Path(fields[4]))
 
 
 def main() -> int:
@@ -60,11 +82,15 @@ def main() -> int:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--base-out", type=Path, required=True)
     parser.add_argument("--runtime-out", type=Path, required=True)
+    parser.add_argument("--bank", action="append", default=[])
     args = parser.parse_args()
     try:
-        base, runtime = compose(
+        bank_specs = [parse_bank(value) for value in args.bank]
+        base, runtime, banks = compose(
             args.base_stub.read_bytes(), args.client_code.read_bytes(),
             args.runtime.read_bytes(), args.client_data.read_bytes(), args.client_map,
+            [(name, code.read_bytes(), data.read_bytes(), map_path)
+             for name, code, data, map_path, _ in bank_specs],
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(f"compose_sprinter_pages: {exc}") from exc
@@ -72,7 +98,13 @@ def main() -> int:
     args.runtime_out.parent.mkdir(parents=True, exist_ok=True)
     args.base_out.write_bytes(base)
     args.runtime_out.write_bytes(runtime)
-    print("[OK] Sprinter base/runtime pages: exact 16 KiB, split DATA installed")
+    for (_, _, _, _, output), (_, page) in zip(bank_specs, banks):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(page)
+    print(
+        f"[OK] Sprinter base/runtime pages and {len(banks)} auxiliary "
+        "resident bank(s): exact 16 KiB, split DATA installed"
+    )
     return 0
 
 

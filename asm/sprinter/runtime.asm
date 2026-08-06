@@ -1,7 +1,7 @@
-; Shatranj Sprinter Stage-2 permanent WIN2 runtime.
+; Shatranj Sprinter permanent WIN2 runtime.
 ;
 ; WIN0 remains DSS.  WIN1 is the permanent base bank except while a cold bank
-; is executing.  This page owns IM2, dispatch/far-call gates, all mutable state
+; is executing.  This page owns dispatch/far-call gates, all mutable state
 ; and every buffer passed to DSS.  WIN3 is never executable or persistent.
 
 SECTION code_user
@@ -14,7 +14,9 @@ DEFC PORT_WIN2 = 0xC2
 DEFC PORT_WIN3 = 0xE2
 DEFC PORT_Y = 0x89
 DEFC PORT_RGMOD = 0xC9
+DEFC PORT_CACHE_OFF = 0x007B
 DEFC PORT_CBL_CTRL = 0x004E
+DEFC PORT_CBL_DATA = 0x004F
 DEFC CBL_IDLE = 0x80
 
 DEFC DSS_CREATE = 0x0A
@@ -39,6 +41,8 @@ DEFC DSS_PCHARS = 0x5C
 
 DEFC OVL_SAVELOAD = 10
 DEFC OVL_FILEUI = 13
+DEFC OVL_MENU_CONFIG = 6
+DEFC OVL_SETUP = 8
 DEFC OVL_INVALID = 0xFF
 
 PUBLIC sprinter_runtime_page_start
@@ -67,26 +71,25 @@ PUBLIC _spectrum_fileui_used_mask
 PUBLIC _spectrum_net_runtime_fat_date
 PUBLIC _spectrum_net_runtime_fat_time
 PUBLIC _spectrum_net_runtime_clock_ready
-PUBLIC _last_ip
-PUBLIC _setup_choice
-PUBLIC _setup_focus_choice
-PUBLIC _setup_focus_board_theme
-PUBLIC _setup_defined_mask
-PUBLIC _setup_visible_mask
-PUBLIC _setup_cursor
-PUBLIC _setup_room_editing
-PUBLIC _setup_edit_row
-PUBLIC _setup_port_text
-PUBLIC _local_input_len
-PUBLIC _local_input_cursor
-PUBLIC _local_input_mode
-PUBLIC _input_history_count
-PUBLIC _input_history_pos
 PUBLIC _spectrum_frame_wait
 PUBLIC _sprinter_key_scan_raw
 PUBLIC _sprinter_clean_exit
 PUBLIC _sprinter_video_graphics
+PUBLIC _sprinter_palette_restore
 PUBLIC sprinter_disk_gate
+PUBLIC sprinter_dss_enter
+PUBLIC sprinter_dss_leave
+PUBLIC _spectrum_gui_poll_key
+PUBLIC _spectrum_gui_set_turn_label
+PUBLIC _spectrum_net_sync_time
+PUBLIC _spectrum_uart_background_pump
+PUBLIC _spectrum_net_runtime_wait_frame_plain
+PUBLIC _netchesszx_setup_step_overlay
+PUBLIC _netchesszx_setup_render_edit_line
+PUBLIC _netchesszx_setup_compute_visible
+PUBLIC _netchesszx_setup_render_overlay
+PUBLIC _netchesszx_setup_paint_attrs
+PUBLIC _netchesszx_setup_render_rows
 
 EXTERN _spectrum_input_frame_tick
 EXTERN _spectrum_input_poll_event
@@ -137,10 +140,21 @@ EXTERN _spectrum_info_show_game_setup
 EXTERN _spectrum_info_show_preflight
 EXTERN _spectrum_info_clear_tail
 EXTERN _spectrum_info_line
-EXTERN _sprinter_render_present
 EXTERN _sprinter_gfx_start
 EXTERN _sprinter_gfx_stop
-EXTERN SPRINTER_CLIENT_ENTRY
+EXTERN _gfx320_bind
+EXTERN _gfx320_clear
+EXTERN _gfx320_get_config
+EXTERN _gfx320_get_version
+EXTERN _gfx320_palette_load256
+EXTERN _gfx320_set_page_table
+EXTERN _gfx320_set_vram_window
+EXTERN _sprinter_rx_slow_enter
+EXTERN _sprinter_rx_slow_leave
+EXTERN _sprinter_unet_shutdown
+EXTERN sprinter_app_main
+
+DEFC SPRINTER_CLIENT_ENTRY = sprinter_app_main
 
 DEFC _overlay_code_slot = 0x4000
 DEFC _spectrum_overlay_loaded_id = SPRINTER_OVERLAY_LOADED_ID
@@ -165,43 +179,30 @@ DEFC _spectrum_net_runtime_fat_date = 0x8221
 DEFC _spectrum_net_runtime_fat_time = 0x8224
 DEFC _spectrum_net_runtime_clock_ready = 0x8227
 DEFC _spectrum_frame_wait = 0x822A
-; State imported by production setup/input overlays.  It remains in WIN2 and
-; aliases transient buffers that are never live during those overlay calls.
-DEFC _last_ip = SPRINTER_STATUS_BUFFER
-DEFC _setup_choice = SPRINTER_DIRENT_BUFFER
-DEFC _setup_focus_choice = SPRINTER_DIRENT_BUFFER + 6
-DEFC _setup_focus_board_theme = SPRINTER_DIRENT_BUFFER + 12
-DEFC _setup_defined_mask = SPRINTER_DIRENT_BUFFER + 13
-DEFC _setup_visible_mask = SPRINTER_DIRENT_BUFFER + 15
-DEFC _setup_cursor = SPRINTER_DIRENT_BUFFER + 17
-DEFC _setup_room_editing = SPRINTER_DIRENT_BUFFER + 18
-DEFC _setup_edit_row = SPRINTER_DIRENT_BUFFER + 19
-DEFC _setup_port_text = SPRINTER_DIRENT_BUFFER + 20
-DEFC _local_input_len = SPRINTER_OVERLAY_CONTEXT + 8
-DEFC _local_input_cursor = SPRINTER_OVERLAY_CONTEXT + 9
-DEFC _local_input_mode = SPRINTER_OVERLAY_CONTEXT + 10
-DEFC _input_history_count = SPRINTER_OVERLAY_CONTEXT + 11
-DEFC _input_history_pos = SPRINTER_OVERLAY_CONTEXT + 12
-
+DEFC _spectrum_gui_poll_key = 0x822D
+DEFC _spectrum_gui_set_turn_label = 0x826C
+DEFC _spectrum_net_sync_time = 0x8227
+DEFC _netchesszx_setup_step_overlay = 0x82C9
+DEFC _netchesszx_setup_render_edit_line = 0x82CC
+DEFC _netchesszx_setup_compute_visible = 0x82CF
+DEFC _netchesszx_setup_render_overlay = 0x82D2
+DEFC _netchesszx_setup_paint_attrs = 0x82D5
+DEFC _netchesszx_setup_render_rows = 0x82D8
+DEFC _sprinter_key_scan_raw = 0x82DB
+DEFC _spectrum_uart_background_pump = sprinter_noop
+DEFC _spectrum_net_runtime_wait_frame_plain = 0x822A
 sprinter_runtime_page_start:
-    ; Every possible IM2 vector byte resolves to #8181.
+    ; Every asynchronous vector resolves to one resident no-op handler.  Frame
+    ; timing deliberately uses the video blank below: a missing CTC interrupt
+    ; must never leave the foreground application halted.
     DEFS 257,0x81
     DEFS 0x0181-$,0
 
 sprinter_im2_handler:
-    PUSH AF
-    ; #FFFE is an I/O port, not a memory address.  The high port byte for
-    ; IN A,(n) comes from A, so this reads the display-sync status at #FFFE.
-    LD A,0xFF
-    IN A,(0xFE)
-    BIT 5,A
-    JR Z,sprinter_im2_chain
-    LD A,(SPRINTER_FRAME_COUNTER)
-    INC A
-    LD (SPRINTER_FRAME_COUNTER),A
-sprinter_im2_chain:
-    POP AF
-    JP 0x0038
+    ; Non-CTC sources must never enter DSS asynchronously: its cursor/mouse
+    ; path can page WIN1 while an application cold bank is executing.
+    EI
+    RETI
 
     DEFS 0x0200-$,0
 
@@ -273,17 +274,25 @@ sprinter_im2_chain:
     JP _spectrum_info_line
     JP sprinter_noop
     JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
-    JP sprinter_noop
+    JP sprinter_setup_step
+    JP sprinter_setup_edit_line
+    JP sprinter_setup_visible
+    JP sprinter_setup_render
+    JP sprinter_setup_paint
+    JP sprinter_setup_rows
+    JP sprinter_key_scan_raw_impl
 
     DEFS (SPRINTER_RUNTIME_ENTRY-0x8000)-$,0
 
 sprinter_runtime_start:
     DI
+    ; The application has no code or data in the WIN0 SRAM cache.  Leaving it
+    ; enabled replaces DSS RST vectors with cache-driver stubs (notably RST
+    ; #10 is DI/HALT), so keep WIN0 mapped to DSS for the entire process.
+    ; This must be the first hardware operation: z88dk's transition may have
+    ; enabled the cache before entering the permanent WIN2 runtime.
+    IN A,(PORT_CACHE_OFF)
+    IM 1
     LD SP,SPRINTER_STACK_TOP
     ; Do not erase loader metadata, the palette, or preloaded DATA images.
     LD HL,SPRINTER_OVERLAY_CONTEXT
@@ -300,22 +309,47 @@ sprinter_runtime_start:
     LD HL,SPRINTER_GFX_CONFIG
     LD (HL),A
     LD DE,SPRINTER_GFX_CONFIG+1
-    LD BC,SPRINTER_BASE_DATA-SPRINTER_GFX_CONFIG-1
+    LD BC,0x0020-1
     LDIR
     LD HL,SPRINTER_BASE_BSS
     LD (HL),A
     LD DE,SPRINTER_BASE_BSS+1
+    LD BC,0x0100-1
+    LDIR
+    LD HL,SPRINTER_UI_BSS
+    LD (HL),A
+    LD DE,SPRINTER_UI_BSS+1
+    LD BC,0x00D0-1
+    LDIR
+    LD HL,SPRINTER_PROTOCOL_BSS
+    LD (HL),A
+    LD DE,SPRINTER_PROTOCOL_BSS+1
     LD BC,0x0180-1
     LDIR
+    LD HL,SPRINTER_UNET_HANDLE
+    LD (HL),A
+    LD DE,SPRINTER_UNET_HANDLE+1
+    LD BC,0x002C-1
+    LDIR
+    LD A,0xFF
+    LD (SPRINTER_UNET_HANDLE),A
     LD A,OVL_INVALID
     LD (SPRINTER_OVERLAY_LOADED_ID),A
     LD (SPRINTER_OVERLAY_CACHE_ID),A
+    ; From this point all asynchronous sources use the resident catch-all IM2
+    ; handler.  DSS calls temporarily enter IM1 only while their resident gate
+    ; owns both pageable windows, then sprinter_dss_leave returns here.  Doing
+    ; this before libman/GFX/uNet startup prevents a DSS interrupt from paging
+    ; WIN1 in the middle of loader decompression.
+    LD A,0x80
+    LD I,A
+    IM 2
+    LD A,1
+    LD (SPRINTER_CBL_ARMED),A
     EI
 
-    ; Keep DSS and GFX320 initialization in the launcher's IM1 environment.
-    ; SetVMod reaches BIOS and libman performs several DSS calls; switching to
-    ; IM2 before those calls lets a system interrupt return through our vector
-    ; while DSS is temporarily using its own mappings.
+    ; Each DSS/GFX/libman call has its own resident IM1 gate.  Between calls
+    ; startup remains in the same safe IM2 environment as the application.
     CALL sprinter_read_rtc
     JR C,sprinter_start_fail
     CALL sprinter_init_config_path
@@ -324,14 +358,60 @@ sprinter_runtime_start:
     LD A,L
     OR A
     JR Z,sprinter_start_fail
+    CALL _sprinter_palette_restore
+    LD A,L
+    OR A
+    JR Z,sprinter_start_fail
+    ; SetVMod tells the DSS mouse driver about graphics mode and may make its
+    ; hardware cursor visible.  The game has no mouse UI; hide it before the
+    ; synchronous KEYSCAN service starts touching the cursor each frame.
+    LD C,0x02                    ; Dss.Mouse.HideCursor
+    CALL sprinter_dss_enter
+    RST 0x30                    ; ToDSS.Mouse
+    CALL sprinter_dss_leave
+    ; The RGB888 palette is needed only during gfx startup.  From this point
+    ; on the same permanent WIN2 bytes are the uNet stream/packet workspace.
+    LD HL,SPRINTER_GFX_PALETTE
+    XOR A
+    LD (HL),A
+    LD DE,SPRINTER_GFX_PALETTE+1
+    LD BC,0x0300-1
+    LDIR
+    LD HL,(SPRINTER_RTC_YEAR)
+    LD A,H
+    XOR L
+    LD L,A
+    LD A,(SPRINTER_RTC_DAY)
+    LD H,A
+    LD A,(SPRINTER_RTC_MONTH)
+    XOR H
+    LD H,A
+    LD A,(SPRINTER_RTC_HOUR)
+    XOR L
+    LD L,A
+    LD A,(SPRINTER_RTC_MINUTE)
+    XOR H
+    LD H,A
+    LD A,(SPRINTER_RTC_SECOND)
+    XOR H
+    LD H,A
+    LD A,(SPRINTER_FRAME_COUNTER)
+    XOR L
+    LD L,A
+    LD (SPRINTER_SESSION_NONCE),HL
+    ; Discard the shell's launch Enter before the setup FSM begins.
+    LD C,DSS_K_CLEAR
+    CALL sprinter_dss_enter
+    RST 0x10
+    CALL sprinter_dss_leave
     CALL sprinter_cbl_arm
-    LD A,0x80
-    LD I,A
-    IM 2
-    EI
+    LD A,(SPRINTER_PAGE_TABLE)
+    OUT (PORT_WIN1),A
     ; Call the portable application body, not z88dk's CRT entry at #4100.
     ; The CRT entry installs SP=#0000 and halts instead of returning; this
-    ; runtime already owns initialization and the permanent WIN2 stack.
+    ; runtime already owns initialization and the permanent WIN2 stack.  The
+    ; app page is already mapped, so entering through a resident page gate
+    ; would incorrectly hold its recursion lock for the application's lifetime.
     CALL SPRINTER_CLIENT_ENTRY
     LD A,L
     LD (SPRINTER_DIAG_RESULT),A
@@ -347,6 +427,10 @@ _sprinter_clean_exit:
     LD (SPRINTER_DIAG_RESULT),A
 
 sprinter_cleanup:
+    ; uNet shutdown must run while the network call environment and current
+    ; interrupt mode are still intact.  It resumes an outstanding pause,
+    ; closes channel zero, calls NETDONE and unloads the selected DLL.
+    CALL _sprinter_unet_shutdown
     ; Cleanup stays in IM1 permanently.  SetVMod is issued for both screens;
     ; PORT_Y is parked and front buffer zero is selected before DSS.Exit.
     DI
@@ -356,7 +440,11 @@ sprinter_cleanup:
     LD A,3
     LD B,1
     LD C,DSS_SETVMOD
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     JR NC,sprinter_cleanup_screen_one_clear
     LD A,5
     LD (SPRINTER_DIAG_RESULT),A
@@ -367,7 +455,11 @@ sprinter_cleanup_screen_zero:
     LD A,3
     LD B,0
     LD C,DSS_SETVMOD
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     JR NC,sprinter_cleanup_screen_zero_clear
     LD A,5
     LD (SPRINTER_DIAG_RESULT),A
@@ -410,15 +502,42 @@ sprinter_cleanup_maps_done:
     LD A,(SPRINTER_DIAG_RESULT)
     OR A
     JR Z,sprinter_exit
-    LD HL,msg_stage2_fail
+    LD HL,msg_stage3_fail
     CALL sprinter_puts
 sprinter_exit:
     LD A,(SPRINTER_DIAG_RESULT)
     LD B,A
     LD C,DSS_EXIT
+    CALL sprinter_dss_enter
     RST 0x10
     DI
     HALT
+
+; WIN0 stays mapped to DSS throughout the process.  Keeping these helpers at
+; every direct system call makes the rule local and protects against a future
+; library call unexpectedly enabling the cache.  They never restore the cache:
+; the game owns no cache-resident state and DSS owns the WIN0 vectors.
+sprinter_dss_enter:
+    PUSH AF
+    DI
+    IN A,(PORT_CACHE_OFF)
+    IM 1
+    POP AF
+    EI
+    RET
+
+sprinter_dss_leave:
+    DI
+    LD A,(SPRINTER_CBL_ARMED)
+    OR A
+    JR Z,sprinter_dss_leave_im1
+    IM 2
+    JR sprinter_dss_leave_ready
+sprinter_dss_leave_im1:
+    IM 1
+sprinter_dss_leave_ready:
+    EI
+    RET
 
 ; Enter 320x256x256 mode on both display pages from permanent WIN2.  SetVMod
 ; temporarily changes WIN1, so reinstall the base page after each call.
@@ -430,18 +549,28 @@ _sprinter_video_graphics:
     LD A,0x81
     LD B,1
     LD C,DSS_SETVMOD
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     JR C,sprinter_video_fail
     LD A,(SPRINTER_PAGE_TABLE)
     OUT (PORT_WIN1),A
     LD A,0x81
     LD B,0
     LD C,DSS_SETVMOD
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     JR C,sprinter_video_fail
     LD A,(SPRINTER_PAGE_TABLE)
     OUT (PORT_WIN1),A
     IN A,(PORT_RGMOD)
+    ; Match the Stage-2 presentation baseline: start on buffer zero, render
+    ; into the back buffer and publish with GFX320 swap + front-to-back copy.
     AND 0xFE
     OUT (PORT_RGMOD),A
     ; GFX320 maps #50 into WIN3 for each bounded operation and restores the
@@ -459,6 +588,58 @@ sprinter_video_fail:
     POP IX
     RET
 
+; Reapply the immutable RGB888 palette from its PRELOAD asset page.  uNet and
+; libman are allowed to use the palette staging area in WIN2 after GFX startup,
+; so a later restoration must read the pinned asset page rather than that
+; workspace.  The routine executes in WIN2 and restores the exact WIN1/WIN3
+; mappings before returning to a banked caller.
+_sprinter_palette_restore:
+    PUSH IX
+    PUSH IY
+    IN A,(PORT_WIN1)
+    PUSH AF
+    IN A,(PORT_WIN3)
+    PUSH AF
+    DI
+    LD A,(SPRINTER_PALETTE_PAGE_INDEX)
+    OUT (PORT_WIN1),A
+    LD A,0x50
+    OUT (PORT_WIN3),A
+    LD HL,0x4000
+    LD B,0
+    LD D,0
+sprinter_palette_restore_loop:
+    LD A,D
+    OUT (PORT_Y),A
+    LD A,(HL)
+    LD (0xC3E0),A
+    LD (0xC3E4),A
+    INC HL
+    LD A,(HL)
+    LD (0xC3E1),A
+    LD (0xC3E5),A
+    INC HL
+    LD A,(HL)
+    LD (0xC3E2),A
+    LD (0xC3E6),A
+    INC HL
+    XOR A
+    LD (0xC3E3),A
+    LD (0xC3E7),A
+    INC D
+    DJNZ sprinter_palette_restore_loop
+    LD A,0xC0
+    OUT (PORT_Y),A
+    POP AF
+    OUT (PORT_WIN3),A
+    POP AF
+    OUT (PORT_WIN1),A
+    EI
+    POP IY
+    POP IX
+    LD HL,1
+    RET
+
 ; SetVMod changes the geometry but leaves text cells with zero attributes on
 ; real DSS.  Clear each selected text page to a visible console default and
 ; update DSS's shell colour for programs that do not initialize it themselves.
@@ -470,7 +651,11 @@ sprinter_clear_text_screen:
     LD A,' '
     LD B,0x07
     LD C,DSS_CLEAR
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     RET
 
 ; ---------------------------------------------------------------------------
@@ -480,6 +665,71 @@ sprinter_clear_text_screen:
 ; stores only the seven-byte descriptor; both paths map the bank for the call
 ; and restore the exact previous WIN1.
 ; ---------------------------------------------------------------------------
+
+; Setup API adapters.  Stage 3 keeps the shared setup state and decision
+; engine, but its cold code lives in WIN1.  These resident adapters copy the
+; call arguments into the fixed context before dispatch and, for the 16-bit
+; visibility result, reload the value after WIN1 has been restored.
+sprinter_setup_step:
+    LD A,L
+    LD (SPRINTER_OVERLAY_CONTEXT),A
+    LD A,OVL_SETUP
+    LD E,0
+    JP sprinter_overlay_dispatch_cached_ae
+
+sprinter_setup_edit_line:
+    LD A,L
+    LD (SPRINTER_OVERLAY_CONTEXT),A
+    LD A,OVL_MENU_CONFIG
+    LD E,3
+    JP sprinter_overlay_dispatch_cached_ae
+
+sprinter_setup_visible:
+    LD (SPRINTER_OVERLAY_CONTEXT),HL
+    LD A,OVL_SETUP
+    LD E,1
+    CALL sprinter_overlay_dispatch_cached_ae
+    LD HL,(SPRINTER_OVERLAY_CONTEXT)
+    RET
+
+sprinter_setup_render:
+    LD HL,2
+    ADD HL,SP
+    LD DE,SPRINTER_OVERLAY_CONTEXT
+    LD BC,4
+    LDIR
+    LD A,OVL_MENU_CONFIG
+    LD E,4
+    JP sprinter_overlay_dispatch_cached_ae
+
+sprinter_setup_paint:
+    LD A,OVL_MENU_CONFIG
+    LD E,1
+    JP sprinter_overlay_dispatch_cached_ae
+
+sprinter_setup_rows:
+    LD HL,2
+    ADD HL,SP
+    LD B,(HL)
+    INC HL
+    LD C,(HL)
+    INC HL
+    INC HL
+    LD E,(HL)
+    INC HL
+    LD D,(HL)
+    LD HL,SPRINTER_OVERLAY_CONTEXT
+    LD (HL),B
+    INC HL
+    LD (HL),C
+    INC HL
+    LD (HL),E
+    INC HL
+    LD (HL),D
+    LD A,OVL_MENU_CONFIG
+    LD E,0
+    JP sprinter_overlay_dispatch_cached_ae
+
 sprinter_overlay_exec:
     LD A,OVL_INVALID
     LD (SPRINTER_OVERLAY_CACHE_ID),A
@@ -544,8 +794,13 @@ sprinter_overlay_lookup_found:
     OR A
     JP Z,sprinter_overlay_fail
     LD DE,SPRINTER_OVERLAY_CACHE_DESC
-    LD BC,SPRINTER_ATLAS_DESCRIPTOR_SIZE
+    LD BC,7
     LDIR
+    ; Byte seven classifies operations that must hold RX flow control for the
+    ; complete cold call.  Keeping it outside the seven-byte legacy cache
+    ; avoids moving the established overlay state ABI.
+    LD A,(HL)
+    LD (SPRINTER_OVERLAY_SLOW_FLAG),A
     LD A,(SPRINTER_OVERLAY_LOADED_ID)
     LD (SPRINTER_OVERLAY_CACHE_ID),A
     JR sprinter_overlay_descriptor_ready
@@ -600,7 +855,7 @@ sprinter_overlay_length_low:
     LD C,A
     LD A,(SPRINTER_OVERLAY_CACHE_DESC+6)
     CP C
-    JR NZ,sprinter_overlay_restore_fail
+    JP NZ,sprinter_overlay_restore_fail
     INC HL
     LD A,(SPRINTER_OVERLAY_ENTRY)
     ADD A,A
@@ -641,6 +896,18 @@ sprinter_overlay_length_low:
     SBC HL,DE
     JR C,sprinter_overlay_restore_fail
     JR Z,sprinter_overlay_restore_fail
+    XOR A
+    LD (SPRINTER_OVERLAY_GUARDED),A
+    LD A,(SPRINTER_OVERLAY_SLOW_FLAG)
+    AND 1
+    JR Z,sprinter_overlay_guard_ready
+        CALL _sprinter_rx_slow_enter
+        LD A,L
+        OR A
+        JP Z,sprinter_overlay_restore_fail
+    LD A,1
+    LD (SPRINTER_OVERLAY_GUARDED),A
+sprinter_overlay_guard_ready:
     ; Preserve the existing overlay-entry ABI as well: C fastcall entries get
     ; the fixed context in HL and native assembly entries get it in DE.  Like
     ; the Spectrum and Next dispatchers, every cold entry starts under DI;
@@ -663,6 +930,7 @@ sprinter_overlay_entry_return:
     LD (SPRINTER_OVERLAY_BUSY),A
     LD A,OVL_INVALID
     LD (SPRINTER_OVERLAY_LOADED_ID),A
+    CALL sprinter_overlay_guard_leave
     LD A,(SPRINTER_OVERLAY_RETURN)
     LD L,A
     EI
@@ -676,10 +944,19 @@ sprinter_overlay_restore_fail:
 sprinter_overlay_fail:
     LD A,OVL_INVALID
     LD (SPRINTER_OVERLAY_LOADED_ID),A
+    CALL sprinter_overlay_guard_leave
     XOR A
     LD L,A
     EI
     RET
+
+sprinter_overlay_guard_leave:
+    LD A,(SPRINTER_OVERLAY_GUARDED)
+    OR A
+    RET Z
+    XOR A
+    LD (SPRINTER_OVERLAY_GUARDED),A
+    JP _sprinter_rx_slow_leave
 sprinter_overlay_nested:
     LD A,1
     LD (SPRINTER_PLATFORM_ERROR),A
@@ -689,24 +966,170 @@ sprinter_overlay_nested:
     LD L,A
     RET
 
-sprinter_call_hl:
-    JP (HL)
+; ---------------------------------------------------------------------------
+; Resident WIN1 page gate.  Generated eight-byte thunks pass the target page
+; in A and place the target address inline after CALL.  Reading that inline
+; word preserves the caller's HL fastcall argument.  The exact previous page
+; and every ABI result register are restored; recursion is rejected before
+; changing the mapping.
+; ---------------------------------------------------------------------------
+sprinter_resident_call:
+    LD E,A
+    LD A,(SPRINTER_RESIDENT_BUSY)
+    OR A
+    LD A,E
+    JP NZ,sprinter_resident_nested
+    AND 0x3F
+    LD (SPRINTER_RESIDENT_PAGE),A
+    XOR A
+    LD (SPRINTER_RESIDENT_GUARDED),A
+    BIT 7,E
+    JR Z,sprinter_resident_class_ready
+    LD A,0x80
+    LD (SPRINTER_RESIDENT_GUARDED),A
+sprinter_resident_class_ready:
+    LD (SPRINTER_RESIDENT_HL),HL
+    POP HL
+    LD E,(HL)
+    INC HL
+    LD D,(HL)
+    LD (SPRINTER_RESIDENT_TARGET),DE
+    POP HL
+    LD (SPRINTER_RESIDENT_RETURN),HL
+    LD A,1
+    LD (SPRINTER_RESIDENT_BUSY),A
+    LD A,(SPRINTER_RESIDENT_GUARDED)
+    OR A
+    JR Z,sprinter_resident_guard_ready
+    CALL _sprinter_rx_slow_enter
+    LD A,L
+    OR A
+    JR NZ,sprinter_resident_guard_entered
+    XOR A
+    LD (SPRINTER_RESIDENT_GUARDED),A
+    LD (SPRINTER_RESIDENT_BUSY),A
+    LD HL,(SPRINTER_RESIDENT_RETURN)
+    PUSH HL
+    LD HL,0
+    RET
+sprinter_resident_guard_entered:
+    LD A,1
+    LD (SPRINTER_RESIDENT_GUARDED),A
+sprinter_resident_guard_ready:
+    IN A,(PORT_WIN1)
+    LD (SPRINTER_RESIDENT_PREV_PAGE),A
+    LD A,(SPRINTER_RESIDENT_PAGE)
+    LD E,A
+    LD D,0
+    LD HL,SPRINTER_PAGE_TABLE
+    ADD HL,DE
+    LD A,(HL)
+    OUT (PORT_WIN1),A
+    LD BC,sprinter_resident_entry_return
+    PUSH BC
+    LD BC,(SPRINTER_RESIDENT_TARGET)
+    PUSH BC
+    LD HL,(SPRINTER_RESIDENT_HL)
+    RET
+sprinter_resident_entry_return:
+    LD (SPRINTER_RESIDENT_HL),HL
+    LD (SPRINTER_RESIDENT_DE),DE
+    LD (SPRINTER_RESIDENT_BC),BC
+    LD (SPRINTER_RESIDENT_IX),IX
+    LD (SPRINTER_RESIDENT_IY),IY
+    PUSH AF
+    POP HL
+    LD (SPRINTER_RESIDENT_AF),HL
+    LD A,(SPRINTER_RESIDENT_PREV_PAGE)
+    OUT (PORT_WIN1),A
+    XOR A
+    LD (SPRINTER_RESIDENT_BUSY),A
+    CALL sprinter_resident_guard_leave
+    LD HL,(SPRINTER_RESIDENT_RETURN)
+    PUSH HL
+    LD IY,(SPRINTER_RESIDENT_IY)
+    LD IX,(SPRINTER_RESIDENT_IX)
+    LD BC,(SPRINTER_RESIDENT_BC)
+    LD DE,(SPRINTER_RESIDENT_DE)
+    LD HL,(SPRINTER_RESIDENT_AF)
+    PUSH HL
+    POP AF
+    LD HL,(SPRINTER_RESIDENT_HL)
+    RET
+sprinter_resident_guard_leave:
+    LD A,(SPRINTER_RESIDENT_GUARDED)
+    OR A
+    RET Z
+    XOR A
+    LD (SPRINTER_RESIDENT_GUARDED),A
+    JP _sprinter_rx_slow_leave
+sprinter_resident_nested:
+    POP DE
+    POP DE
+    PUSH DE
+    LD A,1
+    LD (SPRINTER_PLATFORM_ERROR),A
+    LD HL,0
+    RET
 
 ; ---------------------------------------------------------------------------
-; Generated base-bank thunks enter here with HL=base target.  The caller's
-; return address lives in an unmapped cold bank, so it is held in WIN2 until
-; the exact cold page is restored.  All classic-ABI result registers survive.
+; Generated far thunks use the same inline target format, preserving the
+; caller's HL fastcall argument.  The caller's return address lives in an
+; unmapped cold bank, so it is held in WIN2 until the exact cold page is
+; restored.  All classic-ABI result registers survive.
 ; ---------------------------------------------------------------------------
 sprinter_far_call:
-    LD (SPRINTER_FAR_TARGET),HL
+    LD E,A
+    AND 0x3F
+    LD (SPRINTER_FAR_PAGE),A
+    XOR A
+    LD (SPRINTER_FAR_GUARDED),A
+    BIT 7,E
+    JR Z,sprinter_far_class_ready
+    LD A,0x80
+    LD (SPRINTER_FAR_GUARDED),A
+sprinter_far_class_ready:
+    LD (SPRINTER_FAR_HL),HL
+    POP HL
+    LD E,(HL)
+    INC HL
+    LD D,(HL)
+    LD (SPRINTER_FAR_TARGET),DE
     POP HL
     LD (SPRINTER_FAR_RETURN),HL
+    LD A,(SPRINTER_FAR_GUARDED)
+    OR A
+    JR Z,sprinter_far_guard_ready
+    CALL _sprinter_rx_slow_enter
+    LD A,L
+    OR A
+    JR NZ,sprinter_far_guard_entered
+    XOR A
+    LD (SPRINTER_FAR_GUARDED),A
+    LD HL,(SPRINTER_FAR_RETURN)
+    PUSH HL
+    LD HL,0
+    RET
+sprinter_far_guard_entered:
+    LD A,1
+    LD (SPRINTER_FAR_GUARDED),A
+sprinter_far_guard_ready:
     IN A,(PORT_WIN1)
     LD (SPRINTER_FAR_PREV_PAGE),A
-    LD A,(SPRINTER_PAGE_TABLE)
+    LD A,(SPRINTER_FAR_PAGE)
+    LD E,A
+    LD D,0
+    LD HL,SPRINTER_PAGE_TABLE
+    ADD HL,DE
+    LD A,(HL)
     OUT (PORT_WIN1),A
-    LD HL,(SPRINTER_FAR_TARGET)
-    CALL sprinter_call_hl
+    LD BC,sprinter_far_entry_return
+    PUSH BC
+    LD BC,(SPRINTER_FAR_TARGET)
+    PUSH BC
+    LD HL,(SPRINTER_FAR_HL)
+    RET
+sprinter_far_entry_return:
     LD (SPRINTER_FAR_HL),HL
     LD (SPRINTER_FAR_DE),DE
     LD (SPRINTER_FAR_BC),BC
@@ -717,6 +1140,7 @@ sprinter_far_call:
     LD (SPRINTER_FAR_AF),HL
     LD A,(SPRINTER_FAR_PREV_PAGE)
     OUT (PORT_WIN1),A
+    CALL sprinter_far_guard_leave
     LD HL,(SPRINTER_FAR_RETURN)
     PUSH HL
     LD IY,(SPRINTER_FAR_IY)
@@ -728,77 +1152,163 @@ sprinter_far_call:
     POP AF
     LD HL,(SPRINTER_FAR_HL)
     RET
+sprinter_far_guard_leave:
+    LD A,(SPRINTER_FAR_GUARDED)
+    OR A
+    RET Z
+    XOR A
+    LD (SPRINTER_FAR_GUARDED),A
+    JP _sprinter_rx_slow_leave
 
 INCLUDE "sprinter_far_thunks.inc"
 
 ; ---------------------------------------------------------------------------
 ; Race-free frame wait and DSS keyboard translation.
 ; ---------------------------------------------------------------------------
-; The video-status flag at #FFFE.5 is live only while CBL is running.  Keep
-; CBL in its idle mode: it is neither a timer nor an interrupt source here.
-; Starting from a silent, empty FIFO avoids inheriting audio from DSS tools.
+; Application and cold-bank execution stay in IM2 so the DSS cursor/mouse
+; handler cannot page WIN1 asynchronously.  CBL is an audio FIFO, not a frame
+; timer: empty it with DAC-centre bytes and leave it stopped.  frame_wait uses
+; the video blank transition with a finite polling budget.  That has a defined
+; fallback on machines where the optional CTC chain is unavailable.
 sprinter_cbl_arm:
+    DI
     LD BC,PORT_CBL_CTRL
     XOR A
     OUT (C),A
-    INC C
+    LD BC,PORT_CBL_DATA
     LD A,CBL_IDLE
     LD B,0
-sprinter_cbl_flush:
+sprinter_cbl_silence:
     OUT (C),A
-    DJNZ sprinter_cbl_flush
-    DEC C
+    DJNZ sprinter_cbl_silence
+    LD BC,PORT_CBL_CTRL
+    XOR A
     OUT (C),A
+    LD A,0x80
+    LD I,A
+    IM 2
     LD A,1
     LD (SPRINTER_CBL_ARMED),A
+    EI
     RET
 
 sprinter_cbl_disarm:
     LD A,(SPRINTER_CBL_ARMED)
     OR A
     RET Z
+    DI
     LD BC,PORT_CBL_CTRL
     XOR A
     OUT (C),A
+    IM 1
     LD (SPRINTER_CBL_ARMED),A
+    EI
     RET
 
 sprinter_frame_wait:
     LD A,(SPRINTER_DISK_BUSY)
     OR A
     JR NZ,sprinter_frame_nested
-    DI
+    IN A,(PORT_WIN1)
+    PUSH AF
+    IN A,(PORT_WIN3)
+    PUSH AF
+    ; PORT_Y is write-only: reading it is not a reliable vertical-beam
+    ; status source on every DSS/MAME combination.  Treat this only as a
+    ; best-effort hint and keep the fallback below one millisecond, so a
+    ; missing transition cannot turn each typed character into a multi-frame
+    ; stall.
+    LD DE,0x0400
+; Start outside blank, then wait for the following blank edge.  Do not use
+; the interrupt sleep instruction here: a non-delivered interrupt degrades to
+; a short timed poll,
+; rather than freezing network and input forever.
+sprinter_frame_wait_active:
+    LD A,0xFF
+    IN A,(0xFE)
+    BIT 5,A
+    JR Z,sprinter_frame_wait_blank
+    DEC DE
+    LD A,D
+    OR E
+    JR NZ,sprinter_frame_wait_active
+    JR sprinter_frame_wait_ready
+sprinter_frame_wait_blank:
+    LD A,0xFF
+    IN A,(0xFE)
+    BIT 5,A
+    JR NZ,sprinter_frame_wait_tick
+    DEC DE
+    LD A,D
+    OR E
+    JR NZ,sprinter_frame_wait_blank
+    JR sprinter_frame_wait_ready
+sprinter_frame_wait_tick:
     LD A,(SPRINTER_FRAME_COUNTER)
-    LD (SPRINTER_FRAME_BASELINE),A
-    XOR A
-    LD (SPRINTER_FRAME_WAKES),A
-sprinter_frame_wait_loop:
-    EI
-    HALT
-    DI
-    LD A,(SPRINTER_FRAME_COUNTER)
-    LD B,A
-    LD A,(SPRINTER_FRAME_BASELINE)
-    CP B
-    JR NZ,sprinter_frame_ready
-    LD A,(SPRINTER_FRAME_WAKES)
     INC A
-    LD (SPRINTER_FRAME_WAKES),A
-    JR NZ,sprinter_frame_wait_loop
-    LD A,2
-    LD (SPRINTER_PLATFORM_ERROR),A
+    LD (SPRINTER_FRAME_COUNTER),A
+sprinter_frame_wait_ready:
+    ; Service only the unchanged DSS keyboard scanner at this resident safe
+    ; point.  Calling the whole INTx38 body also runs mouse/cursor drawing in
+    ; graphics mode, producing partial-raster updates over the game display.
+    DI
+    CALL sprinter_dss_keyscan
+sprinter_frame_dss_return:
+    DI
+    POP AF
+    OUT (PORT_WIN3),A
+    POP AF
+    OUT (PORT_WIN1),A
     EI
-    SCF
-    RET
-sprinter_frame_ready:
-    LD A,B
-    LD (SPRINTER_FRAME_BASELINE),A
-    EI
-    CALL _spectrum_input_frame_tick
-    CALL _sprinter_render_present
-    LD A,0xC0
-    OUT (PORT_Y),A
     OR A
+    RET
+
+; DSS RST #38 contains JP .Handler; .Handler contains CALL INTx38_Handler.
+; INTx38_Handler's first CALL, at byte +14, is KEYSCAN in the pinned DSS.
+; Resolve that target at runtime so the game does not hard-code a DSS address.
+; KEYSCAN is entered with the same full register save and DI state as its
+; normal interrupt caller, but mouse/cursor work is deliberately excluded.
+sprinter_dss_keyscan:
+    PUSH AF
+    EX AF,AF'
+    PUSH AF
+    PUSH BC
+    PUSH DE
+    PUSH HL
+    EXX
+    PUSH BC
+    PUSH DE
+    PUSH HL
+    PUSH IX
+    PUSH IY
+    LD HL,(0x003C)
+    LD DE,14
+    ADD HL,DE
+    LD A,(HL)
+    CP 0xCD
+    JR NZ,sprinter_dss_keyscan_done
+    INC HL
+    LD E,(HL)
+    INC HL
+    LD D,(HL)
+    LD HL,sprinter_dss_keyscan_return
+    PUSH HL
+    EX DE,HL
+    JP (HL)
+sprinter_dss_keyscan_return:
+sprinter_dss_keyscan_done:
+    POP IY
+    POP IX
+    POP HL
+    POP DE
+    POP BC
+    EXX
+    POP HL
+    POP DE
+    POP BC
+    POP AF
+    EX AF,AF'
+    POP AF
     RET
 sprinter_frame_nested:
     LD A,3
@@ -811,6 +1321,10 @@ sprinter_key_poll:
     PUSH AF
     IN A,(PORT_WIN3)
     PUSH AF
+    ; Preserve the Stage-2 keyboard path: TestKey peeks the DSS ring and
+    ; ScanKey consumes one completed record.  WIN0 remains mapped to DSS for
+    ; the entire process, so these short non-blocking calls do not need the
+    ; blocking file/video IM1 transition.
     LD C,DSS_TESTKEY
     RST 0x10
     JP Z,sprinter_key_none_saved
@@ -873,6 +1387,14 @@ sprinter_key_escape_plain:
     RET
 sprinter_key_positional:
     LD A,(SPRINTER_KEY_SCAN)
+    ; DSS normally gives the main '.' key as ASCII #2E.  Some keyboard/MAME
+    ; paths return only its positional code; accept that form too.  Treat the
+    ; keypad decimal key likewise so a Direct IPv4 address can always be
+    ; entered without depending on the host keyboard layout.
+    CP 0x32
+    JR Z,sprinter_key_dot
+    CP 0x4F
+    JR Z,sprinter_key_dot
     CP 0x58
     JR Z,sprinter_key_up
     CP 0x52
@@ -885,18 +1407,18 @@ sprinter_key_positional:
     JR Z,sprinter_key_home
     CP 0x51
     JR Z,sprinter_key_end
-    CP 0x4F
-    JR Z,sprinter_key_backspace
     CP 0x3B
     JR Z,sprinter_key_f1
 sprinter_key_none:
     LD L,0
     RET
 
-_sprinter_key_scan_raw:
+sprinter_key_scan_raw_impl:
     PUSH IX
     PUSH IY
     CALL sprinter_key_poll
+    LD A,L
+    LD (SPRINTER_KEY_MAPPED),A
     POP IY
     POP IX
     LD H,0
@@ -922,6 +1444,9 @@ sprinter_key_end:
 sprinter_key_f1:
     LD L,0x90
     RET
+sprinter_key_dot:
+    LD L,'.'
+    RET
 sprinter_key_none_saved:
     POP AF
     OUT (PORT_WIN3),A
@@ -946,6 +1471,10 @@ sprinter_disk_gate:
     LD A,(SPRINTER_DISK_BUSY)
     OR A
     JP NZ,sprinter_disk_reentry
+    CALL _sprinter_rx_slow_enter
+    LD A,L
+    OR A
+    JP Z,sprinter_disk_guard_fail
     LD A,1
     LD (SPRINTER_DISK_BUSY),A
     IN A,(PORT_WIN1)
@@ -953,6 +1482,10 @@ sprinter_disk_gate:
     IN A,(PORT_WIN3)
     LD (SPRINTER_DISK_WIN3),A
     DI
+    ; The permanent runtime deliberately keeps WIN0 on DSS.  A DLL must never
+    ; leave the cache enabled before a disk RST, because cached RST #10 is a
+    ; DI/HALT driver stub rather than a DSS API entry.
+    IN A,(PORT_CACHE_OFF)
     IM 1
     EI
     LD IX,(SPRINTER_DISK_IN_IX)
@@ -998,6 +1531,7 @@ sprinter_disk_restore_im1:
     IM 1
 sprinter_disk_restore_interrupts:
     EI
+    CALL _sprinter_rx_slow_leave
     LD IX,(SPRINTER_DISK_OUT_IX)
     LD BC,(SPRINTER_DISK_OUT_BC)
     LD DE,(SPRINTER_DISK_OUT_DE)
@@ -1005,6 +1539,13 @@ sprinter_disk_restore_interrupts:
     PUSH HL
     POP AF
     LD HL,(SPRINTER_DISK_OUT_HL)
+    POP IY
+    RET
+sprinter_disk_guard_fail:
+    LD A,4
+    LD (SPRINTER_PLATFORM_ERROR),A
+    LD A,0xFF
+    SCF
     POP IY
     RET
 sprinter_disk_reentry:
@@ -1280,7 +1821,11 @@ sprinter_read_rtc:
     IN A,(PORT_WIN3)
     PUSH AF
     LD C,DSS_SYSTIME
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     LD (SPRINTER_RTC_YEAR),IX
     LD A,E
     LD (SPRINTER_RTC_MONTH),A
@@ -1291,7 +1836,7 @@ sprinter_read_rtc:
     LD A,L
     LD (SPRINTER_RTC_MINUTE),A
     LD A,B
-    LD (SPRINTER_KEY_ASCII),A
+    LD (SPRINTER_RTC_SECOND),A
     POP AF
     OUT (PORT_WIN3),A
     POP AF
@@ -1360,7 +1905,7 @@ sprinter_rtc_min_shift:
     RL D
     DJNZ sprinter_rtc_min_shift
     ADD HL,DE
-    LD A,(SPRINTER_KEY_ASCII)
+    LD A,(SPRINTER_RTC_SECOND)
     CP 60
     JR NC,sprinter_rtc_bad
     SRL A
@@ -1443,7 +1988,11 @@ sprinter_puts:
     IN A,(PORT_WIN3)
     PUSH AF
     LD C,DSS_PCHARS
+    CALL sprinter_dss_enter
     RST 0x10
+    PUSH AF
+    CALL sprinter_dss_leave
+    POP AF
     POP AF
     OUT (PORT_WIN3),A
     POP AF
@@ -1454,7 +2003,7 @@ sprinter_puts:
 
 config_suffix:
     DEFB "SYS\\CONFIG",0
-msg_stage2_fail:
+msg_stage3_fail:
     DEFB 0
 
 ; Pinned libman 1.3 remains resident in WIN2.  The generated adapter changes
@@ -1462,12 +2011,14 @@ msg_stage2_fail:
 PUBLIC l_load
 PUBLIC l_free
 PUBLIC l_call
-DEFC LIBMAN_MAX_LIBS = 1
+PUBLIC l_info
+DEFC LIBMAN_MAX_LIBS = 2
 DEFC LIBMAN_APP_DIR = SPRINTER_APP_DIR
 DEFC LIBMAN_PATH_BUFFER = SPRINTER_PATH_BUFFER
 DEFC LIBMAN_PATH_CAPACITY = 256
 INCLUDE "libman.asm"
 
+INCLUDE "sprinter_resident_thunks.inc"
 INCLUDE "sprinter_atlas.inc"
 
 sprinter_runtime_end:

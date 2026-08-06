@@ -49,6 +49,7 @@ uint8_t netchesszx_asm_restore_chunk_step(uint8_t *mask,
 #define LOCAL_MOVE_SENT 2u
 #define LOCAL_CHAT_TEXT_MAX NETCHESSZX_CHAT_MESSAGE_TEXT_MAX
 #define LOCAL_INPUT_MAX LOCAL_CHAT_TEXT_MAX
+#define LOCAL_INPUT_MODE_CHAT 2u
 #define INPUT_HISTORY_SIZE 2u
 #define INPUT_HISTORY_TEXT_MAX 31u
 #define STATUS_PHASE_CONNECTION_SETUP 0u
@@ -613,7 +614,14 @@ static void suppress_key_until_release(uint8_t key);
 
 static uint16_t mqtt_new_session_id(void)
 {
+#ifdef NETCHESSZX_SPRINTER
+    volatile uint16_t *seed = (volatile uint16_t *)SPRINTER_SESSION_NONCE;
+    uint8_t frame = *(volatile uint8_t *)SPRINTER_FRAME_COUNTER;
+    uint16_t id = (uint16_t)(*seed ^ frame ^ ((uint16_t)frame << 8));
+    *seed = (uint16_t)(id + 0x9e37u);
+#else
     uint16_t id = *(volatile uint16_t *)0x5c78u;
+#endif
     return id == 0u ? 1u : id;
 }
 
@@ -634,6 +642,14 @@ static void session_setup_render(uint8_t full,
 
 static uint8_t session_setup_start(uint8_t key)
 {
+#ifdef NETCHESSZX_SPRINTER
+    if (setup_role == NETCHESSZX_SESSION_ROLE_HOST &&
+        setup_transport == NETCHESSZX_TRANSPORT_DIRECT) {
+        notify_error("DIRECT HOST UNSUPPORTED");
+        suppress_key_until_release(key);
+        return 0u;
+    }
+#endif
     netchesszx_notation = setup_notation;
     netchesszx_movement_hints = setup_hints;
     netchesszx_board_theme_apply(setup_focus_board_theme);
@@ -1231,8 +1247,7 @@ static void fileui_open(void)
 #ifdef NETCHESSZX_NEXT_BANKING
     spectrum_next_sprites_hide_all();
 #endif
-    spectrum_gui_show_fileui();
-    if (!spectrum_fileui_open_render()) {
+    if (!spectrum_gui_show_fileui() || !spectrum_fileui_open_render()) {
         spectrum_gui_set_board_snapshot(spectrum_board_cells());
         spectrum_gui_restore_board_area();
         notify_error(msg_overlay_failed);
@@ -1853,6 +1868,21 @@ static uint8_t input_submit(void)
         return 1u;
     }
 
+    /* C opens a chat-only editor: text which happens to resemble a move must
+     * remain chat text instead of moving a piece. */
+    if (local_input_mode == LOCAL_INPUT_MODE_CHAT) {
+        if (!netchesszx_session_peer_ready_state) {
+            notify_wait_opponent();
+            return 1u;
+        }
+        rc = send_local_chat(local_input);
+        if (rc) {
+            netchesszx_input_edit_history_add_overlay(local_input);
+            input_stop_and_show_cursor();
+        }
+        return rc;
+    }
+
     if (spectrum_input_parse_move(local_input, move)) {
         if (game_over) {
             notify_error_msg(SPECTRUM_GUI_MSG_GAME_NOT_STARTED);
@@ -2145,6 +2175,18 @@ static uint8_t process_local_key(uint8_t key) NETCHESSZX_FASTCALL
         }
         cursor_hide();
         netchesszx_input_edit_begin_empty_overlay();
+        notify_info(NETCHESSZX_UI_NOTICE_TYPE_MOVE_CHAT);
+        return 1u;
+    }
+
+    if (key == 'c' || key == 'C') {
+        if (!netchesszx_session_peer_ready_state) {
+            notify_wait_opponent();
+            return 1u;
+        }
+        cursor_hide();
+        netchesszx_input_edit_begin_empty_overlay();
+        local_input_mode = LOCAL_INPUT_MODE_CHAT;
         notify_info(NETCHESSZX_UI_NOTICE_TYPE_MOVE_CHAT);
         return 1u;
     }
@@ -3052,6 +3094,13 @@ static void game_message_loop(void)
     }
 
     while (1) {
+        /* uNet RECV is deliberately non-blocking.  The game loop must still
+         * advance one UI frame before polling it again: that is where the DSS
+         * keyboard record is consumed and the renderer's transient state is
+         * settled.  Without this pacing an idle linked session spins forever
+         * in RECV, so no key can reach process_local_key(). */
+        spectrum_frame_wait();
+        spectrum_gui_tick();
         if (!process_local_key(spectrum_gui_poll_key())) {
             handle_opponent_disconnected();
             return;
@@ -3286,8 +3335,12 @@ connection_setup:
     confirm_action = CONFIRM_NONE;
     control_pending = 0u;
     spectrum_gui_set_board_view(0u);
-    spectrum_gui_set_board_pieces_visible(0u);
-    spectrum_board_clear();
+    /* Keep the established board visible while the link is being checked.
+       The network session will replace this preview with its own state after
+       setup; a blank board here made a failed preflight look like a renderer
+       failure. */
+    spectrum_gui_set_board_pieces_visible(1u);
+    spectrum_board_reset();
     spectrum_gui_set_board_snapshot(spectrum_board_cells());
     spectrum_gui_reset_logs();
     spectrum_gui_set_connected(0u);

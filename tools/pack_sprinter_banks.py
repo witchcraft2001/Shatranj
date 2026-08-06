@@ -16,8 +16,9 @@ PAGE_SIZE = 0x4000
 WINDOW_BASE = 0x4000
 WINDOW_END = 0x8000
 MODULE_LIMIT = 0x0800
-DESCRIPTOR_SIZE = 7
+DESCRIPTOR_SIZE = 8
 MAX_OVERLAY_ID = 14
+SLOW_OVERLAY_IDS = {10, 12, 13}
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,7 @@ def write_atlas(path: Path, records: dict[int, dict[str, object]]) -> None:
     for overlay_id in range(MAX_OVERLAY_ID + 1):
         record = records.get(overlay_id)
         if record is None:
-            values = [0, 0, 0, 0, 0, 0, 0]
+            values = [0, 0, 0, 0, 0, 0, 0, 0]
             comment = "unused"
         else:
             base = int(record["base"])
@@ -113,6 +114,7 @@ def write_atlas(path: Path, records: dict[int, dict[str, object]]) -> None:
             values = [
                 1, int(record["payload_page"]), base & 0xFF, base >> 8,
                 length & 0xFF, length >> 8, int(record["entry_count"]),
+                int(record["flags"]),
             ]
             comment = str(record["name"])
         lines.append(
@@ -136,6 +138,7 @@ def main() -> int:
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--z80asm", default="z80asm")
     parser.add_argument("--module", action="append", required=True)
+    parser.add_argument("--resident-page", type=Path, action="append", default=[])
     parser.add_argument("--atlas-out", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
     parser.add_argument("--page-prefix", type=Path, required=True)
@@ -154,22 +157,27 @@ def main() -> int:
                   for spec in specs]
         placements = allocate_modules([len(data) for data in probes])
         records: dict[int, dict[str, object]] = {}
-        pages = [bytearray(PAGE_SIZE) for _ in range(max(bank for bank, _ in placements) + 1)]
+        resident_pages = [path.resolve().read_bytes() for path in args.resident_page]
+        if any(len(page) != PAGE_SIZE for page in resident_pages):
+            raise ValueError("resident bank pages must be exactly 16 KiB")
+        cold_pages = [bytearray(PAGE_SIZE)
+                      for _ in range(max(bank for bank, _ in placements) + 1)]
         for spec, probe, (bank, base) in zip(specs, probes, placements):
             data, map_path = assemble(args.z80asm, root, build_dir, spec, base, "")
             if len(data) != len(probe):
                 raise ValueError(f"{spec.name}: relocation changed module size")
             count, entries = validate_entry_table(data, base, spec.name)
             offset = base - WINDOW_BASE
-            pages[bank][offset:offset + len(data)] = data
+            cold_pages[bank][offset:offset + len(data)] = data
             records[spec.overlay_id] = {
                 "id": spec.overlay_id,
                 "name": spec.name,
                 "bank": bank,
-                "payload_page": bank + 2,
+                "payload_page": bank + 2 + len(resident_pages),
                 "base": base,
                 "length": len(data),
                 "entry_count": count,
+                "flags": 1 if spec.overlay_id in SLOW_OVERLAY_IDS else 0,
                 "entries": entries,
                 "map": stable_path(map_path, root),
                 "inputs": [stable_path(path, root) for path in spec.inputs],
@@ -180,6 +188,7 @@ def main() -> int:
         write_atlas(atlas_out, records)
         page_paths = []
         prefix = args.page_prefix.resolve()
+        pages = [bytearray(page) for page in resident_pages] + cold_pages
         for index, page in enumerate(pages):
             page_path = Path(f"{prefix}{index}.bin")
             page_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,13 +202,18 @@ def main() -> int:
             "alignment": 2,
             "page_size": PAGE_SIZE,
             "pages": page_paths,
+            "resident_page_count": len(resident_pages),
+            "cold_page_count": len(cold_pages),
             "modules": [records[key] for key in sorted(records)],
         }
         manifest_out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                                 encoding="utf-8")
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         raise SystemExit(f"pack_sprinter_banks: {exc}") from exc
-    print(f"[OK] Sprinter bank atlas: {len(specs)} modules in {len(pages)} page(s)")
+    print(
+        f"[OK] Sprinter bank atlas: {len(args.resident_page)} resident and "
+        f"{len(cold_pages)} cold page(s), {len(specs)} modules"
+    )
     return 0
 
 
