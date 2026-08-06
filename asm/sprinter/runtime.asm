@@ -142,6 +142,7 @@ EXTERN _spectrum_info_clear_tail
 EXTERN _spectrum_info_line
 EXTERN _sprinter_gfx_start
 EXTERN _sprinter_gfx_stop
+EXTERN _sprinter_gui_publish_clock
 EXTERN _gfx320_bind
 EXTERN _gfx320_clear
 EXTERN _gfx320_get_config
@@ -362,6 +363,11 @@ sprinter_runtime_start:
     LD A,L
     OR A
     JR Z,sprinter_start_fail
+    ; The RTC sample lives in permanent WIN2, while the GUI clock state lives
+    ; in the UI bank.  Publish it only after GFX is ready so the initial
+    ; [HH:MM] draw is visible; the generated resident thunk restores the
+    ; previous WIN1 page before startup continues.
+    CALL _sprinter_gui_publish_clock
     ; SetVMod tells the DSS mouse driver about graphics mode and may make its
     ; hardware cursor visible.  The game has no mouse UI; hide it before the
     ; synchronous KEYSCAN service starts touching the cursor each frame.

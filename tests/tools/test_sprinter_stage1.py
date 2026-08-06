@@ -166,6 +166,114 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertIn("menu_line_edit", menu)
         self.assertIn("ld a,'_'", menu)
 
+    def test_rtc_is_published_through_the_ui_bank_after_gfx_start(self) -> None:
+        runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        startup = runtime.split("sprinter_runtime_start:", 1)[1].split(
+            "sprinter_start_fail:", 1
+        )[0]
+        gfx = startup.index("CALL _sprinter_gfx_start")
+        publish = startup.index("CALL _sprinter_gui_publish_clock", gfx)
+        app = startup.index("CALL SPRINTER_CLIENT_ENTRY", publish)
+        self.assertLess(gfx, publish)
+        self.assertLess(publish, app)
+
+        glue = (ROOT / "src/sprinter/client_glue.c").read_text(encoding="ascii")
+        block = glue.split("void sprinter_gui_publish_clock(void)", 1)[1].split(
+            "void spectrum_board_clear_legal_hints", 1
+        )[0]
+        self.assertIn("spectrum_gui_set_clock", block)
+        self.assertIn("SPRINTER_RTC_HOUR", block)
+        self.assertIn("SPRINTER_RTC_MINUTE", block)
+        self.assertIn("SPRINTER_RTC_SECOND", block)
+
+    def test_sprinter_gameplay_hint_is_restored_by_modal_exit_paths(self) -> None:
+        gui = (ROOT / "src/spectrum/ui/gui.c").read_text(encoding="ascii")
+        self.assertIn(
+            '"ARROWS+ENTER MOVE; M TYPE; C CHAT; F1 MENU; CTRL+ESC EXIT"',
+            gui,
+        )
+        set_input = gui.split("void spectrum_gui_set_input", 1)[1].split(
+            "void spectrum_gui_set_input_edit", 1
+        )[0]
+        restore = gui.split("void spectrum_gui_restore_side_panels", 1)[1].split(
+            "uint8_t spectrum_gui_side_panels_visible", 1
+        )[0]
+        self.assertIn("text[0] == '\\0' && side_panels_visible", set_input)
+        self.assertIn("text = sprinter_gameplay_hint;", set_input)
+        self.assertIn('spectrum_gui_set_input("");', restore)
+
+    def test_sprinter_game_controls_keep_contextual_enter_priority(self) -> None:
+        app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
+        process = app.split("static uint8_t process_local_key", 1)[1].split(
+            "static void handle_opponent_disconnected_with", 1
+        )[0]
+        fileui = process.index("spectrum_gui_fileui_visible()")
+        menu = process.index("spectrum_gui_handle_menu_key(key)", fileui)
+        editor = process.index("if (local_input_mode)", menu)
+        typed = process.index("SPRINTER_GAME_CONTROL_TYPE", editor)
+        selected = process.index("SPRINTER_GAME_CONTROL_SELECT", typed)
+        self.assertLess(fileui, menu)
+        self.assertLess(menu, editor)
+        self.assertLess(editor, typed)
+        self.assertLess(typed, selected)
+        self.assertIn("#ifndef NETCHESSZX_SPRINTER\n    if (key == 13u)", process)
+        self.assertIn("return cursor_select_or_move(key);", process)
+
+        move = app.split("static void cursor_move", 1)[1].split(
+            "static uint8_t cursor_select_or_move", 1
+        )[0]
+        self.assertLess(
+            move.index("cursor_redraw_square(old_row, old_col)"),
+            move.index("spectrum_gui_mark_cursor"),
+        )
+
+    def test_sprinter_duplicate_select_keeps_the_source_selected(self) -> None:
+        app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
+        select = app.split("static uint8_t cursor_select_or_move", 1)[1].split(
+            "static uint8_t restore_transfer_pending", 1
+        )[0]
+        same_square = select.split(
+            "if (selected_row == cursor_row && selected_col == cursor_col)", 1
+        )[1].split("if (!is_spectrum_piece", 1)[0]
+        sprinter = same_square.split("#ifdef NETCHESSZX_SPRINTER", 1)[1].split(
+            "#else", 1
+        )[0]
+        self.assertIn("cursor_show();", sprinter)
+        self.assertIn("return 1u;", sprinter)
+        self.assertNotIn("selected_row = NO_SQUARE", sprinter)
+
+    def test_sprinter_select_records_are_debounced_before_app_dispatch(self) -> None:
+        platform = (ROOT / "src/sprinter/platform.c").read_text(encoding="ascii")
+        tick = platform.split("void spectrum_input_frame_tick(void)", 1)[1].split(
+            "uint8_t spectrum_input_poll_event", 1
+        )[0]
+        self.assertIn("SPRINTER_SELECT_DEBOUNCE_FRAMES", platform)
+        self.assertIn("if (is_select_key(key))", tick)
+        self.assertIn("if (select_debounce != 0u)", tick)
+        self.assertIn("select_debounce = SPRINTER_SELECT_DEBOUNCE_FRAMES", tick)
+
+    def test_sprinter_piece_set_switch_uses_preloaded_tiles(self) -> None:
+        app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
+        switch = app.split("static void session_setup_apply_set", 1)[1].split(
+            "static uint8_t session_setup_step", 1
+        )[0]
+        sprinter = switch.split("#ifdef NETCHESSZX_SPRINTER", 1)[1].split(
+            "#else", 1
+        )[0]
+        self.assertIn("setup_focus_piece_set >= NETCHESSZX_PIECE_SET_COUNT", sprinter)
+        self.assertNotIn("netchesszx_piece_set_load", sprinter)
+
+    def test_direct_guest_hello_redraws_when_it_corrects_board_orientation(self) -> None:
+        app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
+        hello = app.split("NETCHESSZX_SESSION_EVENT_DIRECT_HELLO", 1)[1].split(
+            "NETCHESSZX_SESSION_EVENT_MQTT_EMPTY", 1
+        )[0]
+        orient = hello.index("spectrum_gui_set_board_view")
+        redraw = hello.index("spectrum_gui_redraw_board_view", orient)
+        wait = hello.index("notify_wait_msg(SPECTRUM_GUI_MSG_OPPONENT_READY_WAIT)", redraw)
+        self.assertLess(orient, redraw)
+        self.assertLess(redraw, wait)
+
     def test_network_game_loop_paces_ui_before_each_recv_poll(self) -> None:
         app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
         loop = app.split("static void game_message_loop(void)", 1)[1].split(
@@ -364,11 +472,20 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertIn("88u + slot * 8u), 112u, 8u", renderer)
         self.assertIn("selected ? COLOR_NOTICE : COLOR_BLACK", renderer)
 
-    def test_cursor_unmark_redraws_the_square_without_a_gray_outline(self) -> None:
+    def test_cursor_marks_use_gray_focus_and_yellow_selection(self) -> None:
         renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
-        self.assertIn("draw_square_spec(spec, (uint8_t)spec[2], 0u)", renderer)
-        self.assertIn("draw_square_spec(spec, (uint8_t)spec[2], 1u)", renderer)
+        self.assertEqual(
+            renderer.count("draw_square_spec(spec, (uint8_t)(spec[2] ? 2u : 1u)"),
+            2,
+        )
+        self.assertIn("sprinter_cursor_outline_color", renderer)
         self.assertIn("if (mark != 0u)", renderer)
+
+    def test_sprinter_board_labels_follow_the_flipped_view(self) -> None:
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        self.assertIn("extern uint8_t spectrum_gui_board_flipped;", renderer)
+        self.assertGreaterEqual(renderer.count("sprinter_board_file_label("), 2)
+        self.assertGreaterEqual(renderer.count("sprinter_board_rank_label("), 2)
 
     def test_ctrl_escape_accepts_ascii_and_positional_dss_forms(self) -> None:
         runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")

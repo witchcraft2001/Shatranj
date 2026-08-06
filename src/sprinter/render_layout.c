@@ -37,3 +37,18 @@ uint16_t sprinter_piece_ref(uint8_t set, char piece)
     }
     return 0xFFFFu;
 }
+
+uint8_t sprinter_cursor_outline_color(uint8_t selected)
+{
+    return selected ? SPRINTER_CURSOR_SELECTED : SPRINTER_CURSOR_GRAY;
+}
+
+char sprinter_board_file_label(uint8_t col, uint8_t flipped)
+{
+    return (char)(flipped ? ('H' - (char)col) : ('A' + (char)col));
+}
+
+char sprinter_board_rank_label(uint8_t row, uint8_t flipped)
+{
+    return (char)(flipped ? ('1' + (char)row) : ('8' - (char)row));
+}

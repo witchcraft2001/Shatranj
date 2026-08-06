@@ -13,6 +13,18 @@ static uint8_t key_event;
 static uint8_t key_last;
 static uint8_t key_suppress;
 static uint8_t key_repeat_timer;
+/* DSS reports a completed key record, not its physical up/down state.  A
+   short Enter/Space press can therefore leave one queued repeat behind the
+   first record.  In game play that repeat may be consumed after an arrow and
+   accidentally confirm a destination square. */
+static uint8_t select_debounce;
+
+#define SPRINTER_SELECT_DEBOUNCE_FRAMES 12u
+
+static uint8_t is_select_key(uint8_t key)
+{
+    return key == 13u || key == 32u;
+}
 
 static uint8_t repeatable(uint8_t key)
 {
@@ -61,6 +73,10 @@ void spectrum_input_frame_tick(void)
 {
     uint8_t key = sprinter_key_scan_raw();
 
+    if (select_debounce != 0u) {
+        --select_debounce;
+    }
+
     if (key == 0u) {
         key_last = 0u;
         key_repeat_timer = 0u;
@@ -86,6 +102,12 @@ void spectrum_input_frame_tick(void)
         }
         key_repeat_timer = repeat_next(key);
     }
+    if (is_select_key(key)) {
+        if (select_debounce != 0u) {
+            return;
+        }
+        select_debounce = SPRINTER_SELECT_DEBOUNCE_FRAMES;
+    }
     if (key == 0x8au || key == 0x90u || key_event == 0u) {
         key_event = key;
     }
@@ -106,6 +128,7 @@ uint8_t spectrum_key_poll(void)
 void spectrum_input_flush_until_release(void)
 {
     key_event = 0u;
+    select_debounce = 0u;
     key_suppress = sprinter_key_scan_raw();
     if (key_suppress == 0u) {
         key_last = 0u;
@@ -116,6 +139,9 @@ void spectrum_input_flush_until_release(void)
 void spectrum_input_suppress_until_release(uint8_t key) __z88dk_fastcall
 {
     key_event = 0u;
+    if (is_select_key(key)) {
+        select_debounce = SPRINTER_SELECT_DEBOUNCE_FRAMES;
+    }
     key_suppress = key;
 }
 

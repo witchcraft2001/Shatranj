@@ -3,10 +3,22 @@
 #include "spectrum/board/board.h"
 #include "spectrum/lowram_map.h"
 #include "spectrum/overlay/overlay.h"
+#include "spectrum/ui/gui.h"
+
+#include "sprinter_layout.h"
 
 extern uint8_t side_to_move;
 extern uint8_t castle_rights;
 extern int8_t ep_square;
+
+/* Internal UI-bank startup entry.  The resident runtime reaches this through
+   its generated page thunk after GFX initialization. */
+void sprinter_gui_publish_clock(void)
+{
+    spectrum_gui_set_clock(*(volatile uint8_t *)SPRINTER_RTC_HOUR,
+                           *(volatile uint8_t *)SPRINTER_RTC_MINUTE,
+                           *(volatile uint8_t *)SPRINTER_RTC_SECOND);
+}
 
 void spectrum_board_clear_legal_hints(void)
 {

@@ -47,6 +47,8 @@ ZX_NAME := SHATRANJ
 APP_VERSION := $(strip $(shell cat VERSION))
 SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
 SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
+SPRINTER_GUI_CLOCK_TEST := $(SPRINTER_BUILD_DIR)/test_gui_clock
+SPRINTER_GAME_CONTROLS_TEST := $(SPRINTER_BUILD_DIR)/test_game_controls
 SPRINTER_Z88DK ?= $(abspath ../../z88dk)
 SPRINTER_ZCC ?= $(SPRINTER_Z88DK)/bin/zcc
 SPRINTER_Z80ASM ?= $(SPRINTER_Z88DK)/bin/z80asm
@@ -472,6 +474,14 @@ sprinter-tools-test: | $(SPRINTER_BUILD_DIR)
 	$(CC) $(CFLAGS) src/sprinter/render_layout.c \
 		tests/sprinter/test_render_layout.c -o $(SPRINTER_BUILD_DIR)/test_render_layout
 	$(SPRINTER_BUILD_DIR)/test_render_layout
+	$(CC) $(CFLAGS) -DNETCHESSZX_HOST_GUI_TEST -D__z88dk_fastcall= \
+		$(HOST_GC_CFLAGS) src/spectrum/ui/gui.c \
+		tests/sprinter/test_gui_clock.c $(HOST_GC_LDFLAGS) \
+		-o $(SPRINTER_GUI_CLOCK_TEST)
+	$(SPRINTER_GUI_CLOCK_TEST)
+	$(CC) $(CFLAGS) tests/sprinter/test_game_controls.c \
+		-o $(SPRINTER_GAME_CONTROLS_TEST)
+	$(SPRINTER_GAME_CONTROLS_TEST)
 
 $(SPRINTER_BUILD_DIR):
 	mkdir -p $(SPRINTER_BUILD_DIR)

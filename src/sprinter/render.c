@@ -40,6 +40,8 @@ static const uint8_t ikkle_font[128] = {
 
 static uint8_t render_dirty;
 
+extern uint8_t spectrum_gui_board_flipped;
+
 static uint8_t slow_begin(void)
 {
     return sprinter_rx_slow_enter();
@@ -187,7 +189,7 @@ static void draw_square_spec(const char *spec, uint8_t mark, uint8_t hint_piece)
     if (mark != 0u) {
         outline(sprinter_square_x(col), sprinter_square_y(row),
                 SPRINTER_SQUARE_SIZE, SPRINTER_SQUARE_SIZE,
-                COLOR_NOTICE);
+                sprinter_cursor_outline_color((uint8_t)(mark == 2u)));
     }
 }
 
@@ -240,9 +242,11 @@ void spectrum_render_board_coords(void)
     uint8_t i;
     for (i = 0u; i < 8u; ++i) {
         draw_char((uint16_t)(sprinter_square_x(i) + 10u), 217u,
-                  (char)('A' + i), COLOR_GRAY, COLOR_BLACK);
+                  sprinter_board_file_label(i, spectrum_gui_board_flipped),
+                  COLOR_GRAY, COLOR_BLACK);
         draw_char(1u, (uint8_t)(sprinter_square_y(i) + 10u),
-                  (char)('8' - i), COLOR_GRAY, COLOR_BLACK);
+                  sprinter_board_rank_label(i, spectrum_gui_board_flipped),
+                  COLOR_GRAY, COLOR_BLACK);
     }
 }
 
@@ -253,9 +257,11 @@ void spectrum_render_board_coord_mark(const char *spec) __z88dk_fastcall
     uint8_t color = spec[2] ? COLOR_NOTICE : COLOR_GRAY;
     if (row < 8u && col < 8u) {
         draw_char((uint16_t)(sprinter_square_x(col) + 10u), 217u,
-                  (char)('A' + col), color, COLOR_BLACK);
+                  sprinter_board_file_label(col, spectrum_gui_board_flipped),
+                  color, COLOR_BLACK);
         draw_char(1u, (uint8_t)(sprinter_square_y(row) + 10u),
-                  (char)('8' - row), color, COLOR_BLACK);
+                  sprinter_board_rank_label(row, spectrum_gui_board_flipped),
+                  color, COLOR_BLACK);
     }
 }
 
@@ -396,12 +402,12 @@ void spectrum_render_square_with_hint(const char *spec) __z88dk_fastcall
 
 void spectrum_render_square_mark(const char *spec) __z88dk_fastcall
 {
-    draw_square_spec(spec, (uint8_t)spec[2], 0u);
+    draw_square_spec(spec, (uint8_t)(spec[2] ? 2u : 1u), 0u);
 }
 
 void spectrum_render_square_mark_with_hint(const char *spec) __z88dk_fastcall
 {
-    draw_square_spec(spec, (uint8_t)spec[2], 1u);
+    draw_square_spec(spec, (uint8_t)(spec[2] ? 2u : 1u), 1u);
 }
 
 static void draw_move_line(const char *line, uint8_t row)

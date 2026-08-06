@@ -57,11 +57,25 @@ void netchesszx_asm_timer_tick_one_second(uint8_t *hour,
     NETCHESSZX_LOWRAM_STATUS_ADDR
 #error "notice text must fit low-RAM gap before status"
 #endif
+#ifdef NETCHESSZX_HOST_GUI_TEST
+extern char netchesszx_host_gui_move_lines[];
+extern char netchesszx_host_gui_chat_lines[];
+extern char netchesszx_host_gui_clock_save[];
+extern char netchesszx_host_gui_game_timer_save[];
+extern char netchesszx_host_gui_notice_text[];
+extern char netchesszx_host_gui_board[];
+#define move_lines netchesszx_host_gui_move_lines
+#define chat_lines netchesszx_host_gui_chat_lines
+#define last_clock_line netchesszx_host_gui_clock_save
+#define last_game_timer_line netchesszx_host_gui_game_timer_save
+#define notice_text netchesszx_host_gui_notice_text
+#else
 #define move_lines ((char *)NETCHESSZX_LOWRAM_MOVE_LOG_ADDR)
 #define chat_lines ((char *)NETCHESSZX_LOWRAM_CHAT_LOG_ADDR)
 #define last_clock_line ((char *)NETCHESSZX_LOWRAM_CLOCK_SAVE_ADDR)
 #define last_game_timer_line ((char *)NETCHESSZX_LOWRAM_GAME_TIMER_SAVE_ADDR)
 #define notice_text ((char *)NETCHESSZX_LOWRAM_INPUT_HISTORY_END)
+#endif
 static uint8_t clock_hour;
 static uint8_t clock_minute;
 static uint8_t clock_second;
@@ -96,8 +110,16 @@ static uint8_t side_panels_visible;
 static uint8_t active_coord_valid;
 static uint8_t active_coord_row;
 static uint8_t active_coord_col;
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+static const char sprinter_gameplay_hint[] =
+    "ARROWS+ENTER MOVE; M TYPE; C CHAT; F1 MENU; CTRL+ESC EXIT";
+#endif
 /* Sole UI-side, read-only view of the board-owned low-RAM cells. */
+#ifdef NETCHESSZX_HOST_GUI_TEST
+#define gui_live_board ((const char *)netchesszx_host_gui_board)
+#else
 #define gui_live_board ((const char *)NETCHESSZX_LOWRAM_CHESS_BOARD_ADDR)
+#endif
 
 static void build_status_line(char *status_line, const char *text)
 {
@@ -488,6 +510,11 @@ void spectrum_gui_set_input(const char *text) NETCHESSZX_FASTCALL
     if (about_visible) {
         return;
     }
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    if (text[0] == '\0' && side_panels_visible) {
+        text = sprinter_gameplay_hint;
+    }
+#endif
     spectrum_render_input(text);
 }
 
@@ -1023,6 +1050,9 @@ void spectrum_gui_restore_side_panels(void)
     spectrum_info_show_game();
     spectrum_render_moves(move_lines);
     spectrum_render_chat(chat_lines);
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    spectrum_gui_set_input("");
+#endif
 }
 
 uint8_t spectrum_gui_side_panels_visible(void)

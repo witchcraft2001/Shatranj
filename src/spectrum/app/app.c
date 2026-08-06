@@ -26,6 +26,9 @@
 #include "common/protocol/mqtt_session_protocol.h"
 #include "common/savegame/savegame_format.h"
 #include "common/ui_messages.h"
+#ifdef NETCHESSZX_SPRINTER
+#include "sprinter/game_controls.h"
+#endif
 
 #include <stddef.h>
 #include <string.h>
@@ -678,11 +681,20 @@ static uint8_t session_setup_start(uint8_t key)
 
 static void session_setup_apply_set(uint8_t key)
 {
+#ifdef NETCHESSZX_SPRINTER
+    /* Sprinter PRELOAD contains all three piece sets.  Switching set is only
+       an index change; do not route it through the UI-bank loader thunk. */
+    if (setup_focus_piece_set >= NETCHESSZX_PIECE_SET_COUNT) {
+        notify_error(NETCHESSZX_UI_ERROR_SET_LOAD_FAILED);
+        return;
+    }
+#else
     if (setup_focus_piece_set != netchesszx_piece_set_index &&
         !netchesszx_piece_set_load(setup_focus_piece_set)) {
         notify_error(NETCHESSZX_UI_ERROR_SET_LOAD_FAILED);
         return;
     }
+#endif
     netchesszx_piece_set_index = setup_focus_piece_set;
     setup_choice[SETUP_CHOICE_SET] = setup_focus_piece_set;
     setup_defined_mask |= SETUP_MASK_SET;
@@ -1781,12 +1793,20 @@ static uint8_t cursor_select_or_move(uint8_t key)
         }
     } else {
         if (selected_row == cursor_row && selected_col == cursor_col) {
+#ifdef NETCHESSZX_SPRINTER
+            /* DSS may report a second completed Enter/Space record after the
+               initial press.  Do not let that duplicate immediately cancel
+               the source selection; move to another own piece to replace it. */
+            cursor_show();
+            return 1u;
+#else
             movement_hints_clear();
             selected_row = NO_SQUARE;
             selected_col = NO_SQUARE;
             spectrum_gui_redraw_square(cursor_row, cursor_col);
             cursor_show();
             return 1u;
+#endif
         }
         if (!is_spectrum_piece(spectrum_board_cell(cursor_row, cursor_col))) {
             goto send_move;
@@ -2168,6 +2188,7 @@ static uint8_t process_local_key(uint8_t key) NETCHESSZX_FASTCALL
         return 1u;
     }
 
+#ifndef NETCHESSZX_SPRINTER
     if (key == 13u) {
         if (pending_local_ply != 0u) {
             notify_wait_opponent_ack();
@@ -2178,6 +2199,14 @@ static uint8_t process_local_key(uint8_t key) NETCHESSZX_FASTCALL
         notify_info(NETCHESSZX_UI_NOTICE_TYPE_MOVE_CHAT);
         return 1u;
     }
+#else
+    if (sprinter_game_control_action(key) == SPRINTER_GAME_CONTROL_TYPE) {
+        cursor_hide();
+        netchesszx_input_edit_begin_empty_overlay();
+        notify_info(NETCHESSZX_UI_NOTICE_TYPE_MOVE_CHAT);
+        return 1u;
+    }
+#endif
 
     if (key == 'c' || key == 'C') {
         if (!netchesszx_session_peer_ready_state) {
@@ -2274,7 +2303,11 @@ static uint8_t process_local_key(uint8_t key) NETCHESSZX_FASTCALL
 
     key = nav_key_alias(key);
 
-    if (key == 32u) {
+    if (key == 32u
+#ifdef NETCHESSZX_SPRINTER
+        || sprinter_game_control_action(key) == SPRINTER_GAME_CONTROL_SELECT
+#endif
+    ) {
         return cursor_select_or_move(key);
     }
     if (key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT ||
@@ -2417,6 +2450,10 @@ static uint8_t session_presence_handle_event(netchesszx_session_event_t event,
         }
         if (!netchesszx_session_is_host()) {
             spectrum_gui_set_board_view((uint8_t)!netchesszx_local_is_white());
+            /* DIRECT HELLO can correct the guest's assumed host colour after
+               the setup preview has already been drawn.  Keep pieces and
+               coordinate labels in the same orientation as cursor input. */
+            spectrum_gui_redraw_board_view();
             notify_wait_msg(SPECTRUM_GUI_MSG_OPPONENT_READY_WAIT);
         } else {
             notify_wait_msg(SPECTRUM_GUI_MSG_OPPONENT_READY_GO);
