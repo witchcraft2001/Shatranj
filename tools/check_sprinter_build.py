@@ -97,8 +97,9 @@ def validate_assets(asset: dict[str, object], asset_pages: list[bytes],
     fail_if(gfx_count != 4, "GFX source page count must be exactly four", failures)
     fail_if(int(asset.get("page_size", 0)) != PAGE_SIZE,
             "asset page size is not 16 KiB", failures)
-    fail_if(int(asset.get("transparent_index", -1)) != 0xFF,
-            "asset transparency index is not 0xFF", failures)
+    fail_if(int(asset.get("transparent_index", -1)) != 15 or
+            int(asset.get("packed_transparent", -1)) != 0xFF,
+            "asset transparency is not packed-4bpp #FF", failures)
     records = asset.get("pages", [])
     fail_if(len(records) != len(asset_pages), "asset page records are stale", failures)
     for index, page in enumerate(asset_pages):
@@ -111,18 +112,24 @@ def validate_assets(asset: dict[str, object], asset_pages: list[bytes],
     fail_if(not isinstance(palette, dict) or palette.get("encoding") != "RGB888",
             "asset palette is not RGB888", failures)
     if isinstance(palette, dict):
+        gameplay = palette.get("gameplay_profile", {})
+        about_profile = palette.get("about_profile", {})
         fail_if(int(palette.get("page_index", -1)) != 4 or
-                int(palette.get("offset", -1)) != 0 or
-                int(palette.get("length", -1)) != 768,
-                "palette descriptor is outside its exact page", failures)
+                gameplay != {"offset": 0, "length": 768} or
+                palette.get("gameplay_profiles") != {"count": 3, "stride": 768} or
+                about_profile != {"offset": 2304, "length": 768} or
+                palette.get("theme_slots") != [10, 11],
+                "palette profiles are outside their exact page", failures)
     pieces = asset.get("pieces", {})
     for refs in pieces.get("tile_refs", {}).values() if isinstance(pieces, dict) else []:
-        fail_if(any(not 0 <= int(value) < 36 for value in refs.values()),
-                "piece TileRef is outside the 36-tile page", failures)
+        flat = [int(value) for pair in refs.values() for value in pair]
+        fail_if(any((value >> 8) >= gfx_count or (value & 0xFF) >= 64
+                    for value in flat),
+                "piece TileRef leaves the four GFX pages", failures)
     about = asset.get("about", {})
     if isinstance(about, dict):
         refs = [int(value) for value in about.get("tile_refs", [])]
-        fail_if(len(refs) != 16 * 12 or
+        fail_if(len(refs) != 24 * 6 or
                 any((value >> 8) >= gfx_count or (value & 0xFF) >= 64 for value in refs),
                 "About TileRefs leave the four GFX pages", failures)
 
@@ -460,19 +467,19 @@ def main() -> int:
             mono.get("image_size") != len(data),
             "JSON monoblock manifest is stale", failures)
     fail_if(any(value not in data for value in
-                (b"GFX320.DLL", b"UNETESP.DLL", b"UNETRTL.DLL")),
+                (b"GFX640.DLL", b"AFNT640.DLL", b"UNETESP.DLL", b"UNETRTL.DLL")),
             "Stage-3 runtime does not name all packaged DLLs", failures)
     fail_if(b"STAGE2_ECHO" in data or b"ECHO READY" in data,
             "production image still contains the Stage-2 echo transport", failures)
     if args.release_dir:
         names = sorted(path.name for path in args.release_dir.iterdir() if path.is_file())
-        fail_if(names != ["GFX320.DLL", "SHATRANJ.EXE", "UNETESP.DLL",
+        fail_if(names != ["AFNT640.DLL", "GFX640.DLL", "SHATRANJ.EXE", "UNETESP.DLL",
                           "UNETRTL.DLL"],
                 f"unexpected Sprinter release artifacts: {names}", failures)
         dependencies = json.loads(
             Path("docs/sprinter-dependencies.json").read_text(encoding="utf-8")
         )
-        for name in ("GFX320.DLL", "UNETESP.DLL", "UNETRTL.DLL"):
+        for name in ("GFX640.DLL", "AFNT640.DLL", "UNETESP.DLL", "UNETRTL.DLL"):
             record = dependencies["artifacts"][name]
             artifact = args.release_dir / name
             fail_if(artifact.stat().st_size != int(record["size"]) or

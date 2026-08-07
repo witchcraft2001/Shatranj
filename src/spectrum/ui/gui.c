@@ -129,7 +129,7 @@ static void build_status_line(char *status_line, const char *text)
         status_line[i] = text[i];
         ++i;
     }
-    /* Pad with spaces: ikkle rendering self-clears each cell, so a fixed
+    /* Pad with spaces: text rendering self-clears each cell, so a fixed
        width draw replaces the old text without a destructive pre-clear. */
     while (i < NETCHESSZX_STATUS_LEFT_TEXT_SIZE) {
         status_line[i] = ' ';

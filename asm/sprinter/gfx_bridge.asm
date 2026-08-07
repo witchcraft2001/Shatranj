@@ -2,7 +2,7 @@ SECTION code_user
 
 INCLUDE "sprinter_layout.inc"
 
-PUBLIC _gfx320_libman_call
+PUBLIC _gfx640_libman_call
 PUBLIC _sprinter_gfx_load
 PUBLIC _sprinter_gfx_unload
 
@@ -10,8 +10,8 @@ EXTERN l_load
 EXTERN l_call
 EXTERN l_free
 
-; gfx_u8 gfx320_libman_call(handle, entry, regs *)
-_gfx320_libman_call:
+; gfx_u8 gfx640_libman_call(handle, entry, regs *)
+_gfx640_libman_call:
     LD HL,2
     ADD HL,SP
     LD A,(HL)

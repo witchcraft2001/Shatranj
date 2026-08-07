@@ -14,20 +14,20 @@
     },
     "sprinter_libs": {
       "path": "extern/sprinter-libs",
-      "commit": "a1604d7a4dc9258617e8c2b7b0e53d8eb04d1868"
+      "commit": "d13ed5d42de84b04481caefb822c62a233710c51"
     }
   },
   "artifacts": {
-    "AFNT320.DLL": {
-      "path": "extern/sprinter-libs/afnt320/AFNT320.DLL",
-      "size": 9120,
-      "sha256": "9c4532a32953e8877c6cad2ce49ee4437e3f5f876613cbfc54f7384534109e4c",
+    "AFNT640.DLL": {
+      "path": "extern/sprinter-libs/afnt640/AFNT640.DLL",
+      "size": 6637,
+      "sha256": "3b34c6e355b5602efb9cb9814259ef60e737a6b91b89d774841d2ccb527d35b7",
       "format": "L0"
     },
-    "GFX320.DLL": {
-      "path": "extern/sprinter-libs/gfx320/GFX320.DLL",
-      "size": 6676,
-      "sha256": "fc7c0271e20e93be520933f193d0e70a7883940a5b5b131de34fddad333b1f48",
+    "GFX640.DLL": {
+      "path": "extern/sprinter-libs/gfx640/GFX640.DLL",
+      "size": 6937,
+      "sha256": "34f508929f40d430452997b0b55e91b51d8e07bc0dccb7634f6194f2d69483a8",
       "format": "L0"
     },
     "UNETESP.DLL": {

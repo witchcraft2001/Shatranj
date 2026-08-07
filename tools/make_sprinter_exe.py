@@ -178,7 +178,7 @@ def main() -> int:
             loader, base, runtime, cold_pages, asset_pages,
             gfx_page_count=int(asset_manifest.get("gfx_page_count", 0)),
             palette_asset_index=int(palette.get("page_index", 0)),
-            palette_length=int(palette.get("length", 0)),
+            palette_length=int(palette.get("gameplay_profile", {}).get("length", 0)),
             asset_page_table=0x8160 if asset_pages else 0,
             palette_destination=0xB710 if asset_pages else 0,
         )

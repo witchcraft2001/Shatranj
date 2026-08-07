@@ -2,22 +2,22 @@
 
 uint16_t sprinter_square_x(uint8_t col)
 {
-    return (uint16_t)(SPRINTER_BOARD_X + (uint16_t)col * SPRINTER_SQUARE_SIZE);
+    return (uint16_t)(SPRINTER_BOARD_X + (uint16_t)col * SPRINTER_SQUARE_WIDTH);
 }
 
 uint8_t sprinter_square_y(uint8_t row)
 {
-    return (uint8_t)(SPRINTER_BOARD_Y + row * SPRINTER_SQUARE_SIZE);
+    return (uint8_t)(SPRINTER_BOARD_Y + row * SPRINTER_SQUARE_HEIGHT);
 }
 
 uint16_t sprinter_piece_x(uint8_t col)
 {
-    return (uint16_t)(sprinter_square_x(col) + SPRINTER_PIECE_INSET);
+    return (uint16_t)(sprinter_square_x(col) + SPRINTER_PIECE_X_INSET);
 }
 
 uint8_t sprinter_piece_y(uint8_t row)
 {
-    return (uint8_t)(sprinter_square_y(row) + SPRINTER_PIECE_INSET);
+    return (uint8_t)(sprinter_square_y(row) + SPRINTER_PIECE_STORAGE_Y_INSET);
 }
 
 uint16_t sprinter_piece_ref(uint8_t set, char piece)
@@ -32,7 +32,7 @@ uint16_t sprinter_piece_ref(uint8_t set, char piece)
     }
     for (index = 0u; index < 6u; ++index) {
         if (order[index] == folded) {
-            return (uint16_t)(set * 12u + black * 6u + index);
+            return (uint16_t)((set * 12u + black * 6u + index) * 2u);
         }
     }
     return 0xFFFFu;

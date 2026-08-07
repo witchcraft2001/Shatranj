@@ -192,11 +192,12 @@ _sprinter_unet_getenv:
     PUSH AF
     CALL sprinter_dss_leave
     POP AF
-    ; Environ reports presence in A.  Carry is not part of this API's result
-    ; contract and may reflect an internal DSS path, so never reject a valid
-    ; value by testing CF here.
-    CP 0xFF
-    JR NZ,suge_fail
+    ; Match the DSS client contract used by the known-good weather client:
+    ; carry reports an API error, while any non-zero A reports a value.  Some
+    ; DSS builds return 1 here rather than the older documented #FF sentinel.
+    JR C,suge_fail
+    OR A
+    JR Z,suge_fail
     LD HL,(SPRINTER_UNET_REGS_PTR)
     LD A,(HL)
     OR A

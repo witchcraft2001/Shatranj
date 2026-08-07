@@ -6,6 +6,7 @@
 #include "spectrum/transport/link.h"
 
 uint8_t sprinter_unet_preflight_core(void);
+uint8_t sprinter_unet_preflight_error(void);
 uint8_t sprinter_unet_mqtt_start_core(void);
 uint8_t sprinter_unet_mqtt_activate_core(void);
 uint8_t sprinter_unet_mqtt_probe_core(void);

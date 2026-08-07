@@ -227,6 +227,13 @@ static uint8_t validate_info_tag(const char *tag)
     return 1u;
 }
 
+static uint8_t preflight_error;
+
+uint8_t sprinter_unet_preflight_error(void)
+{
+    return preflight_error;
+}
+
 uint8_t sprinter_unet_preflight_core(void)
 {
     const char *dll;
@@ -234,11 +241,13 @@ uint8_t sprinter_unet_preflight_core(void)
     shatranj_unet_regs_t regs = {0u, 0u, 0u, 0u, 0u, 0u, 0u};
     uint16_t abi;
 
+    preflight_error = 0u;
     sprinter_unet_shutdown();
     reset_link_state();
     NET_IP[0] = '\0';
     NET_ENV[0] = '\0';
     if (!sprinter_unet_getenv(NET_ENV)) {
+        preflight_error = 1u;
         return 0u;
     }
     if (string_equal(NET_ENV, "WIFI")) {
@@ -251,14 +260,22 @@ uint8_t sprinter_unet_preflight_core(void)
         tag = "UNETRTL";
     } else {
         unet_backend = SHATRANJ_UNET_BACKEND_NONE;
+        preflight_error = 2u;
         return 0u;
     }
-    if (!sprinter_unet_load(dll, NET_INFO) || !validate_info_tag(tag)) {
+    if (!sprinter_unet_load(dll, NET_INFO)) {
+        preflight_error = 3u;
+        sprinter_unet_shutdown();
+        return 0u;
+    }
+    if (!validate_info_tag(tag)) {
+        preflight_error = 9u;
         sprinter_unet_shutdown();
         return 0u;
     }
     if (!unet_call(SHATRANJ_UNET_FN_GETCAPS, &regs) ||
         regs.a != SHATRANJ_NERR_OK) {
+        preflight_error = 4u;
         sprinter_unet_shutdown();
         return 0u;
     }
@@ -268,18 +285,21 @@ uint8_t sprinter_unet_preflight_core(void)
         (unet_caps_value & SHATRANJ_UNET_CAP_TCP) == 0u ||
         (unet_backend == SHATRANJ_UNET_BACKEND_WIFI &&
          (unet_caps_value & SHATRANJ_UNET_CAP_RXFLOW) == 0u)) {
+        preflight_error = 5u;
         sprinter_unet_shutdown();
         return 0u;
     }
     regs.a = 0xffu;
     if (!unet_call(SHATRANJ_UNET_FN_STATUS, &regs) ||
         (regs.a != SHATRANJ_NERR_OK && regs.a != SHATRANJ_NERR_NONET)) {
+        preflight_error = 6u;
         sprinter_unet_shutdown();
         return 0u;
     }
     regs.a = 0u;
     if (!unet_call(SHATRANJ_UNET_FN_NETINIT, &regs) ||
         regs.a != SHATRANJ_NERR_OK) {
+        preflight_error = 7u;
         sprinter_unet_shutdown();
         return 0u;
     }
@@ -289,6 +309,7 @@ uint8_t sprinter_unet_preflight_core(void)
     SHATRANJ_UNET_SET_IX(&regs, 18u);
     if (!unet_call(SHATRANJ_UNET_FN_GETINFO, &regs) ||
         regs.a != SHATRANJ_NERR_OK || NET_IP[0] == '\0') {
+        preflight_error = 8u;
         sprinter_unet_shutdown();
         return 0u;
     }

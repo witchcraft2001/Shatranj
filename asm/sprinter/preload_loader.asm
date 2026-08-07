@@ -221,7 +221,7 @@ loader_page_loop:
     LD (0xC000+(SPRINTER_LOADER_WIN3-0x8000)),A
 
     ; Convert the asset payload indexes into the physical pages expected by
-    ; GFX320.  Only graphics pages are published; the RGB888 palette page is
+    ; GFX640.  Only graphics pages are published; the RGB888 palette page is
     ; copied into permanent WIN2 and never exposed as a tile source.
     LD A,(L_MANIFEST+21)
     LD E,A

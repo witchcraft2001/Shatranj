@@ -218,7 +218,7 @@ The repository Makefile is the supported entry point:
 ```sh
 make tap              # classic TAP + OVL + DAT
 make nex              # self-contained Spectrum Next NEX
-make exe              # Sprinter EXE + GFX320 and pinned uNet DLLs
+make exe              # Sprinter EXE + GFX640, AFNT640 and pinned uNet DLLs
 make sprinter-check   # pinned deps, full link, host tests and image gates
 make client-test      # Qt build and tests
 make client           # Qt release packaging
@@ -238,6 +238,8 @@ guest networking through `UNETESP.DLL` or `UNETRTL.DLL`, selected by the DSS
 `NET` environment variable. Direct hosting remains unavailable until uNet gains
 listen/accept support. The Stage-3 scope and pending MAME/real-hardware stress
 checklist are documented in [`docs/sprinter-stage3.md`](docs/sprinter-stage3.md).
+The packed-4bpp raster and palette pipeline is documented in
+[`docs/sprinter-assets.md`](docs/sprinter-assets.md).
 
 For prerequisites, the Qt development loop, and platform-specific packaging,
 see [`client/README.md`](client/README.md). The complete validation and release

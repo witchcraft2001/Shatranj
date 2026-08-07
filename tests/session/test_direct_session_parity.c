@@ -41,7 +41,7 @@ static uint8_t host_ready_seen;
 static uint8_t host_started_seen;
 static uint8_t host_failed;
 static uint16_t host_now_ticks;
-static uint16_t host_timeout_deadline;
+static uint16_t host_timeout_remaining;
 static uint8_t host_timeout_active;
 static const uint8_t *host_fail_payload;
 static uint8_t host_fail_length;
@@ -583,16 +583,21 @@ read_next_step:
                 host_failed = 1u;
                 return -2;
             }
-            host_timeout_deadline = (uint16_t)(host_now_ticks + step->value);
+            host_timeout_remaining = step->value;
             host_timeout_active = 1u;
         }
         /* direct_read_payload_ovl() waits WAIT_POLL=2 PAL frames before
-           returning one transport timeout. Keep one 20 ms protocol clock. */
+           returning one transport timeout.  Count those transport frames
+           separately from the UI frame at the top of the production loop. */
         spectrum_frame_wait();
         spectrum_frame_wait();
-        if (host_now_ticks == host_timeout_deadline) {
+        if (host_timeout_remaining <= 2u) {
+            host_timeout_remaining = 0u;
             host_timeout_active = 0u;
             ++host_step_pos;
+        } else {
+            host_timeout_remaining =
+                (uint16_t)(host_timeout_remaining - 2u);
         }
         return SPECTRUM_LINK_READ_TIMEOUT;
     }
@@ -1602,7 +1607,7 @@ uint8_t direct_spectrum_run(const DirectParityScenario *scenario,
     host_started_seen = 0u;
     host_failed = 0u;
     host_now_ticks = 0u;
-    host_timeout_deadline = 0u;
+    host_timeout_remaining = 0u;
     host_timeout_active = 0u;
     host_fail_payload = 0;
     host_fail_length = 0u;

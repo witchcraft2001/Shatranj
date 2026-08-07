@@ -8,6 +8,7 @@
 /* These two entry points live in the permanent WIN2 assembly runtime. */
 extern uint8_t sprinter_key_scan_raw(void);
 extern void sprinter_clean_exit(uint8_t code) __z88dk_fastcall;
+extern uint8_t sprinter_palette_restore(void);
 
 static uint8_t key_event;
 static uint8_t key_last;
@@ -197,6 +198,7 @@ void netchesszx_board_theme_apply(uint8_t theme)
     netchesszx_board_theme_index = theme;
     netchesszx_board_light_attr = light[theme];
     netchesszx_board_dark_attr = dark[theme];
+    (void)sprinter_palette_restore();
 }
 
 uint8_t netchesszx_piece_set_load(uint8_t set) __z88dk_fastcall
@@ -205,5 +207,6 @@ uint8_t netchesszx_piece_set_load(uint8_t set) __z88dk_fastcall
         return 0u;
     }
     netchesszx_piece_set_index = set;
+    (void)sprinter_palette_restore();
     return 1u;
 }

@@ -318,7 +318,7 @@ class SprinterPolicyTests(unittest.TestCase):
             self.assertIn("PUSH IY", block)
             self.assertIn("POP IY", block)
             self.assertIn("POP IX", block)
-        call = text.split("_gfx320_libman_call:", 1)[1].split(
+        call = text.split("_gfx640_libman_call:", 1)[1].split(
             "; Fastcall filename", 1
         )[0]
         self.assertIn("IN A,(0xA2)\n    PUSH AF", call)
@@ -338,11 +338,20 @@ class SprinterPolicyTests(unittest.TestCase):
             "suc_return:\n    POP AF\n    OUT (PORT_WIN1),A\n    POP IY",
             call,
         )
+        getenv = unet.split("_sprinter_unet_getenv:", 1)[1]
+        self.assertIn("JR C,suge_fail\n    OR A\n    JR Z,suge_fail", getenv)
+        self.assertNotIn("CP 0xFF", getenv)
+
+    def test_libman_retains_graphics_font_and_network_handles(self) -> None:
+        runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(
+            encoding="ascii"
+        )
+        self.assertIn("DEFC LIBMAN_MAX_LIBS = 3", runtime)
 
     def test_video_mode_bridge_preserves_sdcc_frame_registers(self) -> None:
         text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
         block = text.split("_sprinter_video_graphics:", 1)[1].split(
-            "; Reapply the immutable RGB888 palette", 1
+            "_sprinter_palette_restore:", 1
         )[0]
         self.assertIn("PUSH IX", block)
         self.assertIn("PUSH IY", block)
@@ -384,17 +393,31 @@ class SprinterPolicyTests(unittest.TestCase):
 
     def test_startup_uses_gfx_window_and_clear_contract(self) -> None:
         runtime = (ROOT / "src/sprinter/gfx_runtime.c").read_text(encoding="ascii")
-        self.assertIn("gfx320_set_vram_window(GFX_VRAM_WINDOW)", runtime)
-        self.assertIn("gfx320_clear(0u, GFX_TARGET_BUF0)", runtime)
-        self.assertIn("gfx320_clear(0u, GFX_TARGET_BUF1)", runtime)
+        self.assertIn("gfx640_set_vram_window(GFX_VRAM_WINDOW)", runtime)
+        self.assertEqual(runtime.count("afnt_call(AFNT_FNSTYLE"), 2)
+        self.assertIn('sprinter_gfx_load("AFNT640.DLL")', runtime)
+        self.assertIn("AFNT_TARGET_BUF1", runtime)
         renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
-        self.assertIn("fill(0u, 0u, 320u, 256u", renderer)
+        self.assertIn("SPRINTER_SCREEN_WIDTH, SPRINTER_SCREEN_HEIGHT", renderer)
 
         platform = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
         video = platform.split("_sprinter_video_graphics:", 1)[1].split(
             "sprinter_video_fail:", 1
         )[0]
+        self.assertEqual(video.count("LD A,0x82"), 2)
         self.assertNotIn("PORT_ALL_MODE", video)
+
+    def test_afnt_text_keeps_case_clips_and_redraws_partial_state(self) -> None:
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        self.assertIn("sprinter_afnt640_widths", renderer)
+        self.assertIn("draw_text_width", renderer)
+        self.assertNotIn("value - ('a' - 'A')", renderer)
+        self.assertIn("static char timer_text[29]", renderer)
+        self.assertIn("static char input_text[INPUT_TEXT_MAX + 1u]", renderer)
+        self.assertIn("render_input_line();", renderer)
+        self.assertIn("COLOR_BLACK, COLOR_WHITE", renderer)
+        self.assertIn("sprinter_palette_about()", renderer)
+        self.assertGreaterEqual(renderer.count("sprinter_palette_restore()"), 3)
 
     def test_runtime_uses_bounded_video_blank_and_services_keyscan_at_safe_point(self) -> None:
         runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
@@ -445,8 +468,8 @@ class SprinterPolicyTests(unittest.TestCase):
     def test_present_never_selects_the_unstable_second_screen(self) -> None:
         renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
         present = renderer.split("uint8_t sprinter_render_present(void)", 1)[1]
-        self.assertNotIn("gfx320_swap_buffers()", present)
-        self.assertNotIn("gfx320_copy_buffer", present)
+        self.assertNotIn("gfx640_swap_buffers()", present)
+        self.assertNotIn("gfx640_copy_buffer", present)
         self.assertNotIn("slow_begin()", present)
 
     def test_runtime_keeps_win0_on_dss_for_every_dss_rst(self) -> None:
@@ -468,8 +491,8 @@ class SprinterPolicyTests(unittest.TestCase):
 
     def test_fileui_uses_a_compact_aligned_window(self) -> None:
         renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
-        self.assertIn("outline(40u, 48u, 128u, 144u", renderer)
-        self.assertIn("88u + slot * 8u), 112u, 8u", renderer)
+        self.assertIn("outline(80u, 48u, 256u, 144u", renderer)
+        self.assertIn("88u + slot * 8u), 224u, 8u", renderer)
         self.assertIn("selected ? COLOR_NOTICE : COLOR_BLACK", renderer)
 
     def test_cursor_marks_use_gray_focus_and_yellow_selection(self) -> None:

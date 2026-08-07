@@ -74,7 +74,8 @@ SPRINTER_IMPORT_MANIFEST := $(SPRINTER_BUILD_DIR)/cold_import_manifest.json
 SPRINTER_ASSET_MANIFEST := $(SPRINTER_BUILD_DIR)/asset_manifest.json
 SPRINTER_MONOBLOCK_MANIFEST := $(SPRINTER_BUILD_DIR)/monoblock_manifest.json
 SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
-SPRINTER_GFX := $(SPRINTER_RELEASE_DIR)/GFX320.DLL
+SPRINTER_GFX := $(SPRINTER_RELEASE_DIR)/GFX640.DLL
+SPRINTER_AFNT := $(SPRINTER_RELEASE_DIR)/AFNT640.DLL
 SPRINTER_UNET_ESP := $(SPRINTER_RELEASE_DIR)/UNETESP.DLL
 SPRINTER_UNET_RTL := $(SPRINTER_RELEASE_DIR)/UNETRTL.DLL
 SPRINTER_SMOKE_IMAGE := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
@@ -95,6 +96,11 @@ SPRINTER_SRC := $(wildcard src/sprinter/*.c src/sprinter/*.h) \
                  src/common/protocol/game_protocol.c \
                  src/sprinter/fixed_layout.json \
                  tools/build_sprinter_stage2.py tools/build_sprinter_assets.py \
+                 assets/sprinter/pieces-california.png \
+                 assets/sprinter/pieces-mpchess.png \
+                 assets/sprinter/pieces-totoy.png \
+                 assets/sprinter/about-384x192.rgb \
+                 assets/sprinter/raster_manifest.json \
                  tools/compose_sprinter_pages.py tools/gen_sprinter_cold_imports.py \
                  tools/gen_sprinter_base_data_defs.py \
                  tools/gen_sprinter_resident_imports.py \
@@ -497,7 +503,8 @@ $(SPRINTER_LAYOUT_STAMP): src/sprinter/fixed_layout.json tools/gen_sprinter_layo
 $(SPRINTER_EXE): FORCE $(SPRINTER_SRC) tools/gen_sprinter_layout.py \
 		tools/check_sprinter_build.py tools/check_sprinter_imports.py \
 		tools/check_sprinter_forbidden_dss.py tools/check_sprinter_rts.py \
-		extern/sprinter-libs/gfx320/GFX320.DLL extern/esp_net/UNETESP.DLL \
+		extern/sprinter-libs/gfx640/GFX640.DLL \
+		extern/sprinter-libs/afnt640/AFNT640.DLL extern/esp_net/UNETESP.DLL \
 		extern/rtl_net/UNETRTL.DLL \
 		| $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/build_sprinter_stage2.py --root . \
@@ -525,14 +532,17 @@ $(SPRINTER_EXE): FORCE $(SPRINTER_SRC) tools/gen_sprinter_layout.py \
 $(SPRINTER_GFX): $(SPRINTER_EXE)
 	@test -f $@
 
+$(SPRINTER_AFNT): $(SPRINTER_EXE)
+	@test -f $@
+
 $(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL): $(SPRINTER_EXE)
 	@test -f $@
 
-exe: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX) \
+exe: sprinter-deps-check $(SPRINTER_EXE) $(SPRINTER_GFX) $(SPRINTER_AFNT) \
 	$(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL)
 
 sprinter-check: sprinter-deps-check sprinter-toolchain-check $(SPRINTER_EXE) \
-	$(SPRINTER_GFX) $(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL)
+	$(SPRINTER_GFX) $(SPRINTER_AFNT) $(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL)
 	$(MAKE) sprinter-tools-test
 	$(PYTHON) tools/check_sprinter_build.py --exe $(SPRINTER_EXE) \
 		--loader-map $(SPRINTER_LOADER_MAP) --runtime-map $(SPRINTER_RUNTIME_MAP) \
@@ -560,11 +570,12 @@ sprinter-determinism-check: exe
 		--asset-manifest $(SPRINTER_ASSET_MANIFEST) \
 		--monoblock-manifest $(SPRINTER_MONOBLOCK_MANIFEST)
 
-$(SPRINTER_SMOKE_IMAGE): $(SPRINTER_EXE) $(SPRINTER_GFX) \
+$(SPRINTER_SMOKE_IMAGE): $(SPRINTER_EXE) $(SPRINTER_GFX) $(SPRINTER_AFNT) \
 		$(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL) \
 		tools/make_sprinter_smoke_image.py | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_smoke_image.py --output $@ \
-		$(SPRINTER_EXE) $(SPRINTER_GFX) $(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL)
+		$(SPRINTER_EXE) $(SPRINTER_GFX) $(SPRINTER_AFNT) \
+		$(SPRINTER_UNET_ESP) $(SPRINTER_UNET_RTL)
 
 sprinter-smoke-image: exe $(SPRINTER_SMOKE_IMAGE)
 

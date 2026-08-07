@@ -25,10 +25,11 @@ UI_C_SOURCES = (
     "src/spectrum/ui/gui.c",
     "src/spectrum/overlay/overlay.c",
     "src/sprinter/client_glue.c",
+    "src/sprinter/afnt_text.c",
     "src/sprinter/render_layout.c",
     "src/sprinter/render.c",
     "src/sprinter/platform.c",
-    "extern/sprinter-libs/gfx320/bindings/sdcc/gfx320.c",
+    "extern/sprinter-libs/gfx640/bindings/sdcc/gfx640.c",
 )
 
 PROTOCOL_C_SOURCES = (
@@ -220,14 +221,14 @@ def main() -> int:
     (build / "sprinter_layout.stamp").touch()
     run([
         sys.executable, str(root / "tools/build_sprinter_assets.py"),
-        "--pieces", str(root / "assets/next/lichess_piece_sprites.bin"),
-        "--piece-palette", str(root / "assets/next/lichess_sprite_palette.bin"),
-        "--piece-meta", str(root / "assets/next/lichess_piece_sprites.json"),
-        "--about", str(root / "assets/next/about_screen.nxi"),
+        "--raster-manifest", str(root / "assets/sprinter/raster_manifest.json"),
+        "--about", str(root / "assets/sprinter/about-384x192.rgb"),
+        "--font", str(root / "extern/sprinter-libs/afnt640/font.bin"),
         "--page-prefix", str(build / "asset_page_"),
         "--manifest-out", str(build / "asset_manifest.json"),
         "--asm-out", str(build / "sprinter_assets.inc"),
         "--c-out", str(build / "sprinter_assets.h"),
+        "--font-widths-out", str(build / "sprinter_afnt640_widths.h"),
     ], root)
     run([
         sys.executable, str(root / "tools/adapt_sprinter_libman.py"),
@@ -242,7 +243,7 @@ def main() -> int:
         f"-custom-copt-rules={root / 'tools/netchesszx_bool_copt'}",
         "-DNETCHESSZX_SPRINTER", "-DNETCHESSZX_SDCC_IY",
         "-DNETCHESSZX_FIXED_LOW_RAM", f"-I{root / 'src'}", f"-I{build}",
-        f"-I{root / 'extern/sprinter-libs/gfx320/bindings/sdcc'}",
+        f"-I{root / 'extern/sprinter-libs/gfx640/bindings/sdcc'}",
     ]
 
     app_dir = banks_dir / "app"
@@ -287,7 +288,7 @@ def main() -> int:
     run([str(z80asm), f"-I={root}", f"-I={build}", "-O=.",
          "base_data_defs.asm"], build)
 
-    # GFX320 is loaded into WIN1.  Its loader must therefore execute in
+    # GFX640 and AFNT640 are loaded into WIN1. Their loader must execute in
     # resident WIN2; placing it in the UI bank would page out the currently
     # executing code during l_load.  The ordinary binding wrappers may remain
     # in UI because l_call itself runs in the resident bridge and restores the
@@ -301,8 +302,7 @@ def main() -> int:
         ),
     )
     runtime_asm_sources = (
-        "asm/sprinter/render_hw.asm", "asm/sprinter/gfx_bridge.asm",
-        "asm/sprinter/unet_bridge.asm",
+        "asm/sprinter/gfx_bridge.asm", "asm/sprinter/unet_bridge.asm",
     )
     runtime_asm = compile_asm(z80asm, root, build, build, runtime_asm_sources)
     support = z88dk / "libsrc/newlib/target/z80/obj/sdcc_ix"
@@ -310,6 +310,7 @@ def main() -> int:
     runtime_objects = [
         *runtime_c, *runtime_asm, build / "base_data_defs.o",
         sdcc / "___sdcc_enter_ix.o",
+        sdcc / "____sdcc_4_copy_srcd_hlix_dst_deix.o",
     ]
 
     def link_runtime() -> None:
@@ -527,12 +528,13 @@ def main() -> int:
         "--output", str(release / "SHATRANJ.EXE"),
     ], root)
     for name, source in (
-        ("GFX320.DLL", root / "extern/sprinter-libs/gfx320/GFX320.DLL"),
+        ("GFX640.DLL", root / "extern/sprinter-libs/gfx640/GFX640.DLL"),
+        ("AFNT640.DLL", root / "extern/sprinter-libs/afnt640/AFNT640.DLL"),
         ("UNETESP.DLL", root / "extern/esp_net/UNETESP.DLL"),
         ("UNETRTL.DLL", root / "extern/rtl_net/UNETRTL.DLL"),
     ):
         shutil.copyfile(source, release / name)
-    print("[OK] Sprinter Stage-3 release: SHATRANJ.EXE + GFX320/uNet DLLs")
+    print("[OK] Sprinter Stage-3 release: SHATRANJ.EXE + GFX640/AFNT640/uNet DLLs")
     return 0
 
 

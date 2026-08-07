@@ -7,6 +7,7 @@
 SECTION code_user
 
 INCLUDE "sprinter_layout.inc"
+INCLUDE "sprinter_assets.inc"
 INCLUDE "asm/sprinter/image_layout.inc"
 
 DEFC PORT_WIN1 = 0xA2
@@ -76,6 +77,7 @@ PUBLIC _sprinter_key_scan_raw
 PUBLIC _sprinter_clean_exit
 PUBLIC _sprinter_video_graphics
 PUBLIC _sprinter_palette_restore
+PUBLIC _sprinter_palette_about
 PUBLIC sprinter_disk_gate
 PUBLIC sprinter_dss_enter
 PUBLIC sprinter_dss_leave
@@ -100,6 +102,8 @@ EXTERN _spectrum_assets_load
 EXTERN _spectrum_assets_fatal
 EXTERN _spectrum_key_edit_pressed
 EXTERN _netchesszx_board_theme_apply
+EXTERN _netchesszx_board_theme_index
+EXTERN _netchesszx_piece_set_index
 EXTERN _netchesszx_piece_set_load
 EXTERN _spectrum_render_board
 EXTERN _spectrum_render_board_area
@@ -143,13 +147,11 @@ EXTERN _spectrum_info_line
 EXTERN _sprinter_gfx_start
 EXTERN _sprinter_gfx_stop
 EXTERN _sprinter_gui_publish_clock
-EXTERN _gfx320_bind
-EXTERN _gfx320_clear
-EXTERN _gfx320_get_config
-EXTERN _gfx320_get_version
-EXTERN _gfx320_palette_load256
-EXTERN _gfx320_set_page_table
-EXTERN _gfx320_set_vram_window
+EXTERN _gfx640_bind
+EXTERN _gfx640_get_config
+EXTERN _gfx640_get_version
+EXTERN _gfx640_set_page_table
+EXTERN _gfx640_set_vram_window
 EXTERN _sprinter_rx_slow_enter
 EXTERN _sprinter_rx_slow_leave
 EXTERN _sprinter_unet_shutdown
@@ -473,7 +475,7 @@ sprinter_cleanup_screen_zero:
 sprinter_cleanup_screen_zero_clear:
     CALL sprinter_clear_text_screen
 sprinter_cleanup_video_done:
-    ; GFX320 free does not depend on graphics mode.  Restore DSS text mode
+    ; AFNT640/GFX640 free does not depend on graphics mode.  Restore DSS text mode
     ; first so a libman/DSS failure can never strand the user on a black page.
     CALL _sprinter_gfx_stop
     IN A,(PORT_RGMOD)
@@ -545,14 +547,14 @@ sprinter_dss_leave_ready:
     EI
     RET
 
-; Enter 320x256x256 mode on both display pages from permanent WIN2.  SetVMod
+; Enter 640x256x16 mode on both display pages from permanent WIN2.  SetVMod
 ; temporarily changes WIN1, so reinstall the base page after each call.
 _sprinter_video_graphics:
     ; This routine is called from SDCC-generated code.  SetVMod is allowed to
     ; clobber both index registers, while SDCC keeps its frame pointer in IX.
     PUSH IX
     PUSH IY
-    LD A,0x81
+    LD A,0x82
     LD B,1
     LD C,DSS_SETVMOD
     CALL sprinter_dss_enter
@@ -563,7 +565,7 @@ _sprinter_video_graphics:
     JR C,sprinter_video_fail
     LD A,(SPRINTER_PAGE_TABLE)
     OUT (PORT_WIN1),A
-    LD A,0x81
+    LD A,0x82
     LD B,0
     LD C,DSS_SETVMOD
     CALL sprinter_dss_enter
@@ -575,11 +577,10 @@ _sprinter_video_graphics:
     LD A,(SPRINTER_PAGE_TABLE)
     OUT (PORT_WIN1),A
     IN A,(PORT_RGMOD)
-    ; Match the Stage-2 presentation baseline: start on buffer zero, render
-    ; into the back buffer and publish with GFX320 swap + front-to-back copy.
+    ; Keep the stable physical buffer zero selected and render into it directly.
     AND 0xFE
     OUT (PORT_RGMOD),A
-    ; GFX320 maps #50 into WIN3 for each bounded operation and restores the
+    ; GFX640/AFNT640 map #50 into WIN3 for each bounded operation and restore the
     ; previous page itself.  Leaving WIN3 as DSS's ordinary page between calls
     ; keeps all system services away from VRAM.
     LD A,0xC0
@@ -594,14 +595,40 @@ sprinter_video_fail:
     POP IX
     RET
 
-; Reapply the immutable RGB888 palette from its PRELOAD asset page.  uNet and
+; Reapply the immutable RGB888 gameplay palette from its PRELOAD asset page. uNet and
 ; libman are allowed to use the palette staging area in WIN2 after GFX startup,
 ; so a later restoration must read the pinned asset page rather than that
 ; workspace.  The routine executes in WIN2 and restores the exact WIN1/WIN3
 ; mappings before returning to a banked caller.
 _sprinter_palette_restore:
+    LD A,(_netchesszx_piece_set_index)
+    CP SPRINTER_GAMEPLAY_PALETTE_COUNT
+    JR C,sprinter_palette_set_valid
+    XOR A
+sprinter_palette_set_valid:
+    ; Every set owns one 768-byte RGB888 gameplay profile in the pinned
+    ; palette page.  A * 3 * 256 gives its byte offset.
+    LD E,A
+    ADD A,A
+    ADD A,E
+    LD H,A
+    LD L,SPRINTER_GAMEPLAY_PALETTE_OFFSET
+    LD DE,0x4000
+    ADD HL,DE
+    LD E,1
+    JR sprinter_palette_profile
+
+; Select the modal About profile.  UI slots 0..9 are identical in both
+; profiles, so AFNT text colours remain stable across the switch.
+_sprinter_palette_about:
+    LD HL,0x4000+SPRINTER_ABOUT_PALETTE_OFFSET
+    LD E,0
+
+; HL=profile source in the pinned page, E=apply current board theme afterwards.
+sprinter_palette_profile:
     PUSH IX
     PUSH IY
+    LD C,E
     IN A,(PORT_WIN1)
     PUSH AF
     IN A,(PORT_WIN3)
@@ -611,9 +638,31 @@ _sprinter_palette_restore:
     OUT (PORT_WIN1),A
     LD A,0x50
     OUT (PORT_WIN3),A
-    LD HL,0x4000
-    LD B,0
+    LD B,16
     LD D,0
+    CALL sprinter_palette_write_range
+    LD A,C
+    OR A
+    JR Z,sprinter_palette_restore_done
+    LD A,(_netchesszx_board_theme_index)
+    CP 5
+    JR C,sprinter_palette_theme_valid
+    XOR A
+sprinter_palette_theme_valid:
+    LD E,A
+    ADD A,A
+    ADD A,E
+    ADD A,A
+    LD E,A
+    LD D,0
+    LD HL,0x4000+SPRINTER_THEME_TABLE_OFFSET
+    ADD HL,DE
+    LD B,2
+    LD D,SPRINTER_THEME_LIGHT_SLOT
+    CALL sprinter_palette_write_range
+    JR sprinter_palette_restore_done
+
+sprinter_palette_write_range:
 sprinter_palette_restore_loop:
     LD A,D
     OUT (PORT_Y),A
@@ -634,6 +683,8 @@ sprinter_palette_restore_loop:
     LD (0xC3E7),A
     INC D
     DJNZ sprinter_palette_restore_loop
+    RET
+sprinter_palette_restore_done:
     LD A,0xC0
     OUT (PORT_Y),A
     POP AF
@@ -2018,7 +2069,10 @@ PUBLIC l_load
 PUBLIC l_free
 PUBLIC l_call
 PUBLIC l_info
-DEFC LIBMAN_MAX_LIBS = 2
+; GFX640 and AFNT640 remain resident while the selected uNet backend is
+; loaded.  All three handles must coexist; a two-entry table made every
+; network preflight fail at l_load after the AFNT640 migration.
+DEFC LIBMAN_MAX_LIBS = 3
 DEFC LIBMAN_APP_DIR = SPRINTER_APP_DIR
 DEFC LIBMAN_PATH_BUFFER = SPRINTER_PATH_BUFFER
 DEFC LIBMAN_PATH_CAPACITY = 256

@@ -1,0 +1,152 @@
+{
+  "about_format": "RGB888",
+  "about_height": 192,
+  "about_width": 384,
+  "files": {
+    "about-384x192.rgb": {
+      "sha256": "5bea9bb65b2c68e07c606b9cc4c1a9ef4e4f854d0dee405ad1b50b7451cdf7ca",
+      "size": 221184
+    },
+    "pieces-california.png": {
+      "sha256": "3943c132491eb11f310df613b5baac4e24185ae1d8be082ee0915ed804b5bdf7",
+      "size": 8231
+    },
+    "pieces-mpchess.png": {
+      "sha256": "ad9816fdf220ea21b0da7997847fbe70fb7b05a3974329e553e04bce461b3b5e",
+      "size": 6894
+    },
+    "pieces-totoy.png": {
+      "sha256": "a51bd8d178fa51ba4f7f87161421b326e7d3f0e1603749885e72e637a40d19b2",
+      "size": 7182
+    }
+  },
+  "format": "Shatranj Sprinter pinned rasters",
+  "generator": "tools/build_sprinter_rasters.py",
+  "piece_atlas_columns": 6,
+  "piece_atlas_height": 32,
+  "piece_atlas_width": 192,
+  "piece_atlases": {
+    "california": {
+      "file": "pieces-california.png",
+      "palette": [
+        [
+          244,
+          244,
+          244
+        ],
+        [
+          40,
+          40,
+          40
+        ],
+        [
+          152,
+          152,
+          152
+        ]
+      ]
+    },
+    "mpchess": {
+      "file": "pieces-mpchess.png",
+      "palette": [
+        [
+          255,
+          255,
+          255
+        ],
+        [
+          28,
+          28,
+          28
+        ],
+        [
+          142,
+          142,
+          142
+        ]
+      ]
+    },
+    "totoy": {
+      "file": "pieces-totoy.png",
+      "palette": [
+        [
+          238,
+          238,
+          238
+        ],
+        [
+          34,
+          34,
+          34
+        ],
+        [
+          164,
+          164,
+          164
+        ]
+      ]
+    }
+  },
+  "piece_format": "PNG RGBA8888",
+  "piece_height": 16,
+  "piece_order": [
+    "wK",
+    "wQ",
+    "wR",
+    "wB",
+    "wN",
+    "wP",
+    "bK",
+    "bQ",
+    "bR",
+    "bB",
+    "bN",
+    "bP"
+  ],
+  "piece_sets": [
+    "california",
+    "mpchess",
+    "totoy"
+  ],
+  "piece_width": 32,
+  "sources": {
+    "assets/lichess/piece/california/bB.svg": "3db33e7d267fa55a70a923686060f48ec4c09bb9be7588e32fe5eaf9ec1bf17e",
+    "assets/lichess/piece/california/bK.svg": "8b4f7ff19fe40244755556014fef4e5284b7f64cd37acd5c5caf34cbcd79dfe9",
+    "assets/lichess/piece/california/bN.svg": "44f10e64aa6ed38b8f797fdce77ab51c251c7df03f5b91bf9c6e7e38d165982e",
+    "assets/lichess/piece/california/bP.svg": "9ad9c4eb68426779ae40da7b111a4195397be5d07b65ed96f48d0d770c6cf32f",
+    "assets/lichess/piece/california/bQ.svg": "52e440550a93b6cc9ce76c011f22283ce19a6bd2351c8133af14474cf9d2f653",
+    "assets/lichess/piece/california/bR.svg": "a3b1127cf3c44f648f912efb0c3b99962b4d152c9e9c9c74ccbb9aea30aec844",
+    "assets/lichess/piece/california/wB.svg": "e059a0d245ac8c65031aac8ac0bee6c817a0131c4c5aabf902e381cc4e2d8dea",
+    "assets/lichess/piece/california/wK.svg": "46a533ff8035ab9b5b87022c8df5ccc13b53dd18a826a4c14cbf4e810d05ad06",
+    "assets/lichess/piece/california/wN.svg": "5214d82607fdb5463a8be0f84ec612a4da885f585bc8084f8dda04a861be313a",
+    "assets/lichess/piece/california/wP.svg": "a632ab8c790a6fae7e96fec029cfae0f6a9782f90e9bcf57134b5fcc5c490a2c",
+    "assets/lichess/piece/california/wQ.svg": "f7a075623fb8439c20fcfaf34225f0e920df21b585fc5ddf260088e74b233549",
+    "assets/lichess/piece/california/wR.svg": "6241ee2aade39a59fe362e788a3bce607d769d26133aaec4ac3fa53872727b0c",
+    "assets/lichess/piece/mpchess/bB.svg": "74bb566cc53880feca5cfd623ceefdd1ae3178f6f89792393f0c7c41d04bcf1f",
+    "assets/lichess/piece/mpchess/bK.svg": "4675cea6742b8f8c3f82e1897c7b4489cec5fb3ca6d1982906147bcff6488c69",
+    "assets/lichess/piece/mpchess/bN.svg": "b4906f9373d359812ae06032fd0e5c2dfd3b6d33eb5e69d0cc489ae19c6fb214",
+    "assets/lichess/piece/mpchess/bP.svg": "b9ad95133aecc2316b2b057604e6cc18adadb87a18bc84346dab4541253fc24f",
+    "assets/lichess/piece/mpchess/bQ.svg": "88019af7c844fb900db6379fa6bd9ba01a0c3f11a8c1418e2db1f3eec22e127d",
+    "assets/lichess/piece/mpchess/bR.svg": "a8dfcacd6c27c22172d8ad28b1af7de1d97afd5217bbda55ac0970e496961122",
+    "assets/lichess/piece/mpchess/wB.svg": "c00a8b005dbee2a89c0233ed0d1cf86e274b1e969ebf8b72de4071cb8c4e9f9f",
+    "assets/lichess/piece/mpchess/wK.svg": "ab35351dd78616e8ac1f0381fcde11fa3155a3c418154cdceeb3820e397c3704",
+    "assets/lichess/piece/mpchess/wN.svg": "a805db956c750c6c3150dd3e488e8d3fed04a5d2aab0fc56d08f703da00dc6f2",
+    "assets/lichess/piece/mpchess/wP.svg": "71fec5ee43154321a28793832cb787206569e9723f821fd408708faa9a1af6a2",
+    "assets/lichess/piece/mpchess/wQ.svg": "0a3489267d6e4cf165584eee8635783be358a378ebeb43798b65e0c989b55cda",
+    "assets/lichess/piece/mpchess/wR.svg": "0bdc0d50681457fcb1e84335c21fd5ae587145c3d33ab48216a0a476e80ad0da",
+    "assets/lichess/piece/totoy/bB.svg": "7d4f00f352412510994238bedf85503e7dcbfaf63980dec14486ebefa7cc06f2",
+    "assets/lichess/piece/totoy/bK.svg": "04a0a3b3370fc3c0738f2d68d805fbe8b36dc60eaaab856422a8676ae2ed2ee7",
+    "assets/lichess/piece/totoy/bN.svg": "7443000aa07987c41d6551c94dc44ed4577a47df865567c7d69fbc423fbcea95",
+    "assets/lichess/piece/totoy/bP.svg": "432e29ddf75d28d3da1eb0091aa0c663387a203ac19a4c946e3f77904bf3201f",
+    "assets/lichess/piece/totoy/bQ.svg": "e6555a19691396862f4394267203d1b200dc905bc76edb4670f59edc2c90968e",
+    "assets/lichess/piece/totoy/bR.svg": "96f222c90a608ad23d6bf254fc5b1edf8496a8657fdc9462b185cbbd873c94ae",
+    "assets/lichess/piece/totoy/wB.svg": "fed002321be1f985e26a1a0e921e546b8c8224ab8bc11ccc3950bb00a70b9c98",
+    "assets/lichess/piece/totoy/wK.svg": "712ac629eade4c2c0a1d01060df76df9b278cf6e86c96549e2912858cc74600a",
+    "assets/lichess/piece/totoy/wN.svg": "41251b51c211fa4a0192d7e30fcbc5bde4d77e7bb9d518719d84d527a24f665a",
+    "assets/lichess/piece/totoy/wP.svg": "6cf44ee5e3fdfe53d6139633c53744475870961fd1469b220c39a2a33c42abdb",
+    "assets/lichess/piece/totoy/wQ.svg": "2f5a84e4a0a34fda5a957fe493a362d2e079d4783c8a3b6c750aed4214c893d9",
+    "assets/lichess/piece/totoy/wR.svg": "286c25db321004856096c45f78684199694019f451ae562bf07e946b58d830a8",
+    "assets/pc-client/about/about-shatranj.png": "f5f208240b87db0333c220bbd1bfdd2995e33b1d48ff8336458038af605f7abd"
+  },
+  "version": 1
+}
