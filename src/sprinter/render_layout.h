@@ -14,7 +14,7 @@
 #define SPRINTER_PIECE_WIDTH 32u
 #define SPRINTER_PIECE_HEIGHT 16u
 #define SPRINTER_PIECE_X_INSET 8u
-#define SPRINTER_PIECE_STORAGE_Y_INSET 0u
+#define SPRINTER_PIECE_STORAGE_Y_INSET 4u
 #define SPRINTER_INFO_X 416u
 #define SPRINTER_INFO_WIDTH 224u
 #define SPRINTER_STATUS_Y 224u
@@ -29,6 +29,7 @@ uint16_t sprinter_piece_x(uint8_t col);
 uint8_t sprinter_piece_y(uint8_t row);
 uint16_t sprinter_piece_ref(uint8_t set, char piece);
 uint8_t sprinter_cursor_outline_color(uint8_t selected);
+uint8_t sprinter_hint_mask(uint8_t logical_col);
 char sprinter_board_file_label(uint8_t col, uint8_t flipped);
 char sprinter_board_rank_label(uint8_t row, uint8_t flipped);
 

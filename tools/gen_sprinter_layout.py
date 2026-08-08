@@ -37,7 +37,11 @@ def load_layout(path: Path) -> tuple[dict[str, int], int, int]:
     for name, address in symbols.items():
         if not 0x8000 <= address < stack_top - stack_headroom:
             raise ValueError(f"{name}=0x{address:04X} is outside persistent WIN2")
-    if stack_top != 0xBFF0 or stack_top - stack_headroom < 0x8000:
+    # The application stack is the only WIN2 region the fixed layout does not
+    # name.  libman/GFX640/uNet each require at least 256 free bytes at their
+    # call site on top of the SDCC call chain that reaches them, so the reserve
+    # is a hard contract rather than slack that later state may borrow from.
+    if stack_top != 0xBFF0 or stack_headroom < 0x0400:
         raise ValueError("invalid Sprinter stack contract")
     if max(addresses) >= stack_top - stack_headroom:
         raise ValueError("fixed WIN2 state enters the required stack headroom")

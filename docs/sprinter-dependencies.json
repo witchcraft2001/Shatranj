@@ -14,7 +14,7 @@
     },
     "sprinter_libs": {
       "path": "extern/sprinter-libs",
-      "commit": "d13ed5d42de84b04481caefb822c62a233710c51"
+      "commit": "d3438845f73e290dee901d5243389d69ee62a976"
     }
   },
   "artifacts": {
@@ -26,8 +26,8 @@
     },
     "GFX640.DLL": {
       "path": "extern/sprinter-libs/gfx640/GFX640.DLL",
-      "size": 6937,
-      "sha256": "34f508929f40d430452997b0b55e91b51d8e07bc0dccb7634f6194f2d69483a8",
+      "size": 7902,
+      "sha256": "c5c3f54ade43eb97e0fffe1b1da07a9755b1b69ec70391376930248b6271a59e",
       "format": "L0"
     },
     "UNETESP.DLL": {

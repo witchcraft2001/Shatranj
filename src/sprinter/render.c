@@ -169,12 +169,10 @@ static void draw_piece(uint8_t row, uint8_t col, char piece)
 {
     uint16_t ref = sprinter_piece_ref(netchesszx_piece_set_index, piece);
     if (ref != 0xFFFFu) {
-        (void)gfx640_draw_tile(ref, sprinter_piece_x(col), sprinter_piece_y(row),
-                               GFX_TARGET_BUF0 | GFX_KEY_FF);
-        (void)gfx640_draw_tile((uint16_t)(ref + 1u),
-                               (uint16_t)(sprinter_piece_x(col) + 16u),
-                               sprinter_piece_y(row),
-                               GFX_TARGET_BUF0 | GFX_KEY_FF);
+        (void)gfx640_draw_tile_transparent(ref,
+                                           sprinter_piece_x(col),
+                                           sprinter_piece_y(row),
+                                           GFX_TARGET_BUF0 | GFX_KEY_FF);
         render_dirty = 1u;
     }
 }
@@ -305,12 +303,11 @@ void spectrum_render_status_error(const char *text) __z88dk_fastcall
 
 void spectrum_render_clock(const char *text) __z88dk_fastcall
 {
-    fill(576u, SPRINTER_STATUS_Y, 64u, TEXT_HEIGHT, COLOR_BLACK);
     draw_text_width(576u, SPRINTER_STATUS_Y, text,
                     COLOR_CYAN, COLOR_BLACK, 64u);
 }
 
-void spectrum_render_game_timer_clear(const char *text) __z88dk_fastcall
+void sprinter_render_game_timer_line(const char *text, uint8_t menu_mode)
 {
     uint8_t index = 0u;
     while (text[index] != '\0' && index + 1u < sizeof(timer_text)) {
@@ -318,9 +315,15 @@ void spectrum_render_game_timer_clear(const char *text) __z88dk_fastcall
         ++index;
     }
     timer_text[index] = '\0';
-    fill(SPRINTER_INFO_X, 8u, PANEL_WIDTH, TEXT_HEIGHT, COLOR_BLACK);
     draw_text_width(SPRINTER_INFO_X, 8u, timer_text,
-                    COLOR_CYAN, COLOR_BLACK, PANEL_WIDTH);
+                    menu_mode ? COLOR_NOTICE : COLOR_CYAN,
+                    COLOR_BLACK, PANEL_WIDTH);
+}
+
+void spectrum_render_game_timer_clear(const char *text) __z88dk_fastcall
+{
+    fill(SPRINTER_INFO_X, 8u, PANEL_WIDTH, TEXT_HEIGHT, COLOR_BLACK);
+    sprinter_render_game_timer_line(text, 0u);
 }
 
 static void render_timer_char(const char *spec, uint8_t color)
@@ -331,7 +334,6 @@ static void render_timer_char(const char *spec, uint8_t color)
         if (timer_text[index + 1u] == '\0' && spec[1] != '\0') {
             timer_text[index + 1u] = '\0';
         }
-        fill(SPRINTER_INFO_X, 8u, PANEL_WIDTH, TEXT_HEIGHT, COLOR_BLACK);
         draw_text_width(SPRINTER_INFO_X, 8u, timer_text,
                         color, COLOR_BLACK, PANEL_WIDTH);
     }
@@ -431,17 +433,22 @@ void spectrum_render_square_attr(const char *spec) __z88dk_fastcall
     }
 }
 
-void spectrum_render_square_with_hint(const char *spec) __z88dk_fastcall
+static void draw_hint_spec(const char *spec)
 {
-    draw_square_spec(spec, 0u, 0u);
     if (netchesszx_movement_hints && (uint8_t)spec[3] < 8u &&
         (uint8_t)spec[4] < 8u &&
         (netchesszx_hinted_rows[(uint8_t)spec[3]] &
-         (uint8_t)(0x80u >> (uint8_t)spec[4])) != 0u) {
+         sprinter_hint_mask((uint8_t)spec[4])) != 0u) {
         outline((uint16_t)(sprinter_square_x((uint8_t)spec[1]) + 16u),
                 (uint8_t)(sprinter_square_y((uint8_t)spec[0]) + 8u),
                 16u, 8u, COLOR_SUCCESS);
     }
+}
+
+void spectrum_render_square_with_hint(const char *spec) __z88dk_fastcall
+{
+    draw_square_spec(spec, 0u, 0u);
+    draw_hint_spec(spec);
 }
 
 void spectrum_render_square_mark(const char *spec) __z88dk_fastcall
@@ -452,6 +459,7 @@ void spectrum_render_square_mark(const char *spec) __z88dk_fastcall
 void spectrum_render_square_mark_with_hint(const char *spec) __z88dk_fastcall
 {
     draw_square_spec(spec, (uint8_t)(spec[2] ? 2u : 1u), 1u);
+    draw_hint_spec(spec);
 }
 
 static void draw_move_line(const char *line, uint8_t row)
@@ -618,13 +626,13 @@ uint8_t spectrum_render_about(void)
     }
     fill(SPRINTER_BOARD_X, SPRINTER_BOARD_Y,
          SPRINTER_BOARD_WIDTH, SPRINTER_BOARD_HEIGHT, COLOR_BLACK);
-    for (row = 0u; row < 6u; ++row) {
-        for (col = 0u; col < 24u; ++col) {
-            uint16_t tile = (uint16_t)(72u + row * 24u + col);
+    for (row = 0u; row < 12u; ++row) {
+        for (col = 0u; col < 12u; ++col) {
+            uint16_t tile = (uint16_t)(36u + row * 12u + col);
             uint16_t ref = (uint16_t)(((tile >> 6) << 8) | (tile & 63u));
             if (gfx640_draw_tile(ref,
-                                 (uint16_t)(SPRINTER_BOARD_X + col * 16u),
-                                 (uint8_t)(SPRINTER_BOARD_Y + row * 32u),
+                                 (uint16_t)(SPRINTER_BOARD_X + col * 32u),
+                                 (uint8_t)(SPRINTER_BOARD_Y + row * 16u),
                                  GFX_TARGET_BUF0) != 0u) {
                 (void)sprinter_palette_restore();
                 slow_end();

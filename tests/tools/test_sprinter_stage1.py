@@ -35,7 +35,7 @@ class SprinterMonoblockTests(unittest.TestCase):
             loader,
             base.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
             runtime.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
-            [cold], [asset], gfx_page_count=1, palette_asset_index=0,
+            [cold], [asset, asset], gfx_page_count=1, palette_asset_index=1,
             palette_length=768, asset_page_table=0x8160,
             palette_destination=0xB710,
         )
@@ -43,7 +43,7 @@ class SprinterMonoblockTests(unittest.TestCase):
             loader,
             base.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
             runtime.ljust(make_sprinter_exe.PAGE_SIZE, b"\0"),
-            [cold], [asset], gfx_page_count=1, palette_asset_index=0,
+            [cold], [asset, asset], gfx_page_count=1, palette_asset_index=1,
             palette_length=768, asset_page_table=0x8160,
             palette_destination=0xB710,
         )
@@ -53,13 +53,13 @@ class SprinterMonoblockTests(unittest.TestCase):
         self.assertEqual(
             len(first),
             make_sprinter_exe.HEADER_SIZE + len(loader) +
-            make_sprinter_exe.MANIFEST_SIZE + 4 * make_sprinter_exe.PAGE_SIZE,
+            make_sprinter_exe.MANIFEST_SIZE + 5 * make_sprinter_exe.PAGE_SIZE,
         )
         manifest_offset = make_sprinter_exe.HEADER_SIZE + len(loader)
         binary_manifest = first[manifest_offset:manifest_offset + 32]
         self.assertEqual(binary_manifest[4], 2)
-        self.assertEqual(binary_manifest[6:8], bytes((1, 1)))
-        self.assertEqual(binary_manifest[20:24], bytes((2, 3, 1, 0)))
+        self.assertEqual(binary_manifest[6:8], bytes((1, 2)))
+        self.assertEqual(binary_manifest[20:24], bytes((2, 3, 1, 1)))
         self.assertEqual(int.from_bytes(binary_manifest[24:26], "little"), 768)
 
     def test_short_packed_bank_is_rejected(self) -> None:
@@ -79,6 +79,13 @@ class SprinterMonoblockTests(unittest.TestCase):
     def test_corrupt_asset_counts_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "cold/asset counts"):
             make_sprinter_exe.make_manifest(5, 1, 1)
+
+    def test_palette_must_follow_the_gfx_pages(self) -> None:
+        with self.assertRaisesRegex(ValueError, "palette page after GFX"):
+            make_sprinter_exe.make_manifest(4, 1, 1, gfx_page_count=1)
+        with self.assertRaisesRegex(ValueError, "must follow GFX"):
+            make_sprinter_exe.make_manifest(5, 1, 2, gfx_page_count=1,
+                                             palette_asset_index=0)
 
 
 class SprinterBankTests(unittest.TestCase):
@@ -252,6 +259,23 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertIn("if (select_debounce != 0u)", tick)
         self.assertIn("select_debounce = SPRINTER_SELECT_DEBOUNCE_FRAMES", tick)
 
+    def test_sprinter_raw_input_is_polled_even_without_a_new_vblank(self) -> None:
+        platform = (ROOT / "src/sprinter/platform.c").read_text(encoding="ascii")
+        tick = platform.split("void spectrum_input_frame_tick(void)", 1)[1].split(
+            "uint8_t spectrum_input_poll_event", 1
+        )[0]
+        frame_gate = tick.index("frame_advanced =")
+        raw_poll = tick.index("key = sprinter_key_scan_raw();")
+        debounce = tick.index("if (frame_advanced && select_debounce")
+        self.assertLess(frame_gate, raw_poll)
+        self.assertLess(raw_poll, debounce)
+        self.assertNotIn("frame == input_last_frame) {\n        return;", tick)
+        released = tick.split("if (key == 0u) {", 1)[1].split("return;", 1)[0]
+        self.assertIn("key_last = 0u;", released)
+        self.assertIn("key_repeat_timer = 0u;", released)
+        self.assertIn("key_suppress = 0u;", released)
+        self.assertNotIn("frame_advanced", released)
+
     def test_sprinter_piece_set_switch_uses_preloaded_tiles(self) -> None:
         app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
         switch = app.split("static void session_setup_apply_set", 1)[1].split(
@@ -297,14 +321,14 @@ class SprinterPolicyTests(unittest.TestCase):
             status,
         )
 
-    def test_frame_wait_has_short_fallback_and_full_video_port_address(self) -> None:
+    def test_frame_wait_has_independent_bounded_phases_and_full_port_address(self) -> None:
         runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(
             encoding="ascii"
         )
         block = runtime.split("sprinter_frame_wait:", 1)[1].split(
             "sprinter_dss_keyscan:", 1
         )[0]
-        self.assertIn("LD DE,0x0400", block)
+        self.assertEqual(block.count("LD DE,0x8000"), 2)
         self.assertEqual(block.count("LD A,0xFF\n    IN A,(0xFE)"), 2)
 
     def test_libman_bridges_preserve_sdcc_iy_frame_registers(self) -> None:
@@ -358,19 +382,168 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertEqual(block.count("POP IY"), 2)
         self.assertEqual(block.count("POP IX"), 2)
 
-    def test_fileui_disk_wrappers_preserve_sdcc_ix_frame_register(self) -> None:
+    def test_esx_wrappers_never_return_the_dss_ix_to_sdcc_callers(self) -> None:
+        """DSS hands its own IX back from several disk functions.
+
+        The resident libman adapter needs that result, so the gate keeps
+        returning it.  Every esx-style wrapper is instead reached from SDCC
+        code that keeps its frame pointer in IX and whose epilogue executes
+        LD SP,IX, so a single wrapper that calls the raw gate installs a stack
+        pointer outside the WIN2 reserve.  All of them must route through the
+        preserving entry rather than carry the protection individually.
+        """
         text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
-        opendir = text.split("sprinter_esx_opendir:", 1)[1].split(
-            "sprinter_esx_readdir:", 1
+        keep = text.split("sprinter_disk_gate_keep_ix:", 1)[1].split("RET", 1)[0]
+        self.assertIn("PUSH IX", keep)
+        self.assertIn("CALL sprinter_disk_gate", keep)
+        self.assertIn("POP IX", keep)
+        wrappers = text.split("; esx-style file ABI over DSS", 1)[1].split(
+            "; RTC/FAT timestamp", 1
         )[0]
-        readdir = text.split("sprinter_esx_readdir_fetch:", 1)[1].split(
-            "sprinter_esx_readdir_filter:", 1
+        self.assertNotIn("PUSH IX", wrappers)
+        for line in wrappers.splitlines():
+            stripped = line.strip()
+            if stripped.endswith("sprinter_disk_gate"):
+                self.fail(f"esx wrapper reaches the raw gate: {stripped}")
+        self.assertEqual(wrappers.count("sprinter_disk_gate_keep_ix"), 9)
+
+    def test_k_clear_cannot_chain_into_a_blocking_dss_function(self) -> None:
+        """DSS K_CLEAR ends with LD C,B / JP RST_10.
+
+        It flushes the ring first and then chains to the function number in B
+        whenever that number is WaitKey..EDIT, so leaving B undefined can turn
+        a buffer flush into DSS WaitKey.  Under IM2 the DSS keyboard scanner
+        only runs from frame_wait, so WaitKey never returns.
+        """
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        self.assertIn(
+            "LD B,0\n    LD C,DSS_K_CLEAR\n"
+            "    CALL sprinter_dss_enter\n    RST 0x10",
+            text,
+        )
+
+    def test_far_call_gate_keeps_its_upstream_shape(self) -> None:
+        """The cold-to-resident gate is deliberately left as committed.
+
+        Its single shared slot set is not re-entrant, but two attempts to change
+        that here made things worse: rejecting a nested call turned silent
+        corruption into an immediate exit, and staging the frame on the stack
+        moved the failure earlier, into the connect path.  Neither could be
+        exercised locally, so the gate stays as it is until a nested call is
+        actually observed rather than inferred.
+        """
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        gate = text.split("sprinter_far_call:", 1)[1].split(
+            'INCLUDE "sprinter_far_thunks.inc"', 1
         )[0]
-        for block in (opendir, readdir):
+        self.assertNotIn("SPRINTER_FAR_BUSY", gate)
+        self.assertNotIn("sprinter_far_nested", gate)
+        self.assertIn("LD (SPRINTER_FAR_RETURN),HL", gate)
+        self.assertIn("LD (SPRINTER_FAR_IX),IX", gate)
+
+    def test_im2_handler_reports_a_stack_pointer_outside_the_reserve(self) -> None:
+        """A lost frame is only observable from an interrupt.
+
+        Once a bad return address transfers control into a blocking DSS
+        routine, frame_wait never runs again, so the interrupt is the only code
+        left that can turn the freeze into a diagnosed exit.
+        """
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        handler = text.split("sprinter_im2_handler:", 1)[1].split(
+            "sprinter_im2_frame_lost:", 1
+        )[0]
+        self.assertIn("LD A,(SPRINTER_SP_WATCH)", handler)
+        self.assertIn("LD DE,SPRINTER_STACK_FLOOR", handler)
+        self.assertIn("LD DE,SPRINTER_STACK_TOP+1", handler)
+        self.assertEqual(handler.count("JR C,sprinter_im2_frame_lost"), 1)
+        self.assertEqual(handler.count("JR NC,sprinter_im2_frame_lost"), 1)
+        # The reconstruction must match what the interrupt and this handler
+        # have pushed, or a legitimately deep frame reads as a fault.
+        self.assertEqual(handler.count("LD HL,8\n    ADD HL,SP"), 2)
+        self.assertEqual(handler.count("PUSH AF") + handler.count("PUSH HL")
+                         + handler.count("PUSH DE"), 3)
+        lost = text.split("sprinter_im2_frame_lost:", 1)[1].split(
+            "sprinter_frame_counter_get:", 1
+        )[0]
+        # The discarded stack is the only record of where the frame was lost.
+        self.assertIn("LD (SPRINTER_FAULT_IX),IX", lost)
+        self.assertIn("LD (SPRINTER_FAULT_SP),HL", lost)
+        self.assertIn("LD (SPRINTER_FAULT_PC),DE", lost)
+        self.assertIn("LD (SPRINTER_FAULT_EXIT),A", lost)
+        self.assertIn("LD SP,SPRINTER_STACK_TOP", lost)
+        self.assertIn("LD A,7", lost)
+        self.assertIn("JP sprinter_cleanup", lost)
+        self.assertIn("msg_frame_fail:", text)
+
+    def test_fault_exit_does_not_re_enter_libman_or_the_dlls(self) -> None:
+        """The diagnosis must not become a second crash.
+
+        A lost frame leaves libman, the loaded DLLs and the WIN1 mapping in an
+        unknown state, and the fault exit has already disabled the watchdog, so
+        nothing would catch a fault inside the shutdown path.  DSS reclaims the
+        process allocation at Exit, so both libman entries are skipped.
+        """
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        cleanup = text.split("sprinter_cleanup:", 1)[1].split(
+            "sprinter_exit:", 1
+        )[0]
+        for guarded, target in (
+            ("JR NZ,sprinter_cleanup_video", "CALL _sprinter_unet_shutdown"),
+            ("JR NZ,sprinter_cleanup_gfx_done", "CALL _sprinter_gfx_stop"),
+        ):
             self.assertIn(
-                "PUSH IX\n    CALL sprinter_disk_gate\n    POP IX\n    RET C",
-                block,
+                f"LD A,(SPRINTER_FAULT_EXIT)\n    OR A\n    {guarded}\n",
+                cleanup,
             )
+            skip = cleanup.split(guarded, 1)[1]
+            self.assertIn(target, skip.split("\n\n", 1)[0] + skip[:400])
+        self.assertEqual(cleanup.count("LD A,(SPRINTER_FAULT_EXIT)"), 2)
+
+    def test_every_dss_call_reinstates_the_shell_win0_page(self) -> None:
+        """Dss.Exit restores SLOT1/2/3 but never SLOT0.
+
+        The DSS API entry at #0010 exists only while WIN0 holds the system
+        page, so a library that repoints WIN0 turns every later RST #10 into a
+        silent no-op: the video restore and Exit both do nothing and the
+        process ends halted with the game still on screen.
+        """
+        text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        self.assertIn("DEFC PORT_WIN0 = 0x82", text)
+        startup = text.split("sprinter_runtime_start:", 1)[1].split(
+            "LD SP,SPRINTER_STACK_TOP", 1
+        )[0]
+        self.assertIn("IN A,(PORT_WIN0)", startup)
+        self.assertIn("LD (SPRINTER_LOADER_WIN0),A", startup)
+        enter = text.split("sprinter_dss_enter:", 1)[1].split(
+            "sprinter_dss_leave:", 1
+        )[0]
+        self.assertIn("IN A,(PORT_CACHE_OFF)", enter)
+        self.assertIn("LD A,(SPRINTER_LOADER_WIN0)", enter)
+        self.assertIn("OUT (PORT_WIN0),A", enter)
+        # Cache-off must land before the page write, or it undoes it.
+        self.assertLess(enter.index("IN A,(PORT_CACHE_OFF)"),
+                        enter.index("OUT (PORT_WIN0),A"))
+        exit_block = text.split("sprinter_exit:", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(exit_block.count("RST 0x10"), 2)
+
+    def test_applied_move_restores_the_board_cursor(self) -> None:
+        """The cursor is an overlay on a square, not part of it.
+
+        spectrum_gui_apply_move repaints the squares a move touched, so an
+        opponent move or an ACK landing under the cursor erases it and nothing
+        redraws it until the next arrow key.
+        """
+        app = (ROOT / "src/spectrum/app/app.c").read_text(encoding="ascii")
+        finish = app.split("static void finish_applied_move(", 1)[1].split(
+            "\nstatic ", 1
+        )[0]
+        self.assertIn("movement_hints_show();", finish)
+        self.assertIn("cursor_show();", finish)
+        # Hints paint the square, the cursor sits on top of them.
+        self.assertLess(finish.index("movement_hints_show();"),
+                        finish.rindex("cursor_show();"))
+        # Other platforms keep their existing redraw behaviour.
+        self.assertIn("#ifdef NETCHESSZX_SPRINTER", finish)
 
     def test_win1_key_poll_gate_reads_the_frame_event_queue(self) -> None:
         text = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
@@ -389,6 +562,28 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertIn("DEFC _sprinter_key_scan_raw = 0x82DB", runtime)
         self.assertIn("JP sprinter_key_scan_raw_impl", gates)
         self.assertIn("DEFC SPR_API_RAW_KEY_SCAN = 0x82DB", api)
+
+    def test_frame_counter_uses_an_append_only_win2_gate(self) -> None:
+        runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        api = (ROOT / "asm/sprinter/runtime_api.inc").read_text(encoding="ascii")
+        gates = runtime.split("; Fixed three-byte WIN2 gates.", 1)[1].split(
+            "DEFS (SPRINTER_RUNTIME_ENTRY-0x8000)-$", 1
+        )[0]
+        self.assertIn("DEFC _sprinter_frame_counter_get = 0x82DE", runtime)
+        self.assertIn("JP sprinter_frame_counter_get", gates)
+        self.assertIn("DEFC SPR_API_FRAME_COUNTER_GET = 0x82DE", api)
+
+    def test_frame_wait_counts_only_a_real_active_to_blank_edge(self) -> None:
+        runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
+        arm = runtime.split("sprinter_cbl_arm:", 1)[1].split(
+            "sprinter_cbl_disarm:", 1
+        )[0]
+        wait = runtime.split("sprinter_frame_wait:", 1)[1].split(
+            "sprinter_dss_keyscan:", 1
+        )[0]
+        self.assertGreaterEqual(arm.count("LD A,CBL_IDLE"), 2)
+        self.assertEqual(wait.count("LD DE,0x8000"), 2)
+        self.assertEqual(wait.count("INC A"), 1)
 
 
     def test_startup_uses_gfx_window_and_clear_contract(self) -> None:
@@ -419,6 +614,41 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertIn("sprinter_palette_about()", renderer)
         self.assertGreaterEqual(renderer.count("sprinter_palette_restore()"), 3)
 
+    def test_timer_and_clock_updates_are_single_afnt_draws_without_fill(self) -> None:
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        clock = renderer.split("void spectrum_render_clock", 1)[1].split(
+            "void sprinter_render_game_timer_line", 1
+        )[0]
+        timer = renderer.split("void sprinter_render_game_timer_line", 1)[1].split(
+            "void spectrum_render_game_timer_clear", 1
+        )[0]
+        self.assertNotIn("fill(", clock)
+        self.assertNotIn("fill(", timer)
+        self.assertEqual(clock.count("draw_text_width("), 1)
+        self.assertEqual(timer.count("draw_text_width("), 1)
+
+    def test_sprinter_hint_overlay_redraws_show_and_clear_squares_immediately(self) -> None:
+        rules = (ROOT / "asm/overlay/rules/rules_stub.asm").read_text(
+            encoding="ascii"
+        )
+        show = rules.split("rh_draw_to:", 1)[1].split(
+            "_rules_hints_clear_ovl:", 1
+        )[0]
+        clear = rules.split("_rules_hints_clear_ovl:", 1)[1].split(
+            "draw_square_hint:", 1
+        )[0]
+        sprinter_draw = rules.split("draw_square_hint:", 1)[1].split(
+            "IFNDEF NETCHESSZX_SPRINTER", 1
+        )[0]
+        self.assertIn("scf\n    ld a, 0", show)
+        self.assertIn("call _spectrum_board_view_redraw_square", clear)
+        self.assertIn("call _spectrum_board_view_redraw_square", sprinter_draw)
+        renderer = (ROOT / "src/sprinter/render.c").read_text(encoding="ascii")
+        marked = renderer.split("void spectrum_render_square_mark_with_hint", 1)[1].split(
+            "static void draw_move_line", 1
+        )[0]
+        self.assertIn("draw_hint_spec(spec);", marked)
+
     def test_runtime_uses_bounded_video_blank_and_services_keyscan_at_safe_point(self) -> None:
         runtime = (ROOT / "asm/sprinter/runtime.asm").read_text(encoding="ascii")
         startup = runtime.split("sprinter_runtime_start:", 1)[1].split(
@@ -442,7 +672,7 @@ class SprinterPolicyTests(unittest.TestCase):
         self.assertNotIn("CALL _sprinter_render_present", frame_wait)
         self.assertNotIn("sprinter_dss_irq_if_key", runtime)
         self.assertIn("IN A,(0xFE)", frame_wait)
-        self.assertIn("LD DE,0x0400", frame_wait)
+        self.assertEqual(frame_wait.count("LD DE,0x8000"), 2)
         self.assertIn("sprinter_frame_wait_blank:", frame_wait)
         self.assertIn("sprinter_frame_wait_tick:", frame_wait)
         self.assertNotIn("HALT", frame_wait)
@@ -481,9 +711,12 @@ class SprinterPolicyTests(unittest.TestCase):
             "sprinter_disk_gate_rst_end:", 1
         )[0]
         self.assertIn("DEFC PORT_CACHE_OFF = 0x007B", runtime)
-        self.assertIn("IN A,(PORT_CACHE_OFF)\n    IM 1\n    LD SP", startup)
+        self.assertIn("IN A,(PORT_CACHE_OFF)", startup)
+        self.assertLess(startup.index("IN A,(PORT_CACHE_OFF)"),
+                        startup.index("IM 1"))
         self.assertNotIn("PORT_CACHE_ON", runtime)
         self.assertIn("IN A,(PORT_CACHE_OFF)", disk_gate)
+        self.assertIn("OUT (PORT_WIN0),A", disk_gate)
         self.assertIn("RST 0x10", disk_gate)
         for name in ("sprinter_read_rtc:", "sprinter_key_poll:", "sprinter_puts:"):
             block = runtime.split(name, 1)[1]
@@ -586,8 +819,11 @@ class SprinterPolicyTests(unittest.TestCase):
             ROOT / "src/sprinter/fixed_layout.json"
         )
         self.assertEqual(stack_top, 0xBFF0)
-        # libman/uNet require at least 256 bytes of free stack for every call.
-        self.assertGreaterEqual(headroom, 0x100)
+        # libman/GFX640/uNet each need 256 free bytes at their own call site, on
+        # top of the SDCC chain that reaches them from the app FSM.  A reserve
+        # that only covers the DLL requirement overflows into the resident gate
+        # state and the protocol bank on the deepest gameplay path.
+        self.assertGreaterEqual(headroom, 0x400)
         self.assertEqual(symbols["SPRINTER_PAGE_TABLE"], 0x8101)
 
     def test_direct_disk_rst_is_rejected(self) -> None:

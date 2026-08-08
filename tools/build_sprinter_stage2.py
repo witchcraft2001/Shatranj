@@ -178,7 +178,7 @@ def write_provisional_data_defs(path: Path) -> None:
     )
     lines = ["; Provisional renderer DATA imports; regenerated after bank link."]
     for offset, name in enumerate(names):
-        lines.extend((f"PUBLIC {name}", f"DEFC {name} = 0x{0xBCB0 + offset:04X}"))
+        lines.extend((f"PUBLIC {name}", f"DEFC {name} = 0x{0xBAF0 + offset:04X}"))
     lines.extend(("PUBLIC sprinter_app_main", "DEFC sprinter_app_main = 0x4100"))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -331,9 +331,9 @@ def main() -> int:
     ], root)
 
     bank_layout = {
-        "app": (0x4100, 0xABA0, 0xBA70, False),
-        "ui": (0x4000, 0xBB70, 0xBBB0, True),
-        "protocol": (0x4000, 0xBCB0, 0xBD70, True),
+        "app": (0x4100, 0xABA0, 0xB970, False),
+        "ui": (0x4000, 0xBA00, 0xBA10, True),
+        "protocol": (0x4000, 0xBAF0, 0xBBA0, True),
     }
 
     def link_banks() -> None:
@@ -525,6 +525,7 @@ def main() -> int:
         "--bank-manifest", str(build / "bank_manifest.json"),
         "--asset-manifest", str(build / "asset_manifest.json"),
         "--manifest-out", str(build / "monoblock_manifest.json"),
+        "--layout-inc", str(build / "sprinter_layout.inc"),
         "--output", str(release / "SHATRANJ.EXE"),
     ], root)
     for name, source in (

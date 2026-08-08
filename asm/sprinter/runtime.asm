@@ -10,6 +10,7 @@ INCLUDE "sprinter_layout.inc"
 INCLUDE "sprinter_assets.inc"
 INCLUDE "asm/sprinter/image_layout.inc"
 
+DEFC PORT_WIN0 = 0x82
 DEFC PORT_WIN1 = 0xA2
 DEFC PORT_WIN2 = 0xC2
 DEFC PORT_WIN3 = 0xE2
@@ -39,6 +40,11 @@ DEFC DSS_SETVMOD = 0x50
 DEFC DSS_CLEAR = 0x56
 DEFC DSS_PUTCHAR = 0x5B
 DEFC DSS_PCHARS = 0x5C
+
+; Lowest two stack bytes plus the witness they hold.  SPRINTER_STACK_HEADROOM
+; is the reserve the fixed layout keeps free below SPRINTER_STACK_TOP.
+DEFC SPRINTER_STACK_FLOOR = SPRINTER_STACK_TOP-SPRINTER_STACK_HEADROOM
+DEFC SPRINTER_STACK_MARK = 0x5A57
 
 DEFC OVL_SAVELOAD = 10
 DEFC OVL_FILEUI = 13
@@ -73,6 +79,7 @@ PUBLIC _spectrum_net_runtime_fat_date
 PUBLIC _spectrum_net_runtime_fat_time
 PUBLIC _spectrum_net_runtime_clock_ready
 PUBLIC _spectrum_frame_wait
+PUBLIC _sprinter_frame_counter_get
 PUBLIC _sprinter_key_scan_raw
 PUBLIC _sprinter_clean_exit
 PUBLIC _sprinter_video_graphics
@@ -192,6 +199,7 @@ DEFC _netchesszx_setup_render_overlay = 0x82D2
 DEFC _netchesszx_setup_paint_attrs = 0x82D5
 DEFC _netchesszx_setup_render_rows = 0x82D8
 DEFC _sprinter_key_scan_raw = 0x82DB
+DEFC _sprinter_frame_counter_get = 0x82DE
 DEFC _spectrum_uart_background_pump = sprinter_noop
 DEFC _spectrum_net_runtime_wait_frame_plain = 0x822A
 sprinter_runtime_page_start:
@@ -204,8 +212,76 @@ sprinter_runtime_page_start:
 sprinter_im2_handler:
     ; Non-CTC sources must never enter DSS asynchronously: its cursor/mouse
     ; path can page WIN1 while an application cold bank is executing.
+    ;
+    ; A damaged call frame can also install a stack pointer outside the
+    ; reserved window, and the following RET then transfers control to
+    ; whatever those bytes happen to spell.  When that lands in a blocking DSS
+    ; routine the game stops responding for good, because IM2 keeps the DSS
+    ; keyboard scanner from ever satisfying it.  An interrupt is the only code
+    ; that still runs in that state, so this is the one place that can name the
+    ; fault instead of leaving a freeze.  frame_wait covers the opposite case,
+    ; where the stack itself grew past its floor.
+    PUSH AF
+    LD A,(SPRINTER_SP_WATCH)
+    OR A
+    JR Z,sprinter_im2_done
+    PUSH HL
+    PUSH DE
+    ; Accepting the whole reserve keeps this test independent of how deep the
+    ; interrupted call chain legitimately is; only leaving the window at all is
+    ; a fault.  The interrupt itself has pushed PC, AF, HL and DE by now.
+    LD HL,8
+    ADD HL,SP
+    LD DE,SPRINTER_STACK_FLOOR
+    OR A
+    SBC HL,DE
+    JR C,sprinter_im2_frame_lost
+    LD HL,8
+    ADD HL,SP
+    LD DE,SPRINTER_STACK_TOP+1
+    OR A
+    SBC HL,DE
+    JR NC,sprinter_im2_frame_lost
+    POP DE
+    POP HL
+sprinter_im2_done:
+    POP AF
     EI
     RETI
+
+; Reached from the interrupt above, so the wild stack must be abandoned rather
+; than unwound.  The witness is rewritten because the diagnosis is complete and
+; the cleanup path itself needs a usable stack.
+;
+; The interrupted address, the stack pointer it ran on and the SDCC frame
+; pointer are recorded first.  They are the only evidence of where the frame was
+; lost, and the exit path below deliberately discards the stack that holds them.
+sprinter_im2_frame_lost:
+    DI
+    IN A,(PORT_WIN1)
+    LD (SPRINTER_FAULT_WIN1),A
+    LD (SPRINTER_FAULT_IX),IX
+    LD HL,8
+    ADD HL,SP
+    LD (SPRINTER_FAULT_SP),HL
+    LD HL,6
+    ADD HL,SP
+    LD E,(HL)
+    INC HL
+    LD D,(HL)
+    LD (SPRINTER_FAULT_PC),DE
+    LD A,1
+    LD (SPRINTER_FAULT_EXIT),A
+    XOR A
+    LD (SPRINTER_SP_WATCH),A
+    LD SP,SPRINTER_STACK_TOP
+    LD HL,SPRINTER_STACK_MARK
+    LD (SPRINTER_STACK_FLOOR),HL
+    LD A,7
+    LD (SPRINTER_PLATFORM_ERROR),A
+    LD (SPRINTER_DIAG_RESULT),A
+    EI
+    JP sprinter_cleanup
 
     DEFS 0x0200-$,0
 
@@ -284,6 +360,7 @@ sprinter_im2_handler:
     JP sprinter_setup_paint
     JP sprinter_setup_rows
     JP sprinter_key_scan_raw_impl
+    JP sprinter_frame_counter_get
 
     DEFS (SPRINTER_RUNTIME_ENTRY-0x8000)-$,0
 
@@ -295,8 +372,21 @@ sprinter_runtime_start:
     ; This must be the first hardware operation: z88dk's transition may have
     ; enabled the cache before entering the permanent WIN2 runtime.
     IN A,(PORT_CACHE_OFF)
+    ; Dss.Exit restores SLOT1/2/3 but never SLOT0, so the shell's WIN0 page is
+    ; this process's responsibility.  Capture it while it is still the system
+    ; page: every DSS call below reinstates it, because the API entry at #0010
+    ; exists only while WIN0 holds DSS.
+    IN A,(PORT_WIN0)
+    LD (SPRINTER_LOADER_WIN0),A
     IM 1
     LD SP,SPRINTER_STACK_TOP
+    ; The stack is the only WIN2 range the fixed layout leaves unnamed, and it
+    ; grows straight down into the resident gate state and the protocol bank.
+    ; Plant a witness in its lowest two bytes; frame_wait re-reads it so an
+    ; exhausted stack becomes a diagnosed exit instead of a corrupted return
+    ; address and a wild jump.
+    LD HL,SPRINTER_STACK_MARK
+    LD (SPRINTER_STACK_FLOOR),HL
     ; Do not erase loader metadata, the palette, or preloaded DATA images.
     LD HL,SPRINTER_OVERLAY_CONTEXT
     XOR A
@@ -317,22 +407,22 @@ sprinter_runtime_start:
     LD HL,SPRINTER_BASE_BSS
     LD (HL),A
     LD DE,SPRINTER_BASE_BSS+1
-    LD BC,0x0100-1
+    LD BC,0x0090-1
     LDIR
     LD HL,SPRINTER_UI_BSS
     LD (HL),A
     LD DE,SPRINTER_UI_BSS+1
-    LD BC,0x00D0-1
+    LD BC,0x00B0-1
     LDIR
     LD HL,SPRINTER_PROTOCOL_BSS
     LD (HL),A
     LD DE,SPRINTER_PROTOCOL_BSS+1
-    LD BC,0x0180-1
+    LD BC,0x0050-1
     LDIR
     LD HL,SPRINTER_UNET_HANDLE
     LD (HL),A
     LD DE,SPRINTER_UNET_HANDLE+1
-    LD BC,0x002C-1
+    LD BC,0x002E-1
     LDIR
     LD A,0xFF
     LD (SPRINTER_UNET_HANDLE),A
@@ -407,12 +497,22 @@ sprinter_runtime_start:
     XOR L
     LD L,A
     LD (SPRINTER_SESSION_NONCE),HL
-    ; Discard the shell's launch Enter before the setup FSM begins.
+    ; Discard the shell's launch Enter before the setup FSM begins.  K_CLEAR
+    ; flushes the ring and then chains to the function number left in B when
+    ; that number is one of WaitKey..EDIT, so B decides whether this call
+    ; returns at all: WaitKey blocks forever under IM2, where the DSS keyboard
+    ; scanner only runs when frame_wait invokes it.  Ask for the out-of-range
+    ; report instead, which is issued after the flush and is discarded here.
+    LD B,0
     LD C,DSS_K_CLEAR
     CALL sprinter_dss_enter
     RST 0x10
     CALL sprinter_dss_leave
     CALL sprinter_cbl_arm
+    ; From here until cleanup the application owns the WIN2 stack, so an SP
+    ; outside the reserve is a lost call frame rather than a foreign stack.
+    LD A,1
+    LD (SPRINTER_SP_WATCH),A
     LD A,(SPRINTER_PAGE_TABLE)
     OUT (PORT_WIN1),A
     ; Call the portable application body, not z88dk's CRT entry at #4100.
@@ -435,10 +535,23 @@ _sprinter_clean_exit:
     LD (SPRINTER_DIAG_RESULT),A
 
 sprinter_cleanup:
+    ; Shutdown legitimately runs on DSS stacks again, so the interrupt-time
+    ; stack test stops here rather than misreading them as a lost frame.
+    XOR A
+    LD (SPRINTER_SP_WATCH),A
+    ; A lost frame leaves libman, the loaded DLLs and the WIN1 mapping in an
+    ; unknown state, so re-entering them turns a completed diagnosis into a
+    ; second crash with the watchdog already disabled.  DSS reclaims the whole
+    ; process allocation at Exit, exactly as the graphics startup failure path
+    ; relies on, so the fault exit only restores video and reports.
+    LD A,(SPRINTER_FAULT_EXIT)
+    OR A
+    JR NZ,sprinter_cleanup_video
     ; uNet shutdown must run while the network call environment and current
     ; interrupt mode are still intact.  It resumes an outstanding pause,
     ; closes channel zero, calls NETDONE and unloads the selected DLL.
     CALL _sprinter_unet_shutdown
+sprinter_cleanup_video:
     ; Cleanup stays in IM1 permanently.  SetVMod is issued for both screens;
     ; PORT_Y is parked and front buffer zero is selected before DSS.Exit.
     DI
@@ -477,7 +590,11 @@ sprinter_cleanup_screen_zero_clear:
 sprinter_cleanup_video_done:
     ; AFNT640/GFX640 free does not depend on graphics mode.  Restore DSS text mode
     ; first so a libman/DSS failure can never strand the user on a black page.
+    LD A,(SPRINTER_FAULT_EXIT)
+    OR A
+    JR NZ,sprinter_cleanup_gfx_done
     CALL _sprinter_gfx_stop
+sprinter_cleanup_gfx_done:
     IN A,(PORT_RGMOD)
     AND 0xFE
     OUT (PORT_RGMOD),A
@@ -510,9 +627,63 @@ sprinter_cleanup_maps_done:
     LD A,(SPRINTER_DIAG_RESULT)
     OR A
     JR Z,sprinter_exit
-    LD HL,msg_stage3_fail
+    CP 6
+    JR Z,sprinter_cleanup_stack_msg
+    CP 7
+    JR Z,sprinter_cleanup_frame_msg
+    ; Every other nonzero result used to select an empty string, so a fault
+    ; exit looked exactly like a normal one: the game simply returned to DSS
+    ; with nothing to go on.  Name both codes instead.
+    LD DE,msg_fault_code
+    CALL sprinter_put_hex8
+    LD A,(SPRINTER_PLATFORM_ERROR)
+    LD DE,msg_fault_platform
+    CALL sprinter_put_hex8
+    LD HL,msg_fault_fail
+    JR sprinter_cleanup_report
+sprinter_cleanup_frame_msg:
+    LD HL,(SPRINTER_FAULT_SP)
+    LD DE,msg_frame_sp
+    CALL sprinter_put_hex16
+    LD HL,(SPRINTER_FAULT_PC)
+    LD DE,msg_frame_pc
+    CALL sprinter_put_hex16
+    LD HL,(SPRINTER_FAULT_IX)
+    LD DE,msg_frame_ix
+    CALL sprinter_put_hex16
+    LD A,(SPRINTER_FAULT_WIN1)
+    LD DE,msg_frame_win1
+    CALL sprinter_put_hex8
+    LD A,(SPRINTER_TRAIL_INDEX)
+    LD DE,msg_frame_trail_index
+    CALL sprinter_put_hex8
+    LD HL,(SPRINTER_TRAIL)
+    LD DE,msg_frame_trail0
+    CALL sprinter_put_hex16
+    LD HL,(SPRINTER_TRAIL+2)
+    LD DE,msg_frame_trail1
+    CALL sprinter_put_hex16
+    LD HL,(SPRINTER_TRAIL+4)
+    LD DE,msg_frame_trail2
+    CALL sprinter_put_hex16
+    LD HL,(SPRINTER_TRAIL+6)
+    LD DE,msg_frame_trail3
+    CALL sprinter_put_hex16
+    LD HL,msg_frame_fail
+    JR sprinter_cleanup_report
+sprinter_cleanup_stack_msg:
+    LD HL,msg_stack_fail
+sprinter_cleanup_report:
     CALL sprinter_puts
 sprinter_exit:
+    LD A,(SPRINTER_DIAG_RESULT)
+    LD B,A
+    LD C,DSS_EXIT
+    CALL sprinter_dss_enter
+    RST 0x10
+    ; Dss.Exit does not return.  Reaching here means WIN0 did not hold DSS, so
+    ; the call was a no-op; sprinter_dss_enter has since reinstated the shell's
+    ; page, and one retry either terminates or proves the mapping unrecoverable.
     LD A,(SPRINTER_DIAG_RESULT)
     LD B,A
     LD C,DSS_EXIT
@@ -529,6 +700,12 @@ sprinter_dss_enter:
     PUSH AF
     DI
     IN A,(PORT_CACHE_OFF)
+    ; Cache-off alone is not enough: a library that repoints WIN0 leaves #0010
+    ; pointing at its own page, and then every RST #10 here silently does
+    ; nothing.  That is how a failed exit ends up halted with the game still on
+    ; screen, because the video restore and Dss.Exit both became no-ops.
+    LD A,(SPRINTER_LOADER_WIN0)
+    OUT (PORT_WIN0),A
     IM 1
     POP AF
     EI
@@ -923,6 +1100,7 @@ sprinter_overlay_length_low:
     INC HL
     LD D,(HL)
     LD (SPRINTER_FAR_TARGET),DE
+    CALL sprinter_trail_push
     ; Entry must be at/after the table and strictly before base+length.
     LD A,(SPRINTER_OVERLAY_CACHE_DESC+6)
     ADD A,A
@@ -1051,6 +1229,7 @@ sprinter_resident_class_ready:
     INC HL
     LD D,(HL)
     LD (SPRINTER_RESIDENT_TARGET),DE
+    CALL sprinter_trail_push
     POP HL
     LD (SPRINTER_RESIDENT_RETURN),HL
     LD A,1
@@ -1224,7 +1403,7 @@ INCLUDE "sprinter_far_thunks.inc"
 ; ---------------------------------------------------------------------------
 ; Application and cold-bank execution stay in IM2 so the DSS cursor/mouse
 ; handler cannot page WIN1 asynchronously.  CBL is an audio FIFO, not a frame
-; timer: empty it with DAC-centre bytes and leave it stopped.  frame_wait uses
+; timer: fill it with DAC-centre bytes and leave it in idle mode. frame_wait uses
 ; the video blank transition with a finite polling budget.  That has a defined
 ; fallback on machines where the optional CTC chain is unavailable.
 sprinter_cbl_arm:
@@ -1239,7 +1418,7 @@ sprinter_cbl_silence:
     OUT (C),A
     DJNZ sprinter_cbl_silence
     LD BC,PORT_CBL_CTRL
-    XOR A
+    LD A,CBL_IDLE
     OUT (C),A
     LD A,0x80
     LD I,A
@@ -1263,6 +1442,13 @@ sprinter_cbl_disarm:
     RET
 
 sprinter_frame_wait:
+    ; Every application frame passes through here, so this is the one place
+    ; that observes the whole call graph's deepest stack use.
+    LD HL,(SPRINTER_STACK_FLOOR)
+    LD DE,SPRINTER_STACK_MARK
+    OR A
+    SBC HL,DE
+    JR NZ,sprinter_stack_exhausted
     LD A,(SPRINTER_DISK_BUSY)
     OR A
     JR NZ,sprinter_frame_nested
@@ -1270,16 +1456,11 @@ sprinter_frame_wait:
     PUSH AF
     IN A,(PORT_WIN3)
     PUSH AF
-    ; PORT_Y is write-only: reading it is not a reliable vertical-beam
-    ; status source on every DSS/MAME combination.  Treat this only as a
-    ; best-effort hint and keep the fallback below one millisecond, so a
-    ; missing transition cannot turn each typed character into a multi-frame
-    ; stall.
-    LD DE,0x0400
-; Start outside blank, then wait for the following blank edge.  Do not use
-; the interrupt sleep instruction here: a non-delivered interrupt degrades to
-; a short timed poll,
-; rather than freezing network and input forever.
+    ; CBL idle mode exposes the video blank state on #FFFE.5.  First acquire
+    ; the active phase, then wait for the following blank edge.  Each phase
+    ; has its own full polling budget; a missing edge is a timeout, never a
+    ; synthetic frame.
+    LD DE,0x8000
 sprinter_frame_wait_active:
     LD A,0xFF
     IN A,(0xFE)
@@ -1291,6 +1472,8 @@ sprinter_frame_wait_active:
     JR NZ,sprinter_frame_wait_active
     JR sprinter_frame_wait_ready
 sprinter_frame_wait_blank:
+    LD DE,0x8000
+sprinter_frame_wait_blank_poll:
     LD A,0xFF
     IN A,(0xFE)
     BIT 5,A
@@ -1298,7 +1481,7 @@ sprinter_frame_wait_blank:
     DEC DE
     LD A,D
     OR E
-    JR NZ,sprinter_frame_wait_blank
+    JR NZ,sprinter_frame_wait_blank_poll
     JR sprinter_frame_wait_ready
 sprinter_frame_wait_tick:
     LD A,(SPRINTER_FRAME_COUNTER)
@@ -1371,6 +1554,27 @@ sprinter_frame_nested:
     LD A,3
     LD (SPRINTER_PLATFORM_ERROR),A
     SCF
+    RET
+
+; The witness below SPRINTER_STACK_TOP is gone, so the call chain that reached
+; this frame has already written over resident gate state and the protocol
+; bank.  Returning would follow a corrupted return address; abandon the chain
+; on a known-good stack and leave through the ordinary cleanup path instead.
+sprinter_stack_exhausted:
+    DI
+    LD SP,SPRINTER_STACK_TOP
+    LD HL,SPRINTER_STACK_MARK
+    LD (SPRINTER_STACK_FLOOR),HL
+    LD A,6
+    LD (SPRINTER_PLATFORM_ERROR),A
+    LD (SPRINTER_DIAG_RESULT),A
+    EI
+    JP sprinter_cleanup
+
+sprinter_frame_counter_get:
+    LD A,(SPRINTER_FRAME_COUNTER)
+    LD L,A
+    LD H,0
     RET
 
 sprinter_key_poll:
@@ -1543,6 +1747,10 @@ sprinter_disk_gate:
     ; leave the cache enabled before a disk RST, because cached RST #10 is a
     ; DI/HALT driver stub rather than a DSS API entry.
     IN A,(PORT_CACHE_OFF)
+    ; Same SLOT0 rule as sprinter_dss_enter: without the system page in WIN0
+    ; the RST below reaches a library page instead of the DSS API.
+    LD A,(SPRINTER_LOADER_WIN0)
+    OUT (PORT_WIN0),A
     IM 1
     EI
     LD IX,(SPRINTER_DISK_IN_IX)
@@ -1613,6 +1821,17 @@ sprinter_disk_reentry:
     POP IY
     RET
 
+; The gate returns the DSS IX result because the resident libman adapter needs
+; it.  Every esx-style wrapper below is instead reached from SDCC code that
+; keeps its frame pointer in IX and whose epilogue executes LD SP,IX, so those
+; callers need the opposite and must all route through here.  POP leaves the
+; flags alone, so the gate's carry result still reaches the wrapper.
+sprinter_disk_gate_keep_ix:
+    PUSH IX
+    CALL sprinter_disk_gate
+    POP IX
+    RET
+
 ; ---------------------------------------------------------------------------
 ; esx-style file ABI over DSS.  Paths are bounded and normalized in WIN2;
 ; DSS handle N is exposed as N+1 because the existing C ABI reserves zero.
@@ -1654,7 +1873,7 @@ sprinter_esx_fopen:
     RET C
     LD A,1
     LD C,SPR_DSS_OPEN
-    CALL sprinter_disk_gate
+    CALL sprinter_disk_gate_keep_ix
     RET C
     INC A
     LD (SPRINTER_ESX_HANDLE),A
@@ -1666,7 +1885,7 @@ sprinter_esx_fcreate:
     RET C
     XOR A
     LD C,DSS_CREATE
-    CALL sprinter_disk_gate
+    CALL sprinter_disk_gate_keep_ix
     RET C
     INC A
     LD (SPRINTER_ESX_HANDLE),A
@@ -1682,7 +1901,7 @@ sprinter_esx_fread:
     LD HL,(SPRINTER_ESX_BUF)
     LD DE,(SPRINTER_ESX_COUNT)
     LD C,DSS_READ
-    CALL sprinter_disk_gate
+    CALL sprinter_disk_gate_keep_ix
     RET C
     LD (SPRINTER_ESX_RESULT),DE
     RET
@@ -1698,7 +1917,7 @@ sprinter_esx_fwrite:
     LD HL,(SPRINTER_ESX_BUF)
     LD DE,(SPRINTER_ESX_COUNT)
     LD C,DSS_WRITE
-    CALL sprinter_disk_gate
+    CALL sprinter_disk_gate_keep_ix
     RET C
     ; DSS Write has no byte-count result; success means the whole request.
     LD HL,(SPRINTER_ESX_COUNT)
@@ -1721,7 +1940,7 @@ sprinter_esx_close_file:
     JR Z,sprinter_esx_close_bad
     DEC A
     LD C,SPR_DSS_CLOSE
-    CALL sprinter_disk_gate
+    CALL sprinter_disk_gate_keep_ix
     PUSH AF
     XOR A
     LD (SPRINTER_ESX_HANDLE),A
@@ -1740,7 +1959,7 @@ sprinter_esx_funlink:
     CALL sprinter_copy_path
     RET C
     LD C,DSS_DELETE
-    CALL sprinter_disk_gate
+    CALL sprinter_disk_gate_keep_ix
     RET C
     LD HL,1
     LD (SPRINTER_ESX_RESULT),HL
@@ -1782,11 +2001,7 @@ sprinter_esx_dir_append:
     LD A,0x37
     LD B,1
     LD C,DSS_F_FIRST
-    ; The cold FileUI module uses IX as its SDCC frame pointer.  libman needs
-    ; IX as a DSS result, so preserve the FileUI caller around this C call.
-    PUSH IX
-    CALL sprinter_disk_gate
-    POP IX
+    CALL sprinter_disk_gate_keep_ix
     RET C
     LD A,1
     LD (SPRINTER_ITERATOR_ACTIVE),A
@@ -1811,9 +2026,7 @@ sprinter_esx_readdir_next:
 sprinter_esx_readdir_fetch:
     LD DE,SPRINTER_FIND_BUFFER
     LD C,DSS_F_NEXT
-    PUSH IX
-    CALL sprinter_disk_gate
-    POP IX
+    CALL sprinter_disk_gate_keep_ix
     RET C
 sprinter_esx_readdir_filter:
     LD A,(SPRINTER_FIND_BUFFER+32)
@@ -1867,7 +2080,7 @@ sprinter_adapt_stamp:
 ; for the static direct-RST policy check.
 sprinter_esx_move_fp:
     LD C,DSS_MOVE_FP
-    JP sprinter_disk_gate
+    JP sprinter_disk_gate_keep_ix
 
 ; ---------------------------------------------------------------------------
 ; RTC/FAT timestamp and NCZS/FILEUI/SAVELOAD support.
@@ -2060,8 +2273,95 @@ sprinter_puts:
 
 config_suffix:
     DEFB "SYS\\CONFIG",0
-msg_stage3_fail:
-    DEFB 0
+msg_fault_fail:
+    DEFB "Shatranj: exit code "
+msg_fault_code:
+    DEFB "00"
+    DEFB " platform "
+msg_fault_platform:
+    DEFB "00",13,10,0
+msg_stack_fail:
+    DEFB "Shatranj: application stack exhausted",13,10,0
+; The three values are patched in place before the string is printed, so the
+; report survives discarding the stack that produced it.
+msg_frame_fail:
+    DEFB "Shatranj: call frame lost SP="
+msg_frame_sp:
+    DEFB "0000"
+    DEFB " PC="
+msg_frame_pc:
+    DEFB "0000"
+    DEFB " IX="
+msg_frame_ix:
+    DEFB "0000",13,10
+    DEFB "  win1="
+msg_frame_win1:
+    DEFB "00"
+    DEFB " gate trail ["
+msg_frame_trail_index:
+    DEFB "00"
+    DEFB "] "
+msg_frame_trail0:
+    DEFB "0000"
+    DEFB " "
+msg_frame_trail1:
+    DEFB "0000"
+    DEFB " "
+msg_frame_trail2:
+    DEFB "0000"
+    DEFB " "
+msg_frame_trail3:
+    DEFB "0000",13,10,0
+
+; DE = value to record.  Every register survives, because this is called from
+; the middle of the page gates.
+;
+; The fault record says where a runaway ended, not where it started: by the time
+; an interrupt observes the bad stack pointer, the lost code has been executing
+; for up to a frame.  The last few page-gate targets are the only cheap evidence
+; of the crossing it came from.
+sprinter_trail_push:
+    PUSH AF
+    PUSH HL
+    LD A,(SPRINTER_TRAIL_INDEX)
+    INC A
+    AND 3
+    LD (SPRINTER_TRAIL_INDEX),A
+    ADD A,A
+    ; The ring is eight bytes inside one page, so this cannot carry.
+    ADD A,SPRINTER_TRAIL & 0xFF
+    LD L,A
+    LD H,SPRINTER_TRAIL >> 8
+    LD (HL),E
+    INC HL
+    LD (HL),D
+    POP HL
+    POP AF
+    RET
+
+; HL = value, DE = the four ASCII digits to overwrite.
+sprinter_put_hex16:
+    LD A,H
+    CALL sprinter_put_hex8
+    LD A,L
+sprinter_put_hex8:
+    PUSH AF
+    RRCA
+    RRCA
+    RRCA
+    RRCA
+    CALL sprinter_put_hex4
+    POP AF
+sprinter_put_hex4:
+    AND 0x0F
+    ADD A,'0'
+    CP '9'+1
+    JR C,sprinter_put_hex4_store
+    ADD A,'A'-'0'-10
+sprinter_put_hex4_store:
+    LD (DE),A
+    INC DE
+    RET
 
 ; Pinned libman 1.3 remains resident in WIN2.  The generated adapter changes
 ; only OPEN/READ/MOVE_FP/CLOSE into calls through sprinter_disk_gate.

@@ -32,7 +32,11 @@ uint16_t sprinter_piece_ref(uint8_t set, char piece)
     }
     for (index = 0u; index < 6u; ++index) {
         if (order[index] == folded) {
-            return (uint16_t)((set * 12u + black * 6u + index) * 2u);
+            uint16_t tile = (uint16_t)(set * 12u + black * 6u + index);
+
+            /* GFX640 addresses a tile as page:offset, not as a linear tile
+               number.  Pieces use one 32x16 tile in the current ABI. */
+            return (uint16_t)(((tile / 64u) << 8) | (tile % 64u));
         }
     }
     return 0xFFFFu;
@@ -41,6 +45,11 @@ uint16_t sprinter_piece_ref(uint8_t set, char piece)
 uint8_t sprinter_cursor_outline_color(uint8_t selected)
 {
     return selected ? SPRINTER_CURSOR_SELECTED : SPRINTER_CURSOR_GRAY;
+}
+
+uint8_t sprinter_hint_mask(uint8_t logical_col)
+{
+    return logical_col < 8u ? (uint8_t)(1u << logical_col) : 0u;
 }
 
 char sprinter_board_file_label(uint8_t col, uint8_t flipped)

@@ -49,6 +49,7 @@ SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
 SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
 SPRINTER_GUI_CLOCK_TEST := $(SPRINTER_BUILD_DIR)/test_gui_clock
 SPRINTER_GAME_CONTROLS_TEST := $(SPRINTER_BUILD_DIR)/test_game_controls
+SPRINTER_PLATFORM_TIMING_TEST := $(SPRINTER_BUILD_DIR)/test_platform_timing
 SPRINTER_Z88DK ?= $(abspath ../../z88dk)
 SPRINTER_ZCC ?= $(SPRINTER_Z88DK)/bin/zcc
 SPRINTER_Z80ASM ?= $(SPRINTER_Z88DK)/bin/z80asm
@@ -485,9 +486,16 @@ sprinter-tools-test: | $(SPRINTER_BUILD_DIR)
 		tests/sprinter/test_gui_clock.c $(HOST_GC_LDFLAGS) \
 		-o $(SPRINTER_GUI_CLOCK_TEST)
 	$(SPRINTER_GUI_CLOCK_TEST)
-	$(CC) $(CFLAGS) tests/sprinter/test_game_controls.c \
+	$(CC) $(CFLAGS) -DNETCHESSZX_HOST_TEST -D__z88dk_fastcall= \
+		src/common/chess/move_coords.c src/common/chess/rules_compact.c \
+		src/common/chess/legal.c src/spectrum/board/board.c \
+		tests/sprinter/test_game_controls.c \
 		-o $(SPRINTER_GAME_CONTROLS_TEST)
 	$(SPRINTER_GAME_CONTROLS_TEST)
+	$(CC) $(CFLAGS) -D__z88dk_fastcall= $(HOST_GC_CFLAGS) \
+		src/sprinter/platform.c tests/sprinter/test_platform_timing.c \
+		$(HOST_GC_LDFLAGS) -o $(SPRINTER_PLATFORM_TIMING_TEST)
+	$(SPRINTER_PLATFORM_TIMING_TEST)
 
 $(SPRINTER_BUILD_DIR):
 	mkdir -p $(SPRINTER_BUILD_DIR)

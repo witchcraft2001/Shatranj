@@ -5,8 +5,9 @@
 #include "spectrum/platform/platform.h"
 #include "spectrum/ui/render.h"
 
-/* These two entry points live in the permanent WIN2 assembly runtime. */
+/* These entry points live in the permanent WIN2 assembly runtime. */
 extern uint8_t sprinter_key_scan_raw(void);
+extern uint8_t sprinter_frame_counter_get(void);
 extern void sprinter_clean_exit(uint8_t code) __z88dk_fastcall;
 extern uint8_t sprinter_palette_restore(void);
 
@@ -19,6 +20,8 @@ static uint8_t key_repeat_timer;
    first record.  In game play that repeat may be consumed after an arrow and
    accidentally confirm a destination square. */
 static uint8_t select_debounce;
+static uint8_t input_frame_seen;
+static uint8_t input_last_frame;
 
 #define SPRINTER_SELECT_DEBOUNCE_FRAMES 12u
 
@@ -72,13 +75,27 @@ uint8_t spectrum_key_edit_pressed(void)
 
 void spectrum_input_frame_tick(void)
 {
-    uint8_t key = sprinter_key_scan_raw();
+    uint8_t frame = sprinter_frame_counter_get();
+    uint8_t frame_advanced;
+    uint8_t key;
 
-    if (select_debounce != 0u) {
+    frame_advanced = (uint8_t)(!input_frame_seen || frame != input_last_frame);
+    if (frame_advanced) {
+        input_last_frame = frame;
+        input_frame_seen = 1u;
+    }
+    /* Consume DSS records even when VBlank acquisition timed out.  Repeat and
+       debounce time still advance only on a real frame-counter edge below. */
+    key = sprinter_key_scan_raw();
+
+    if (frame_advanced && select_debounce != 0u) {
         --select_debounce;
     }
 
     if (key == 0u) {
+        /* A release is input state, not elapsed time.  Clearing it only on a
+           VBlank edge can permanently retain key_suppress/key_last after a
+           video-sync timeout, making the next cursor press look like a hang. */
         key_last = 0u;
         key_repeat_timer = 0u;
         key_suppress = 0u;
@@ -94,6 +111,9 @@ void spectrum_input_frame_tick(void)
         key_last = key;
         key_repeat_timer = repeat_start(key);
     } else {
+        if (!frame_advanced) {
+            return;
+        }
         if (!repeatable(key)) {
             return;
         }
@@ -130,6 +150,8 @@ void spectrum_input_flush_until_release(void)
 {
     key_event = 0u;
     select_debounce = 0u;
+    input_last_frame = sprinter_frame_counter_get();
+    input_frame_seen = 1u;
     key_suppress = sprinter_key_scan_raw();
     if (key_suppress == 0u) {
         key_last = 0u;
@@ -140,6 +162,8 @@ void spectrum_input_flush_until_release(void)
 void spectrum_input_suppress_until_release(uint8_t key) __z88dk_fastcall
 {
     key_event = 0u;
+    input_last_frame = sprinter_frame_counter_get();
+    input_frame_seen = 1u;
     if (is_select_key(key)) {
         select_debounce = SPRINTER_SELECT_DEBOUNCE_FRAMES;
     }

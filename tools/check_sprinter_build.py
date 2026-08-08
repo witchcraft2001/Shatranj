@@ -28,7 +28,7 @@ from make_sprinter_exe import (
 EXPECTED_MODULE_IDS = list(range(15))
 SLOW_MODULE_IDS = {10, 12, 13}
 GATE_FIRST = 0x8200
-GATE_LAST = 0x82D8
+GATE_LAST = 0x82DE
 
 
 def symbols(path: Path) -> dict[str, int]:
@@ -41,6 +41,23 @@ def symbols(path: Path) -> dict[str, int]:
             re.MULTILINE,
         )
     }
+
+
+def placed_symbols(path: Path) -> list[int]:
+    """Addresses that occupy image space, i.e. z80asm 'addr' symbols only.
+
+    Plain DEFC constants (including the generated fixed-layout addresses) also
+    appear in the map and must not be mistaken for placed content.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [
+        int(value, 16)
+        for value in re.findall(
+            r"^[A-Za-z_][A-Za-z0-9_.]*\s+=\s+\$([0-9A-Fa-f]+)\s+;\s+addr,",
+            text,
+            re.MULTILINE,
+        )
+    ]
 
 
 def resident_import_definitions(path: Path) -> dict[str, int]:
@@ -92,9 +109,9 @@ def validate_assets(asset: dict[str, object], asset_pages: list[bytes],
                     failures: list[str]) -> None:
     count = int(asset.get("page_count", -1))
     gfx_count = int(asset.get("gfx_page_count", -1))
-    fail_if(count != 5 or len(asset_pages) != count,
-            "Sprinter asset bundle must contain exactly five pages", failures)
-    fail_if(gfx_count != 4, "GFX source page count must be exactly four", failures)
+    fail_if(count != 4 or len(asset_pages) != count,
+            "Sprinter asset bundle must contain exactly four pages", failures)
+    fail_if(gfx_count != 3, "GFX source page count must be exactly three", failures)
     fail_if(int(asset.get("page_size", 0)) != PAGE_SIZE,
             "asset page size is not 16 KiB", failures)
     fail_if(int(asset.get("transparent_index", -1)) != 15 or
@@ -114,7 +131,7 @@ def validate_assets(asset: dict[str, object], asset_pages: list[bytes],
     if isinstance(palette, dict):
         gameplay = palette.get("gameplay_profile", {})
         about_profile = palette.get("about_profile", {})
-        fail_if(int(palette.get("page_index", -1)) != 4 or
+        fail_if(int(palette.get("page_index", -1)) != 3 or
                 gameplay != {"offset": 0, "length": 768} or
                 palette.get("gameplay_profiles") != {"count": 3, "stride": 768} or
                 about_profile != {"offset": 2304, "length": 768} or
@@ -125,13 +142,13 @@ def validate_assets(asset: dict[str, object], asset_pages: list[bytes],
         flat = [int(value) for pair in refs.values() for value in pair]
         fail_if(any((value >> 8) >= gfx_count or (value & 0xFF) >= 64
                     for value in flat),
-                "piece TileRef leaves the four GFX pages", failures)
+                "piece TileRef leaves the three GFX pages", failures)
     about = asset.get("about", {})
     if isinstance(about, dict):
         refs = [int(value) for value in about.get("tile_refs", [])]
-        fail_if(len(refs) != 24 * 6 or
+        fail_if(len(refs) != 12 * 12 or
                 any((value >> 8) >= gfx_count or (value & 0xFF) >= 64 for value in refs),
-                "About TileRefs leave the four GFX pages", failures)
+                "About TileRefs leave the three GFX pages", failures)
 
 
 def main() -> int:
@@ -209,7 +226,7 @@ def main() -> int:
                 "bad base transition in manifest", failures)
         fail_if(binary_manifest[20] != 2 or binary_manifest[21] != 2 + cold_count,
                 "cold/asset physical ranges are inconsistent", failures)
-        fail_if(binary_manifest[22] != 4 or binary_manifest[23] != 4,
+        fail_if(binary_manifest[22] != 3 or binary_manifest[23] != 3,
                 "GFX/palette page descriptors are wrong", failures)
         fail_if(int.from_bytes(binary_manifest[24:26], "little") != 768,
                 "palette length is not RGB888/256", failures)
@@ -246,6 +263,7 @@ def main() -> int:
             0x8227: "sprinter_clock_ready",
             0x822A: "sprinter_frame_wait",
             0x822D: "_spectrum_input_poll_event",
+            0x82DE: "sprinter_frame_counter_get",
         }.items():
             gate = runtime_page[address - 0x8000:address - 0x8000 + 3]
             fail_if(int.from_bytes(gate[1:3], "little") != runtime.get(target_name),
@@ -460,8 +478,16 @@ def main() -> int:
                 symbols_layout.get("SPRINTER_GFX_PALETTE"),
                 "asset publication addresses disagree with fixed layout", failures)
 
-    fail_if(stack_floor != 0xBEF0 or integer(layout["stack_headroom"]) < 0x0100,
-            "uNet call stack margin is below 256 bytes", failures)
+    fail_if(integer(layout["stack_top"]) != 0xBFF0 or
+            integer(layout["stack_headroom"]) < 0x0400,
+            "application stack reserve is below 1024 bytes", failures)
+    # Nothing but the stack may live above the last fixed region, and the
+    # resident page image must stay clear of the stack it hands to the app.
+    runtime_top = max((address for address in placed_symbols(args.runtime_map)
+                       if 0x8000 <= address < 0xC000), default=0)
+    fail_if(runtime_top >= stack_floor,
+            f"resident page content reaches 0x{runtime_top:04X}, at or above the "
+            f"stack floor 0x{stack_floor:04X}", failures)
     expected_pages = 2 + len(bank_pages) + len(asset_pages)
     fail_if(mono.get("page_count") != expected_pages or
             mono.get("image_size") != len(data),

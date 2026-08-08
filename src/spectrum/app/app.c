@@ -1366,6 +1366,16 @@ static void finish_applied_move(const char *ply_text,
     spectrum_gui_move_timer_reset();
     turn_set_notice(next_local_turn,
                     (uint8_t)(state != SPECTRUM_BOARD_CHECK));
+#ifdef NETCHESSZX_SPRINTER
+    /* spectrum_gui_apply_move repaints the squares the move touched, and the
+       cursor is an overlay on top of a square rather than part of it, so it is
+       gone whenever the move landed under it.  Nothing else redraws it until
+       the next arrow, which is why it kept vanishing mid-selection while an
+       opponent move or an ACK arrived.  Same order as the flip handler: hints
+       first, cursor over them. */
+    movement_hints_show();
+    cursor_show();
+#endif
 }
 
 static const char *move_san_or_fallback(const char *move,
@@ -1551,6 +1561,40 @@ static uint8_t send_local_chat(const char *text)
 
 static uint8_t send_move_wire(uint16_t ply, const char *move)
 {
+#ifdef NETCHESSZX_SPRINTER
+    char payload[24];
+    uint8_t pos = 0u;
+    uint8_t emitted = 0u;
+    uint16_t divisor = 10000u;
+    uint8_t move_len = 0u;
+
+    /* Cursor moves reach this path from a deep SDCC frame.  Do not enter the
+       callee ASM text helper here: a damaged call frame can make it write to
+       its own code page and then execute that overwritten prologue. */
+    payload[pos++] = 'M';
+    payload[pos++] = 'O';
+    payload[pos++] = 'V';
+    payload[pos++] = 'E';
+    payload[pos++] = ' ';
+    while (divisor != 0u) {
+        uint8_t digit = (uint8_t)(ply / divisor);
+
+        if (digit != 0u || emitted != 0u || divisor == 1u) {
+            payload[pos++] = (char)('0' + digit);
+            emitted = 1u;
+        }
+        ply = (uint16_t)(ply % divisor);
+        divisor = (uint16_t)(divisor / 10u);
+    }
+    payload[pos++] = ' ';
+    while (move_len < 5u && move[move_len] != '\0') {
+        payload[pos] = move[move_len];
+        ++pos;
+        ++move_len;
+    }
+    payload[pos] = '\0';
+    return spectrum_link_send_text(payload);
+#else
     char payload[24];
     char *p = spectrum_append_text(payload, msg_move_prefix);
 
@@ -1558,9 +1602,14 @@ static uint8_t send_move_wire(uint16_t ply, const char *move)
     *p++ = ' ';
     (void)spectrum_append_text(p, move);
     return spectrum_link_send_text(payload);
+#endif
 }
 
+#ifdef NETCHESSZX_SPRINTER
+static uint8_t send_local_move_checked(const char *move, uint8_t coords_checked)
+#else
 static uint8_t send_local_move(const char *move)
+#endif
 {
     char san[SPECTRUM_SAN_TEXT_MAX];
     const char *notice;
@@ -1582,7 +1631,12 @@ static uint8_t send_local_move(const char *move)
         goto wait_opponent_ack;
     }
 
-    if (game_ply == 65535u || !spectrum_board_is_legal_move(move)) {
+    if (game_ply == 65535u ||
+#ifdef NETCHESSZX_SPRINTER
+        (!coords_checked && !spectrum_board_is_legal_move(move))) {
+#else
+        !spectrum_board_is_legal_move(move)) {
+#endif
         notify_move_rejected();
         return LOCAL_MOVE_REJECTED;
     }
@@ -1600,13 +1654,32 @@ static uint8_t send_local_move(const char *move)
 
     movement_hints_clear();
     pending_local_ply = ply;
+#ifdef NETCHESSZX_SPRINTER
+    {
+        uint8_t index = 0u;
+
+        while (index < 5u && move[index] != '\0') {
+            pending_local_move[index] = move[index];
+            ++index;
+        }
+        pending_local_move[index] = '\0';
+    }
+#else
     (void)spectrum_append_text(pending_local_move, move);
+#endif
     return LOCAL_MOVE_SENT;
 
 wait_opponent_ack:
     notify_wait_opponent_ack();
     return LOCAL_MOVE_REJECTED;
 }
+
+#ifdef NETCHESSZX_SPRINTER
+static uint8_t send_local_move(const char *move)
+{
+    return send_local_move_checked(move, 0u);
+}
+#endif
 
 static uint8_t retry_pending_outgoing(void)
 {
@@ -1825,6 +1898,20 @@ static uint8_t cursor_select_or_move(uint8_t key)
     return 1u;
 
 send_move:
+#ifdef NETCHESSZX_SPRINTER
+    sprinter_cursor_build_move(move,
+                               selected_row, selected_col,
+                               cursor_row, cursor_col,
+                               spectrum_board_cell(selected_row, selected_col));
+    if (!spectrum_board_is_legal_move_coords(
+            sprinter_cursor_square_index(selected_row, selected_col),
+            sprinter_cursor_square_index(cursor_row, cursor_col))) {
+        notify_move_rejected();
+        move_rc = LOCAL_MOVE_REJECTED;
+    } else {
+        move_rc = send_local_move_checked(move, 1u);
+    }
+#else
     move[0] = (char)('a' + selected_col);
     move[1] = (char)('8' - selected_row);
     move[2] = (char)('a' + cursor_col);
@@ -1836,6 +1923,7 @@ send_move:
         move[5] = '\0';
     }
     move_rc = send_local_move(move);
+#endif
     if (move_rc == LOCAL_MOVE_NET_FAIL) {
         return 0u;
     }

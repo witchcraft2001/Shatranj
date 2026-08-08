@@ -26,4 +26,26 @@ static uint8_t sprinter_game_control_action(uint8_t key)
     return SPRINTER_GAME_CONTROL_NONE;
 }
 
+static void sprinter_cursor_build_move(char move[6],
+                                       uint8_t from_row, uint8_t from_col,
+                                       uint8_t to_row, uint8_t to_col,
+                                       char piece)
+{
+    move[0] = (char)('a' + from_col);
+    move[1] = (char)('8' - from_row);
+    move[2] = (char)('a' + to_col);
+    move[3] = (char)('8' - to_row);
+    move[4] = '\0';
+    move[5] = '\0';
+    if ((piece == 'P' && to_row == 0u) ||
+        (piece == 'p' && to_row == 7u)) {
+        move[4] = 'q';
+    }
+}
+
+static uint8_t sprinter_cursor_square_index(uint8_t row, uint8_t col)
+{
+    return (uint8_t)((row << 3) + col);
+}
+
 #endif

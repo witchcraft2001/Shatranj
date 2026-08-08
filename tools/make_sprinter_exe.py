@@ -30,6 +30,14 @@ RUNTIME_PAGE_TABLE = 0x8101
 MAX_PAGES = 64
 
 
+def layout_symbol(path: Path, name: str) -> int:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) == 4 and parts[0] == "DEFC" and parts[1] == name:
+            return int(parts[3], 0)
+    raise ValueError(f"{path} does not define {name}")
+
+
 def require_page(path: Path, *, allow_short: bool) -> bytes:
     data = path.read_bytes()
     if not data:
@@ -64,10 +72,13 @@ def make_manifest(page_count: int, cold_count: int, asset_count: int = 0,
         raise ValueError(f"monoblock page count must be 2..{MAX_PAGES}, got {page_count}")
     if cold_count + asset_count != page_count - 2:
         raise ValueError("cold/asset counts do not match monoblock page count")
-    if gfx_page_count > asset_count:
-        raise ValueError("GFX page count exceeds asset page count")
-    if asset_count and palette_asset_index >= asset_count:
-        raise ValueError("palette asset index is outside the asset range")
+    if asset_count:
+        if gfx_page_count >= asset_count:
+            raise ValueError("asset bundle needs a palette page after GFX pages")
+        if not gfx_page_count <= palette_asset_index < asset_count:
+            raise ValueError("palette asset index must follow GFX pages")
+    elif gfx_page_count or palette_asset_index or palette_length:
+        raise ValueError("asset descriptors require asset pages")
     manifest = bytearray(MANIFEST_SIZE)
     manifest[:4] = MANIFEST_MAGIC
     manifest[4] = 2
@@ -147,6 +158,10 @@ def main() -> int:
     parser.add_argument("--asset-manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
+    # PRELOAD publishes the asset page table and the palette staging buffer to
+    # the resident runtime, so both addresses belong to the fixed WIN2 layout.
+    # Read them from the generated include rather than repeating them here.
+    parser.add_argument("--layout-inc", type=Path, required=True)
     args = parser.parse_args()
 
     try:
@@ -179,8 +194,10 @@ def main() -> int:
             gfx_page_count=int(asset_manifest.get("gfx_page_count", 0)),
             palette_asset_index=int(palette.get("page_index", 0)),
             palette_length=int(palette.get("gameplay_profile", {}).get("length", 0)),
-            asset_page_table=0x8160 if asset_pages else 0,
-            palette_destination=0xB710 if asset_pages else 0,
+            asset_page_table=layout_symbol(
+                args.layout_inc, "SPRINTER_ASSET_PAGE_TABLE") if asset_pages else 0,
+            palette_destination=layout_symbol(
+                args.layout_inc, "SPRINTER_GFX_PALETTE") if asset_pages else 0,
         )
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"make_sprinter_exe: {exc}") from exc

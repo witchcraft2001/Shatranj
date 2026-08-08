@@ -4,7 +4,7 @@
 #include "sprinter_assets.h"
 #include "sprinter_layout.h"
 
-#define GFX_REQUIRED_CAPS 0x00DFu
+#define GFX_REQUIRED_CAPS 0x01DFu
 #define GFX_ABI_1_0 0x0100u
 #define GFX_VRAM_WINDOW 3u
 
@@ -61,8 +61,8 @@ uint8_t sprinter_gfx_start(void)
         (capabilities & GFX_REQUIRED_CAPS) != GFX_REQUIRED_CAPS ||
         gfx640_get_config(config) != 0u ||
         config->required_mode != 0x82u || config->width != 640u ||
-        config->height != 256u || config->tile_width != 16u ||
-        config->tile_height != 32u) {
+        config->height != 256u || config->tile_width != 32u ||
+        config->tile_height != 16u) {
         /* Startup immediately exits through DSS on failure.  Do not enter
            libman l_free from a partially initialized loader state; DSS owns
            and reclaims the process allocation at Exit. */

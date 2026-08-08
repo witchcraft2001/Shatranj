@@ -124,17 +124,19 @@ loader_magic_loop:
     CP B
     JP NZ,loader_fail_format
     LD A,(L_MANIFEST+22)
-    CP 5
-    JP NC,loader_fail_format
     LD B,A
     LD A,(L_MANIFEST+7)
-    CP 5
-    JP NZ,loader_fail_format
+    OR A
+    JP Z,loader_fail_format
+    LD C,A
+    LD A,B
+    CP C
+    JP NC,loader_fail_format
+    LD A,(L_MANIFEST+23)
+    CP C
+    JP NC,loader_fail_format
     CP B
     JP C,loader_fail_format
-    LD A,(L_MANIFEST+23)
-    CP 5
-    JP NC,loader_fail_format
     LD HL,(L_MANIFEST+24)
     LD DE,768
     OR A

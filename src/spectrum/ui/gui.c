@@ -14,6 +14,10 @@
 #include "sprinter/unet_runtime.h"
 extern uint8_t sprinter_render_present(void);
 #endif
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+extern uint8_t sprinter_frame_counter_get(void);
+extern void sprinter_render_game_timer_line(const char *text, uint8_t menu_mode);
+#endif
 
 #include <string.h>
 
@@ -81,6 +85,10 @@ static uint8_t clock_minute;
 static uint8_t clock_second;
 static uint8_t clock_valid;
 static uint8_t clock_frames;
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+static uint8_t gui_frame_seen;
+static uint8_t gui_last_frame;
+#endif
 static uint8_t game_timer_active;
 static uint8_t game_timer_hour;
 static uint8_t game_timer_minute;
@@ -90,6 +98,9 @@ static uint8_t move_timer_minute;
 static uint8_t move_timer_second;
 static uint8_t clock_force_redraw;
 static uint8_t timer_force_redraw;
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+static uint8_t timer_color_redraw;
+#endif
 static uint8_t menu_visible;
 static uint8_t menu_focus;
 static uint8_t about_visible;
@@ -216,7 +227,12 @@ static void timer_tick_one_second(uint8_t *hour, uint8_t *minute, uint8_t *secon
 static void build_game_timer_line(char *game_timer_line)
 {
     memset(game_timer_line, ' ', NETCHESSZX_GAME_TIMER_TEXT_SIZE);
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    game_timer_line[NETCHESSZX_GAME_TIMER_TEXT_SIZE] = ' ';
+    game_timer_line[NETCHESSZX_GAME_TIMER_TEXT_SIZE + 1u] = '\0';
+#else
     game_timer_line[NETCHESSZX_GAME_TIMER_TEXT_SIZE] = '\0';
+#endif
 
     if (game_timer_active) {
         memcpy(game_timer_line, "GAME:", 5u);
@@ -226,6 +242,7 @@ static void build_game_timer_line(char *game_timer_line)
     }
 }
 
+#if !defined(NETCHESSZX_SPRINTER) && !defined(NETCHESSZX_HOST_GUI_TEST)
 static uint8_t render_game_timer_delta(const char *game_timer_line, uint8_t menu_mode)
 {
     char game_timer_char_spec[3];
@@ -248,12 +265,40 @@ static uint8_t render_game_timer_delta(const char *game_timer_line, uint8_t menu
     }
     return changed;
 }
+#endif
 
 static void render_game_timer_only(void)
 {
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    char game_timer_line[NETCHESSZX_GAME_TIMER_TEXT_SIZE + 2u];
+#else
     char game_timer_line[24];
+#endif
     uint8_t force;
 
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    uint8_t changed;
+
+    build_game_timer_line(game_timer_line);
+    force = timer_force_redraw;
+    timer_force_redraw = 0u;
+    changed = (uint8_t)(memcmp(game_timer_line, last_game_timer_line,
+                               NETCHESSZX_GAME_TIMER_TEXT_SIZE) != 0);
+    if (force || timer_color_redraw || changed) {
+        memcpy(last_game_timer_line, game_timer_line,
+               NETCHESSZX_GAME_TIMER_TEXT_SIZE);
+        last_game_timer_line[NETCHESSZX_GAME_TIMER_TEXT_SIZE] = '\0';
+        if (force) {
+            spectrum_render_game_timer_clear(game_timer_line);
+            if (menu_visible) {
+                sprinter_render_game_timer_line(game_timer_line, 1u);
+            }
+        } else {
+            sprinter_render_game_timer_line(game_timer_line, menu_visible);
+        }
+    }
+    timer_color_redraw = 0u;
+#else
     if (menu_visible) {
         /* Timer pixels are shared between menu/closed states; the taboption
            open/close paths only retint attrs, so no forced redraw needed. */
@@ -274,12 +319,17 @@ static void render_game_timer_only(void)
     } else if (render_game_timer_delta(game_timer_line, 0u)) {
         memcpy(last_game_timer_line, game_timer_line, GAME_TIMER_SAVE_SIZE);
     }
+#endif
 }
 
 static void render_clock_only(void)
 {
     char clock_time[7];
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    char clock_line[9];
+#else
     char clock_line[8];
+#endif
 
     if (clock_valid) {
         put_timer_digit(clock_time, clock_hour);
@@ -298,7 +348,12 @@ static void render_clock_only(void)
     clock_line[0] = '[';
     memcpy(clock_line + 1u, clock_time, 5u);
     clock_line[6] = ']';
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    clock_line[7] = ' ';
+    clock_line[8] = '\0';
+#else
     clock_line[7] = '\0';
+#endif
     clock_force_redraw = 0u;
     spectrum_render_clock(clock_line);
 }
@@ -312,6 +367,10 @@ static uint8_t menu_action_key(uint8_t key) NETCHESSZX_FASTCALL
 {
     menu_visible = 0u;
     spectrum_render_menu(0u);
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    timer_color_redraw = 1u;
+    render_game_timer_only();
+#endif
     return key;
 }
 
@@ -324,6 +383,10 @@ static void toggle_menu_bar(void)
         menu_visible = 1u;
         spectrum_render_menu((uint8_t)(menu_focus + 1u));
     }
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    timer_color_redraw = 1u;
+    render_game_timer_only();
+#endif
 }
 
 void spectrum_gui_hide_menu(void)
@@ -340,6 +403,10 @@ void spectrum_gui_set_clock(uint8_t hour, uint8_t minute, uint8_t second)
     clock_second = second;
     clock_valid = 1u;
     clock_frames = 0u;
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    gui_last_frame = sprinter_frame_counter_get();
+    gui_frame_seen = 1u;
+#endif
     render_clock_only();
 }
 
@@ -435,13 +502,70 @@ void spectrum_gui_notify_success(const char *text) NETCHESSZX_FASTCALL
 
 void spectrum_gui_tick(void)
 {
+#if defined(NETCHESSZX_SPRINTER) || defined(NETCHESSZX_HOST_GUI_TEST)
+    uint8_t frame = sprinter_frame_counter_get();
 #ifdef NETCHESSZX_SPRINTER
-    /* WIN2 frame_wait only paces and services DSS.  Keep input polling and
-       buffer publication local to the already mapped UI bank so UI animation
-       paths never recursively enter the resident page gate. */
+    /* A missing VBlank must freeze clocks, not input.  The platform poll
+       consumes DSS key records on every UI pass while its repeat/debounce
+       counters remain tied to real frame-counter changes. */
     spectrum_input_frame_tick();
+#endif
+    if (!gui_frame_seen) {
+        gui_last_frame = frame;
+        gui_frame_seen = 1u;
+        goto present;
+    }
+    if (frame == gui_last_frame) {
+        goto present;
+    }
+    gui_last_frame = frame;
+    if (!notice_error && notice_ticks != 0u) {
+        --notice_ticks;
+        if (notice_ticks == 0u) {
+            notice_text[0] = '\0';
+            notice_success = 0u;
+            spectrum_render_notice(notice_text);
+        }
+    }
+
+    if (!game_timer_active && !clock_valid) {
+        goto present;
+    }
+    ++clock_frames;
+    if (clock_frames < 50u) {
+        goto present;
+    }
+    clock_frames = 0u;
+    if (game_timer_active) {
+        timer_tick_one_second(&game_timer_hour, &game_timer_minute,
+                              &game_timer_second);
+        timer_tick_one_second(&move_timer_hour, &move_timer_minute,
+                              &move_timer_second);
+        render_game_timer_only();
+    }
+
+    if (clock_valid) {
+        ++clock_second;
+        if (clock_second < 60u) {
+            goto present;
+        }
+        clock_second = 0u;
+        ++clock_minute;
+        if (clock_minute >= 60u) {
+            clock_minute = 0u;
+            ++clock_hour;
+            if (clock_hour >= 24u) {
+                clock_hour = 0u;
+            }
+        }
+        render_clock_only();
+    }
+present:
+    ;
+#ifdef NETCHESSZX_SPRINTER
     (void)sprinter_render_present();
 #endif
+#else
     if (!notice_error && notice_ticks != 0u) {
         --notice_ticks;
         if (notice_ticks == 0u) {
@@ -483,6 +607,7 @@ void spectrum_gui_tick(void)
         }
         render_clock_only();
     }
+#endif
 }
 
 void spectrum_gui_reset_moves(void)
