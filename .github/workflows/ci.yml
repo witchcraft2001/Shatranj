@@ -29,6 +29,22 @@ jobs:
       - name: Run full contract suite
         run: make full-check
 
+  sprinter-check:
+    name: Sprinter target
+    runs-on: ubuntu-24.04
+    container: z88dk/z88dk:2.4
+    timeout-minutes: 15
+    steps:
+      - name: Install git for submodule checkout
+        run: apk add --no-cache git
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Python and mtools
+        run: apk add --no-cache python3 mtools
+      - name: Run Sprinter target checks
+        run: make sprinter-check
+
   desktop-unix:
     name: Qt (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

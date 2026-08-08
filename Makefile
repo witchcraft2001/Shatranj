@@ -866,7 +866,7 @@ $(ZX_OVL): $(ZX_TAP) asm/overlay/rules/entry_rules.asm asm/overlay/rules/rules_s
 
 FORCE:
 
-clean: clean-spectrum clean-client
+clean: clean-spectrum clean-client clean-sprinter
 
 clean-spectrum:
 ifneq ($(CLIENT_HOST_IS_WINDOWS),)
@@ -894,3 +894,55 @@ else
 	rm -f main.obj
 	rmdir $(RELEASE_DIR) 2>/dev/null || true
 endif
+
+# ---------------------------------------------------------------------------
+# Sprinter (Estex DSS) target -- additive port scaffolding, see port.md.
+# Uses only new paths (asm/sprinter, build/sprinter, release/Sprinter) and
+# never touches the rules or artifacts of the other platforms.
+
+.PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image clean-sprinter
+
+SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
+SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
+SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
+SPRINTER_SMOKE_IMG := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
+SPRINTER_STUB_BIN := $(SPRINTER_BUILD_DIR)/stub_main.bin
+SPRINTER_DLLS := extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
+
+sprinter-deps-check: tools/check_sprinter_deps.py
+	$(PYTHON) tools/check_sprinter_deps.py
+
+sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
+	$(PYTHON) tests/tools/test_sprinter_exe.py
+
+$(SPRINTER_BUILD_DIR):
+	mkdir -p $(SPRINTER_BUILD_DIR)
+
+$(SPRINTER_STUB_BIN): asm/sprinter/stub_main.asm | $(SPRINTER_BUILD_DIR)
+	$(Z80ASM) -b -r0x8100 -o=$(SPRINTER_STUB_BIN) asm/sprinter/stub_main.asm
+	@rm -f asm/sprinter/stub_main.o
+
+$(SPRINTER_EXE): $(SPRINTER_STUB_BIN) tools/make_sprinter_exe.py VERSION $(SPRINTER_DLLS)
+	mkdir -p $(SPRINTER_RELEASE_DIR)
+	$(PYTHON) tools/make_sprinter_exe.py --body $(SPRINTER_STUB_BIN) \
+		--version-file VERSION --output $(SPRINTER_EXE)
+	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
+
+exe: sprinter-deps-check $(SPRINTER_EXE)
+
+sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py
+	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
+		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
+		--output $(SPRINTER_SMOKE_IMG)
+
+sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-smoke-image
+	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
+		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
+		--output $(SPRINTER_SMOKE_IMG).rebuild > /dev/null
+	cmp $(SPRINTER_SMOKE_IMG) $(SPRINTER_SMOKE_IMG).rebuild
+	@rm -f $(SPRINTER_SMOKE_IMG).rebuild
+	@printf "[OK] sprinter-check: deps, EXE format, smoke image (deterministic)\n"
+
+clean-sprinter:
+	rm -rf $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
+	rm -f asm/sprinter/stub_main.o
