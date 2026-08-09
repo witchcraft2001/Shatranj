@@ -1,0 +1,32 @@
+{
+    "_comment": "Single source of truth for the fixed screen layout of the Sprinter render core (port.md section 3.4, 640x256x4bpp mode #82). tools/gen_sprinter_render_layout.py turns this into asm/sprinter/generated/render_layout.inc and render_layout.h so no literal screen coordinate is duplicated by hand in .asm sources. Y bands stack top to bottom and must cover the whole 256-row screen with no gaps; the board and info panel share the MAIN band's row range side by side; the panel's own sub-sections must cover the panel's row range the same way.",
+    "screen_w": 640,
+    "screen_h": 256,
+    "bands": [
+        {"name": "BANNER", "y": 0, "h": 16, "desc": "Title/version banner, right-aligned Sprinter logo (hardware-transparent asset)."},
+        {"name": "MENU", "y": 16, "h": 12, "desc": "Menu tab row: FILE DISCONNECT RESET FLIP THEME ABOUT."},
+        {"name": "MOVE", "y": 28, "h": 12, "desc": "Current move/timer line."},
+        {"name": "MAIN", "y": 40, "h": 192, "desc": "Board (left) and info panel (right), side by side."},
+        {"name": "STATUS", "y": 232, "h": 12, "desc": "Status bar: connection text left, RTC HH:MM right."},
+        {"name": "INPUT", "y": 244, "h": 12, "desc": "Input line: movement/chat/host:port entry, cursor."}
+    ],
+    "board": {
+        "x": 16,
+        "cols": 8,
+        "rows": 8,
+        "cell_w": 48,
+        "cell_h": 24,
+        "desc": "8x8 board, 48x24 px/cell; a-h/1-8 coordinate glyphs render in the edge cells."
+    },
+    "panel": {
+        "x": 408,
+        "w": 232,
+        "sections": [
+            {"name": "HEADER", "y": 40, "h": 12, "desc": "Title/connection status."},
+            {"name": "MOVES", "y": 52, "h": 89, "desc": "Move list, two columns."},
+            {"name": "DIVIDER", "y": 141, "h": 8, "desc": "Divider + chat header."},
+            {"name": "CHAT", "y": 149, "h": 71, "desc": "Chat: icon, time, text."},
+            {"name": "NOTICE", "y": 220, "h": 12, "desc": "Notice line."}
+        ]
+    }
+}

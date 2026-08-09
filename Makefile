@@ -919,16 +919,27 @@ SPRINTER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/fixed_layout.inc
 SPRINTER_LAYOUT_H := $(SPRINTER_GENERATED_DIR)/fixed_layout.h
 SJASMPLUS_INCLUDES := -I $(SPRINTER_ASM_DIR) -I $(SPRINTER_GENERATED_DIR)
 
+SPRINTER_RENDER_LAYOUT_JSON := src/sprinter/render_layout.json
+SPRINTER_RENDER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/render_layout.inc
+SPRINTER_RENDER_LAYOUT_H := $(SPRINTER_GENERATED_DIR)/render_layout.h
+SPRINTER_ASSETS_PAGE := $(SPRINTER_BUILD_DIR)/assets_page.bin
+
 sprinter-deps-check: tools/check_sprinter_deps.py
 	$(PYTHON) tools/check_sprinter_deps.py
 
-sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
+sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py \
+                     tests/tools/test_sprinter_assets_page.py tools/make_sprinter_assets_page.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
+	$(PYTHON) tests/tools/test_sprinter_assets_page.py
 
-sprinter-layout-check: tools/gen_sprinter_layout.py tests/tools/test_sprinter_layout.py $(SPRINTER_LAYOUT_JSON)
+sprinter-layout-check: tools/gen_sprinter_layout.py tests/tools/test_sprinter_layout.py $(SPRINTER_LAYOUT_JSON) \
+                       tools/gen_sprinter_render_layout.py tests/tools/test_sprinter_render_layout.py \
+                       $(SPRINTER_RENDER_LAYOUT_JSON)
 	$(PYTHON) tools/gen_sprinter_layout.py --self-test
 	$(PYTHON) tests/tools/test_sprinter_layout.py
-	@printf "[OK] sprinter-layout-check: fixed layout valid\n"
+	$(PYTHON) tools/gen_sprinter_render_layout.py --self-test
+	$(PYTHON) tests/tools/test_sprinter_render_layout.py
+	@printf "[OK] sprinter-layout-check: fixed layout + render layout valid\n"
 
 sprinter-gates: tools/check_sprinter_accel.py tools/check_sprinter_win0.py
 	$(PYTHON) tools/check_sprinter_accel.py --self-test
@@ -954,25 +965,42 @@ $(SPRINTER_LAYOUT_H): tools/gen_sprinter_layout.py $(SPRINTER_LAYOUT_JSON) | $(S
 	$(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) \
 		--inc-out $(SPRINTER_LAYOUT_INC) --h-out $(SPRINTER_LAYOUT_H)
 
+$(SPRINTER_RENDER_LAYOUT_INC): tools/gen_sprinter_render_layout.py $(SPRINTER_RENDER_LAYOUT_JSON) | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_render_layout.py --layout $(SPRINTER_RENDER_LAYOUT_JSON) \
+		--inc-out $(SPRINTER_RENDER_LAYOUT_INC) --h-out $(SPRINTER_RENDER_LAYOUT_H)
+
+# Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment above.
+$(SPRINTER_RENDER_LAYOUT_H): tools/gen_sprinter_render_layout.py $(SPRINTER_RENDER_LAYOUT_JSON) | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_render_layout.py --layout $(SPRINTER_RENDER_LAYOUT_JSON) \
+		--inc-out $(SPRINTER_RENDER_LAYOUT_INC) --h-out $(SPRINTER_RENDER_LAYOUT_H)
+
 $(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DIR)/dss.inc \
                         $(SPRINTER_ASM_DIR)/manifest.inc $(SPRINTER_ASM_DIR)/hdr.inc \
                         $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
 		--raw=$(SPRINTER_LOADER_BIN) $(SPRINTER_ASM_DIR)/preload_loader.asm
 
+$(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs/afnt640/font.bin | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/make_sprinter_assets_page.py \
+		--font-bin extern/sprinter-libs/afnt640/font.bin --output $(SPRINTER_ASSETS_PAGE)
+
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_ASM_DIR)/resident_s1.asm $(SPRINTER_ASM_DIR)/im2_s1.asm \
                           $(SPRINTER_ASM_DIR)/font_hex.asm $(SPRINTER_ASM_DIR)/video_s1.asm \
                           $(SPRINTER_ASM_DIR)/win0.inc $(SPRINTER_ASM_DIR)/accel.inc \
                           $(SPRINTER_ASM_DIR)/dss.inc \
-                          $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
+                          $(SPRINTER_ASM_DIR)/gfx_core.asm $(SPRINTER_ASM_DIR)/text640.asm \
+                          $(SPRINTER_ASM_DIR)/bench_s2.asm \
+                          $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) \
+                          $(SPRINTER_RENDER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
 		--raw=$(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASM_DIR)/resident_s1.asm
 
-$(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) tools/make_sprinter_exe.py \
-                 $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
+$(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
+                 tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
-		--resident $(SPRINTER_RESIDENT_BIN) --layout $(SPRINTER_LAYOUT_JSON) \
+		--resident $(SPRINTER_RESIDENT_BIN) --assets $(SPRINTER_ASSETS_PAGE) \
+		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
 
@@ -981,7 +1009,8 @@ exe: sprinter-deps-check sprinter-layout-check $(SPRINTER_EXE)
 sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDENT_BIN)
 	$(PYTHON) tests/tools/test_sprinter_resident.py
 
-sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC)
+sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
+                   $(SPRINTER_RENDER_LAYOUT_INC)
 	tools/run_sprinter_z80_tests.sh
 
 sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py

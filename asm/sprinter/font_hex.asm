@@ -43,10 +43,18 @@ GLYPH_DASH  EQU 21
 GLYPH_SPACE EQU 22
 GLYPH_WIDTH EQU 8              ; pixel cell width/height (6 lit cols + 2 blank)
 
+; Destination VRAM buffer base for draw_glyph, and so for draw_hex16/
+; draw_rtc too: #C000 for buffer 0, #C140 for buffer 1. Defaults to buffer
+; 0 -- the buffer the S1 stand always draws into -- so every S1 call site
+; behaves exactly as before; bench_s2.asm retargets it around its own
+; buffer flip and restores it afterwards, because a result drawn into the
+; buffer that is no longer displayed is simply invisible.
+glyph_dest_base: DW #C000
+
 ; A=glyph index (GLYPH_*), DE=pixel X (even, 0..639), C=pixel Y (top row,
 ; 0..247). Draws 8 rows through WIN3 (caller must have it mapped to VRAM
-; and hold DI, matching fill_screen_demo/video_s1.asm's convention).
-; Clobbers AF, BC, DE, HL, IX.
+; and hold DI, matching fill_screen_demo/video_s1.asm's convention) into
+; the buffer selected by glyph_dest_base. Clobbers AF, BC, DE, HL, IX.
 draw_glyph:
         push    bc              ; C is the caller's Y: the pointer math
                                  ; below needs BC (ADD IX,HL is not a legal
@@ -66,7 +74,7 @@ draw_glyph:
         ld      l,e
         srl     h
         rr      l               ; HL = X/2 (byte offset within a VRAM row)
-        ld      de,#C000
+        ld      de,(glyph_dest_base)
         add     hl,de
         ld      (.dest_col),hl
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/make_sprinter_exe.py (DSS EXE header + STM1 manifest)."""
+"""Unit tests for tools/make_sprinter_exe.py (DSS EXE header + STM1 manifest v2)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ PAGE_SIZE = 0x4000
 
 
 class SprinterExeHeaderTests(unittest.TestCase):
-    def test_header_layout(self) -> None:
+    def test_header_layout_no_assets(self) -> None:
         loader = bytes(range(64))
         resident = bytes(range(256)) * (2 * PAGE_SIZE // 256)
         exe = mse.build_exe(loader, resident, "9.9.9", layout=LAYOUT)
@@ -39,14 +39,33 @@ class SprinterExeHeaderTests(unittest.TestCase):
         self.assertEqual(manifest[4], mse.MANIFEST_VERSION)
         self.assertEqual(manifest[5], 2)
         self.assertEqual(int.from_bytes(manifest[6:8], "little"), 0x4100)
-        self.assertEqual(int.from_bytes(manifest[8:10], "little"), len(resident))
-        self.assertEqual(manifest[10:32], bytes(22))
+        self.assertEqual(
+            int.from_bytes(manifest[8:10], "little") * mse.MANIFEST_PAYLOAD_UNIT,
+            len(resident),
+        )
+        self.assertEqual(manifest[10], 0)
+        self.assertEqual(manifest[11:32], bytes(21))
         resident_out = body[len(loader) + mse.MANIFEST_SIZE:]
         self.assertEqual(resident_out, resident)
         self.assertEqual(
             len(exe),
             mse.EXE_HEADER_SIZE + len(loader) + mse.MANIFEST_SIZE + len(resident),
         )
+
+    def test_header_layout_with_assets(self) -> None:
+        loader = b"\xC3\x00\x81"
+        resident = bytes(2 * PAGE_SIZE)
+        asset = bytes([0xAB]) * PAGE_SIZE
+        exe = mse.build_exe(loader, resident, "1.0", assets=[asset], layout=LAYOUT)
+        body = exe[mse.EXE_HEADER_SIZE:]
+        manifest = body[len(loader):len(loader) + mse.MANIFEST_SIZE]
+        self.assertEqual(manifest[5], 3)  # 2 resident + 1 asset
+        self.assertEqual(manifest[10], 1)  # 1 asset page
+        payload = body[len(loader) + mse.MANIFEST_SIZE:]
+        self.assertEqual(len(payload), 3 * PAGE_SIZE)
+        # Resident pages stream first, the asset page follows.
+        self.assertEqual(payload[:2 * PAGE_SIZE], resident)
+        self.assertEqual(payload[2 * PAGE_SIZE:], asset)
 
     def test_loader_field_selects_preload_path(self) -> None:
         # port.md section 3.2 invariant: LOADER@8 must be non-zero so DSS
@@ -57,9 +76,10 @@ class SprinterExeHeaderTests(unittest.TestCase):
     def test_deterministic(self) -> None:
         loader = b"\xC3\x00\x81" * 100
         resident = bytes(2 * PAGE_SIZE)
+        asset = bytes([0x11]) * PAGE_SIZE
         self.assertEqual(
-            mse.build_exe(loader, resident, "1.2", layout=LAYOUT),
-            mse.build_exe(loader, resident, "1.2", layout=LAYOUT),
+            mse.build_exe(loader, resident, "1.2", assets=[asset], layout=LAYOUT),
+            mse.build_exe(loader, resident, "1.2", assets=[asset], layout=LAYOUT),
         )
 
     def test_loader_size_guard(self) -> None:
@@ -76,6 +96,11 @@ class SprinterExeHeaderTests(unittest.TestCase):
             # Not a multiple of the 16 KiB page size.
             mse.build_exe(b"\xC3", bytes(PAGE_SIZE + 1), "1.0", layout=LAYOUT)
 
+    def test_asset_size_guard(self) -> None:
+        with self.assertRaises(SystemExit):
+            mse.build_exe(b"\xC3", bytes(2 * PAGE_SIZE), "1.0",
+                          assets=[bytes(PAGE_SIZE - 1)], layout=LAYOUT)
+
     def test_addresses_match_contract(self) -> None:
         # Loader contract from port.md section 3.2 (Estex-DSS EXE_Header.z80).
         self.assertEqual(mse.LD_ADDR, 0x8100)
@@ -83,15 +108,30 @@ class SprinterExeHeaderTests(unittest.TestCase):
         self.assertEqual(mse.SP_REG, 0xBFF0)
 
     def test_manifest_entry_matches_layout_trampoline(self) -> None:
-        manifest = mse.build_manifest(2, 0x4100, 2 * PAGE_SIZE)
+        manifest = mse.build_manifest(2, 0x4100, 2 * PAGE_SIZE, 0)
         self.assertEqual(int.from_bytes(manifest[6:8], "little"),
                          gsl.compute_symbols(LAYOUT)["TRAMPOLINE_ADDR"])
 
     def test_build_manifest_guards(self) -> None:
         with self.assertRaises(SystemExit):
-            mse.build_manifest(0, 0x4100, 0)
+            mse.build_manifest(0, 0x4100, 0, 0)
         with self.assertRaises(SystemExit):
-            mse.build_manifest(2, 0x4100, 0x10000)
+            # payload_size not a multiple of MANIFEST_PAYLOAD_UNIT.
+            mse.build_manifest(1, 0x4100, 100, 0)
+        with self.assertRaises(SystemExit):
+            # asset_pages must be strictly less than page_count.
+            mse.build_manifest(2, 0x4100, 2 * PAGE_SIZE, 2)
+        with self.assertRaises(SystemExit):
+            mse.build_manifest(2, 0x4100, 2 * PAGE_SIZE, 3)
+
+    def test_build_manifest_payload_units_headroom(self) -> None:
+        # v1's byte-granular payload field wrapped past 3 pages
+        # (4*16384 = 65536); the 256-byte-unit encoding must clear that.
+        manifest = mse.build_manifest(4, 0x4100, 4 * PAGE_SIZE, 0)
+        self.assertEqual(
+            int.from_bytes(manifest[8:10], "little") * mse.MANIFEST_PAYLOAD_UNIT,
+            4 * PAGE_SIZE,
+        )
 
 
 if __name__ == "__main__":

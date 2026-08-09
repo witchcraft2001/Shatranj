@@ -70,6 +70,13 @@ PORT_Y                EQU #89    ; VRAM row select (this port only ever
                                  ; writes it; the BIOS also reads it)
 PORT_RGMOD            EQU #C9    ; bit 0 selects the displayed buffer
 
+; VRAM write aliases (mapped into WIN3 instead of the plain page #50):
+; port.md section 3.3. VRAM_ALIAS_OPAQUE mirrors DRAM as well as VRAM;
+; VRAM_ALIAS_KEY additionally skips whole #FF bytes in hardware (colour 15
+; = transparency key, byte-granular -- not per nibble).
+VRAM_ALIAS_OPAQUE     EQU #50
+VRAM_ALIAS_KEY        EQU #58
+
 ; SIO channel A control register (RR0); bit 0 = Rx Character Available.
 ; Non-destructive read used by the IM2 stub to discriminate a frame tick
 ; from a keyboard interrupt (KEYINTER.ASM:519-536).

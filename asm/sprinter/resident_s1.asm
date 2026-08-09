@@ -78,6 +78,7 @@ crt0:
 .no_cmos:
         ld      (rtc_present),a
 
+        call    bench_init
         call    video_init
         di
         call    im2_install
@@ -121,6 +122,16 @@ main_loop:
         jr      z,.do_win0
         cp      '4'
         jr      z,.do_mode
+        cp      '5'
+        jr      z,.do_bench_board
+        cp      '6'
+        jr      z,.do_bench_text
+        cp      '7'
+        jr      z,.do_cpu_probe
+        cp      '8'
+        jr      z,.do_accel_probe
+        cp      '9'
+        jr      z,.do_board_strip
         cp      'Q'
         jr      z,.quit
         cp      'q'
@@ -141,6 +152,21 @@ main_loop:
 .do_mode:
         call    mode_switch_probe
         jp      main_loop
+.do_bench_board:
+        call    bench_board
+        jp      main_loop
+.do_bench_text:
+        call    bench_text
+        jp      main_loop
+.do_cpu_probe:
+        call    bench_cpu_probe
+        jp      main_loop
+.do_accel_probe:
+        call    bench_accel_probe
+        jp      main_loop
+.do_board_strip:
+        call    bench_board_strip
+        jp      main_loop
 .saved_win3: DB 0
 
 tick_count: DW 0
@@ -148,6 +174,9 @@ tick_count: DW 0
         INCLUDE "im2_s1.asm"
         INCLUDE "font_hex.asm"
         INCLUDE "video_s1.asm"
+        INCLUDE "gfx_core.asm"
+        INCLUDE "text640.asm"
+        INCLUDE "bench_s2.asm"
 
         DS      PSP_LANDING_ADDR - $, 0
         ASSERT  $ = PSP_LANDING_ADDR

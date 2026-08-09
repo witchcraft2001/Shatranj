@@ -52,10 +52,17 @@ LOADER_START:
         ld      hl,l_manifest
         call    manifest_validate
         jp      c,l_fail
-        ld      a,b                     ; B = validated page_count
+        ld      a,b                     ; B = validated total page_count
         ld      (l_page_count),a
+        ld      a,e                     ; E = validated asset page count
+        ld      (l_asset_pages),a
+        ld      a,b
+        sub     e                       ; resident page count = total - asset
+        ld      (l_resident_pages),a
         dec     a
-        ld      (l_last_page_index),a
+        ld      (l_last_page_index),a   ; PSP lands on the last RESIDENT page,
+                                         ; not the last page overall (asset
+                                         ; pages carry no runnable code)
 
         ; Step 3: one GETMEM allocation for every resident page; physical
         ; pages resolved via BIOS GetMemBlkPages (port.md sections 3.1/3.2).
@@ -123,12 +130,39 @@ LOADER_START:
         ld      de,#4000
         ld      bc,4
         ldir
-        ld      a,(l_physical_pages+1)
+        ; HDR_PAGE2 is the physical number of the last RESIDENT page (the
+        ; one the trampoline maps into WIN2 at runtime) -- l_last_page_index
+        ; already holds that page's index into l_physical_pages.
+        ld      a,(l_last_page_index)
+        ld      hl,l_physical_pages
+        ld      e,a
+        ld      d,0
+        add     hl,de
+        ld      a,(hl)
         ld      (HDR_ADDR+HDR_PAGE2_OFFSET),a
         ld      a,(l_saved_mode)
         ld      (HDR_ADDR+HDR_SAVED_MODE_OFFSET),a
         ld      a,(l_saved_screen)
         ld      (HDR_ADDR+HDR_SAVED_SCREEN_OFFSET),a
+
+        ; Publish the asset pages' physical numbers (manifest v2, port.md
+        ; section 5/S2): they stream right after the resident pages, so
+        ; l_physical_pages[resident_pages .. total_page_count-1] is the list.
+        ld      a,(l_asset_pages)
+        ld      (HDR_ADDR+HDR_ASSET_PAGES_OFFSET),a
+        ld      c,a
+        ld      b,0
+        ld      a,c
+        or      a
+        jr      z,.no_asset_pages
+        ld      a,(l_resident_pages)
+        ld      hl,l_physical_pages
+        ld      e,a
+        ld      d,0
+        add     hl,de                   ; HL -> first asset page's entry
+        ld      de,HDR_ADDR+HDR_ASSET_PAGE0_OFFSET
+        ldir
+.no_asset_pages:
 
         ; Step 6 (R10): program both screens before handoff.
         ld      b,1
@@ -229,6 +263,8 @@ l_saved_win3:       DB 0
 l_block_handle:     DB 0
 l_block_allocated:  DB 0
 l_page_count:       DB 0
+l_asset_pages:      DB 0
+l_resident_pages:   DB 0
 l_page_index:       DB 0
 l_last_page_index:  DB 0
 l_expected:         DW 0

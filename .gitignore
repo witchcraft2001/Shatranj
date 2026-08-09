@@ -46,3 +46,4 @@ tools/codex-nudge*.log
 Python/
 AGENTS.md
 CLAUDE.md
+docs/sprinter-testnotes/*

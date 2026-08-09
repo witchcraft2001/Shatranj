@@ -37,6 +37,11 @@ python3 "$repo_root/tools/gen_sprinter_layout.py" \
   --inc-out "$generated_dir/fixed_layout.inc" \
   --h-out "$generated_dir/fixed_layout.h" >/dev/null
 
+python3 "$repo_root/tools/gen_sprinter_render_layout.py" \
+  --layout "$repo_root/src/sprinter/render_layout.json" \
+  --inc-out "$generated_dir/render_layout.inc" \
+  --h-out "$generated_dir/render_layout.h" >/dev/null
+
 byte_at() { dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }
 
 fail=0

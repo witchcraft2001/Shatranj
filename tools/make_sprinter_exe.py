@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build a Sprinter DSS EXE from a loader, a boot manifest and a resident.
+"""Build a Sprinter DSS EXE from a loader, a boot manifest, a resident and
+zero or more asset pages.
 
 Header layout follows the authoritative Estex-DSS source
 (Shared_Includes/constants/EXE_Header.z80), not the manual:
@@ -18,11 +19,13 @@ Header layout follows the authoritative Estex-DSS source
 
 The file layout beyond the header is: loader body (exactly LOADER@8
 bytes; this is all DSS itself reads) + a 32-byte STM1 manifest + the raw
-resident payload (page_count * 16 KiB). preload_loader.asm reads the
-manifest and resident pages itself once DSS has handed it control
-(port.md section 3.2); asm/sprinter/manifest.inc defines the exact same
-32-byte layout so the loader and tests/sprinter/z80/t_manifest.asm agree
-byte-for-byte with this tool.
+resident payload (resident_page_count * 16 KiB) + zero or more raw asset
+pages (16 KiB each). preload_loader.asm streams all of those pages
+uniformly through WIN1 (port.md section 3.2) and only tells resident and
+asset pages apart via the manifest's asset-page-count field: resident
+pages stream first, asset pages follow. asm/sprinter/manifest.inc defines
+the exact same 32-byte v2 layout so the loader and
+tests/sprinter/z80/t_manifest.asm agree byte-for-byte with this tool.
 
 The output is a pure function of the inputs (no timestamps), so rebuilds
 are byte-identical; sprinter-check's determinism check relies on it.
@@ -50,31 +53,47 @@ MAX_LOADER_SIZE = SP_REG - LD_ADDR
 
 MANIFEST_SIZE = 32
 MANIFEST_MAGIC = b"STM1"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
+MANIFEST_PAYLOAD_UNIT = 256
 
 
-def build_manifest(page_count: int, entry: int, payload_size: int) -> bytes:
+def build_manifest(page_count: int, entry: int, payload_size: int,
+                    asset_pages: int) -> bytes:
     if not (0 < page_count <= 0xFF):
         raise SystemExit(f"make_sprinter_exe: page_count {page_count} out of range")
     if not (0 <= entry <= 0xFFFF):
         raise SystemExit(f"make_sprinter_exe: entry {entry:#06x} out of range")
-    if not (0 <= payload_size <= 0xFFFF):
+    if payload_size % MANIFEST_PAYLOAD_UNIT != 0:
+        raise SystemExit(
+            f"make_sprinter_exe: payload_size {payload_size} is not a "
+            f"multiple of {MANIFEST_PAYLOAD_UNIT}"
+        )
+    payload_units = payload_size // MANIFEST_PAYLOAD_UNIT
+    if not (0 <= payload_units <= 0xFFFF):
         raise SystemExit(
             f"make_sprinter_exe: payload_size {payload_size} does not fit "
-            "the manifest's 16-bit field"
+            "the manifest's 16-bit field even in 256-byte units"
+        )
+    if not (0 <= asset_pages < page_count):
+        raise SystemExit(
+            f"make_sprinter_exe: asset_pages {asset_pages} must be less "
+            f"than page_count {page_count} (at least one resident page)"
         )
     manifest = bytearray(MANIFEST_SIZE)
     manifest[0:4] = MANIFEST_MAGIC
     manifest[4] = MANIFEST_VERSION
     manifest[5] = page_count
     manifest[6:8] = entry.to_bytes(2, "little")
-    manifest[8:10] = payload_size.to_bytes(2, "little")
-    # 10-31 reserved, already zero.
+    manifest[8:10] = payload_units.to_bytes(2, "little")
+    manifest[10] = asset_pages
+    # 11-31 reserved, already zero.
     return bytes(manifest)
 
 
 def build_exe(loader: bytes, resident: bytes, version: str,
+              assets: list[bytes] | None = None,
               layout: dict | None = None) -> bytes:
+    assets = assets or []
     if not loader:
         raise SystemExit("make_sprinter_exe: loader body is empty")
     if len(loader) > MAX_LOADER_SIZE:
@@ -99,8 +118,17 @@ def build_exe(loader: bytes, resident: bytes, version: str,
             f"make_sprinter_exe: resident is {len(resident)} bytes, not a "
             f"multiple of the {page_size}-byte page size"
         )
-    page_count = len(resident) // page_size
-    manifest = build_manifest(page_count, symbols["TRAMPOLINE_ADDR"], len(resident))
+    for i, asset in enumerate(assets):
+        if len(asset) != page_size:
+            raise SystemExit(
+                f"make_sprinter_exe: asset {i} is {len(asset)} bytes, "
+                f"expected exactly {page_size} (one page)"
+            )
+    resident_page_count = len(resident) // page_size
+    page_count = resident_page_count + len(assets)
+    payload = resident + b"".join(assets)
+    manifest = build_manifest(page_count, symbols["TRAMPOLINE_ADDR"], len(payload),
+                              len(assets))
 
     header = bytearray(EXE_HEADER_SIZE)
     header[0:3] = EXE_SIGNATURE
@@ -118,7 +146,7 @@ def build_exe(loader: bytes, resident: bytes, version: str,
         raise SystemExit("make_sprinter_exe: info text does not fit the header")
     header[22:22 + len(info_bytes)] = info_bytes
 
-    return bytes(header) + loader + manifest + resident
+    return bytes(header) + loader + manifest + payload
 
 
 def main() -> int:
@@ -126,7 +154,9 @@ def main() -> int:
     parser.add_argument("--loader", required=True, type=Path,
                         help="raw PRELOAD loader binary assembled at LD_ADDR")
     parser.add_argument("--resident", required=True, type=Path,
-                        help="raw resident image (page_count * 16 KiB)")
+                        help="raw resident image (resident_page_count * 16 KiB)")
+    parser.add_argument("--assets", action="append", default=[], type=Path,
+                        help="raw asset page, exactly 16 KiB (repeatable)")
     parser.add_argument("--layout", type=Path,
                         default=Path("src/sprinter/fixed_layout.json"))
     parser.add_argument("--version-file", required=True, type=Path,
@@ -136,17 +166,19 @@ def main() -> int:
 
     loader = args.loader.read_bytes()
     resident = args.resident.read_bytes()
+    assets = [path.read_bytes() for path in args.assets]
     layout = gsl.load_layout_file(args.layout)
     version = args.version_file.read_text(encoding="ascii").strip()
     if not version:
         raise SystemExit("make_sprinter_exe: VERSION file is empty")
 
-    exe = build_exe(loader, resident, version, layout=layout)
+    exe = build_exe(loader, resident, version, assets=assets, layout=layout)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(exe)
     print(f"[OK] {args.output}: {len(exe)} bytes "
           f"(header {EXE_HEADER_SIZE} + loader {len(loader)} + "
-          f"manifest {MANIFEST_SIZE} + resident {len(resident)})")
+          f"manifest {MANIFEST_SIZE} + resident {len(resident)} + "
+          f"{len(assets)} asset page(s))")
     return 0
 
 
