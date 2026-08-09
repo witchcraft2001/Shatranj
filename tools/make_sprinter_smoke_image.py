@@ -80,7 +80,12 @@ def main() -> int:
     run_mtool("mformat", "-C", "-f", "1440", "-v", VOLUME_LABEL,
               "-N", VOLUME_SERIAL, "-i", str(args.output), "::")
     for dst in staged:
-        run_mtool("mcopy", "-o", "-i", str(args.output),
+        # -m: preserve the staged file's mtime (pinned to FILE_TIMESTAMP
+        # above). Without it mcopy stamps the FAT directory entry with
+        # wall-clock "now" -- the image was silently non-deterministic
+        # across rebuilds at different times of day, and a rebuilt image
+        # could look like a stale one to a human inspecting it with mdir.
+        run_mtool("mcopy", "-m", "-o", "-i", str(args.output),
                   str(dst), f"::{dst.name}")
 
     listing = run_mtool("mdir", "-b", "-i", str(args.output), "::")

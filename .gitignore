@@ -44,3 +44,5 @@ tools/codex-nudge*.log
 # Basura accidental de entorno
 %SystemDrive%/
 Python/
+AGENTS.md
+CLAUDE.md

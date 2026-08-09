@@ -9,6 +9,7 @@ space := $(empty) $(empty)
 BUILD_DIR_UP := $(subst $(space),,$(patsubst %,../,$(subst /, ,$(BUILD_DIR))))
 ZCC ?= zcc
 Z80ASM ?= z80asm
+SJASMPLUS ?= sjasmplus
 POWERSHELL ?= pwsh
 PYTHON ?= python3
 CMAKE ?= cmake
@@ -900,14 +901,23 @@ endif
 # Uses only new paths (asm/sprinter, build/sprinter, release/Sprinter) and
 # never touches the rules or artifacts of the other platforms.
 
-.PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image clean-sprinter
+.PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image \
+        sprinter-layout-check sprinter-z80-test sprinter-resident-test sprinter-gates clean-sprinter
 
 SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
 SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
 SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
 SPRINTER_SMOKE_IMG := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
-SPRINTER_STUB_BIN := $(SPRINTER_BUILD_DIR)/stub_main.bin
+SPRINTER_ASM_DIR := asm/sprinter
+SPRINTER_LOADER_BIN := $(SPRINTER_BUILD_DIR)/preload_loader.bin
+SPRINTER_RESIDENT_BIN := $(SPRINTER_BUILD_DIR)/resident_s1.bin
 SPRINTER_DLLS := extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
+
+SPRINTER_LAYOUT_JSON := src/sprinter/fixed_layout.json
+SPRINTER_GENERATED_DIR := $(SPRINTER_BUILD_DIR)/generated
+SPRINTER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/fixed_layout.inc
+SPRINTER_LAYOUT_H := $(SPRINTER_GENERATED_DIR)/fixed_layout.h
+SJASMPLUS_INCLUDES := -I $(SPRINTER_ASM_DIR) -I $(SPRINTER_GENERATED_DIR)
 
 sprinter-deps-check: tools/check_sprinter_deps.py
 	$(PYTHON) tools/check_sprinter_deps.py
@@ -915,27 +925,72 @@ sprinter-deps-check: tools/check_sprinter_deps.py
 sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
 
+sprinter-layout-check: tools/gen_sprinter_layout.py tests/tools/test_sprinter_layout.py $(SPRINTER_LAYOUT_JSON)
+	$(PYTHON) tools/gen_sprinter_layout.py --self-test
+	$(PYTHON) tests/tools/test_sprinter_layout.py
+	@printf "[OK] sprinter-layout-check: fixed layout valid\n"
+
+sprinter-gates: tools/check_sprinter_accel.py tools/check_sprinter_win0.py
+	$(PYTHON) tools/check_sprinter_accel.py --self-test
+	$(PYTHON) tools/check_sprinter_accel.py --root .
+	$(PYTHON) tools/check_sprinter_win0.py --self-test
+	$(PYTHON) tools/check_sprinter_win0.py --root .
+	@printf "[OK] sprinter-gates: R1/R3 static policy checks green\n"
+
 $(SPRINTER_BUILD_DIR):
 	mkdir -p $(SPRINTER_BUILD_DIR)
 
-$(SPRINTER_STUB_BIN): asm/sprinter/stub_main.asm | $(SPRINTER_BUILD_DIR)
-	$(Z80ASM) -b -r0x8100 -o=$(SPRINTER_STUB_BIN) asm/sprinter/stub_main.asm
-	@rm -f asm/sprinter/stub_main.o
+$(SPRINTER_GENERATED_DIR):
+	mkdir -p $(SPRINTER_GENERATED_DIR)
 
-$(SPRINTER_EXE): $(SPRINTER_STUB_BIN) tools/make_sprinter_exe.py VERSION $(SPRINTER_DLLS)
+$(SPRINTER_LAYOUT_INC): tools/gen_sprinter_layout.py $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) \
+		--inc-out $(SPRINTER_LAYOUT_INC) --h-out $(SPRINTER_LAYOUT_H)
+
+# Mirror rule, not a grouped "&:" target: the recipe writes both files, but
+# grouped targets need GNU make 4.3+ and macOS ships 3.81. Safe without
+# parallel-build races because of the global .NOTPARALLEL.
+$(SPRINTER_LAYOUT_H): tools/gen_sprinter_layout.py $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) \
+		--inc-out $(SPRINTER_LAYOUT_INC) --h-out $(SPRINTER_LAYOUT_H)
+
+$(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DIR)/dss.inc \
+                        $(SPRINTER_ASM_DIR)/manifest.inc $(SPRINTER_ASM_DIR)/hdr.inc \
+                        $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
+	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
+		--raw=$(SPRINTER_LOADER_BIN) $(SPRINTER_ASM_DIR)/preload_loader.asm
+
+$(SPRINTER_RESIDENT_BIN): $(SPRINTER_ASM_DIR)/resident_s1.asm $(SPRINTER_ASM_DIR)/im2_s1.asm \
+                          $(SPRINTER_ASM_DIR)/font_hex.asm $(SPRINTER_ASM_DIR)/video_s1.asm \
+                          $(SPRINTER_ASM_DIR)/win0.inc $(SPRINTER_ASM_DIR)/accel.inc \
+                          $(SPRINTER_ASM_DIR)/dss.inc \
+                          $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
+	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
+		--raw=$(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASM_DIR)/resident_s1.asm
+
+$(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) tools/make_sprinter_exe.py \
+                 $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
-	$(PYTHON) tools/make_sprinter_exe.py --body $(SPRINTER_STUB_BIN) \
+	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
+		--resident $(SPRINTER_RESIDENT_BIN) --layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
 
-exe: sprinter-deps-check $(SPRINTER_EXE)
+exe: sprinter-deps-check sprinter-layout-check $(SPRINTER_EXE)
+
+sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDENT_BIN)
+	$(PYTHON) tests/tools/test_sprinter_resident.py
+
+sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC)
+	tools/run_sprinter_z80_tests.sh
 
 sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_SMOKE_IMG)
 
-sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-smoke-image
+sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
+                sprinter-gates sprinter-z80-test sprinter-resident-test sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_SMOKE_IMG).rebuild > /dev/null
@@ -944,5 +999,8 @@ sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-smoke-image
 	@printf "[OK] sprinter-check: deps, EXE format, smoke image (deterministic)\n"
 
 clean-sprinter:
+ifneq ($(CLIENT_HOST_IS_WINDOWS),)
+	$(POWERSHELL) -NoProfile -Command "Remove-Item -Recurse -Force -ErrorAction Ignore '$(SPRINTER_BUILD_DIR)', '$(SPRINTER_RELEASE_DIR)'"
+else
 	rm -rf $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
-	rm -f asm/sprinter/stub_main.o
+endif

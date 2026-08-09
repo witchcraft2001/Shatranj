@@ -56,14 +56,20 @@ UNET_INC = "src/include/unet.inc"
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
-    result = subprocess.run(
-        args,
-        cwd=cwd,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        detail = ""
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail = f": {exc.stderr.strip()}"
+        fail(f"command {' '.join(args)!r} failed{detail}")
     return result.stdout.strip()
 
 
@@ -110,30 +116,40 @@ def check_dlls() -> None:
         if digest != expected_sha256:
             fail(f"{rel_path}: SHA-256 {digest}, expected {expected_sha256}")
 
-    esp_inc = (ROOT / "extern/esp_net" / UNET_INC).read_bytes()
-    rtl_inc = (ROOT / "extern/rtl_net" / UNET_INC).read_bytes()
-    if esp_inc != rtl_inc:
+    inc_paths = [
+        ROOT / "extern/esp_net" / UNET_INC,
+        ROOT / "extern/rtl_net" / UNET_INC,
+    ]
+    for inc_path in inc_paths:
+        if not inc_path.is_file():
+            fail(f"uNet ABI include is missing: {inc_path.relative_to(ROOT)}")
+    if inc_paths[0].read_bytes() != inc_paths[1].read_bytes():
         fail("uNet ABI include files in ESP and RTL submodules differ")
 
 
 def verify_with_libman() -> None:
     libman_src = ROOT / "extern/libman/src"
+    if not libman_src.is_dir():
+        fail("extern/libman/src is missing; run git submodule update --init --recursive")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(libman_src)
     for rel_path in DLLS:
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "sprinter_mkdll.cli",
-                "verify",
-                str(ROOT / rel_path),
-                "--target",
-                "1.3",
-            ],
-            check=True,
-            env=env,
-        )
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "sprinter_mkdll.cli",
+                    "verify",
+                    str(ROOT / rel_path),
+                    "--target",
+                    "1.3",
+                ],
+                check=True,
+                env=env,
+            )
+        except (subprocess.CalledProcessError, OSError):
+            fail(f"libman DLL-format verification failed for {rel_path}")
 
 
 def main() -> int:

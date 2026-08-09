@@ -1,0 +1,61 @@
+{
+    "_comment": "Single source of truth for the fixed anchors in the flat Sprinter resident (port.md section 3.1/3.9). tools/gen_sprinter_layout.py turns this into asm/sprinter/generated/fixed_layout.inc and fixed_layout.h. Regions here are only the addresses other code jumps/points to blindly (loader trampoline target, IM2 table/stub, stack/canary bounds); crt0/main/render code floats between TRAMPOLINE and CANARY and is bounded by an ASSERT in resident_s1.asm instead.",
+    "resident_base": "0x4000",
+    "win1_end": "0x8000",
+    "win2_base": "0x8000",
+    "win2_end": "0xC000",
+    "im2": {
+        "fill_byte": "0xBD",
+        "i_reg": "0xBE"
+    },
+    "regions": [
+        {
+            "name": "HDR",
+            "addr": "0x4000",
+            "size": "0x100",
+            "owner": "preload_loader.asm writes it, resident_s1.asm/crt0 reads it",
+            "desc": "Boot header published by the loader before SetVMod: magic 'SHS1', WIN2 physical page, reserved."
+        },
+        {
+            "name": "TRAMPOLINE",
+            "addr": "0x4100",
+            "owner": "resident_s1.asm",
+            "desc": "Fixed handoff target the loader JPs to blindly: maps WIN2 from HDR_PAGE2, sets SP=STACK_TOP, JP crt0."
+        },
+        {
+            "name": "PSP_LANDING",
+            "addr": "0x8000",
+            "size": "0x100",
+            "owner": "preload_loader.asm writes it, unused by resident code",
+            "desc": "Reserved: the loader LDIRs the DSS-issued PSP here (via WIN1) so AppInfo keeps working once this page is mapped into WIN2 (weather_loader.asm:113-120 pattern). Resident code starts at PSP_LANDING addr+size, not at WIN2_BASE."
+        },
+        {
+            "name": "CANARY",
+            "addr": "0xB900",
+            "size": "0x2",
+            "owner": "im2_s1.asm",
+            "desc": "Stack canary word, written once at crt0 start and checked by canary_check (R4)."
+        },
+        {
+            "name": "STACK",
+            "addr": "0xB902",
+            "size": "0x47E",
+            "owner": "im2_s1.asm",
+            "desc": "Resident stack, must be >= 1024 bytes (R4). STACK_TOP = addr + size = 0xBD80."
+        },
+        {
+            "name": "IM2_STUB",
+            "addr": "0xBDBD",
+            "size": "0xF",
+            "owner": "im2_s1.asm",
+            "desc": "Minimal frame-flag ISR: discriminates SIO RR0 bit 0, sets frame_flag, tail-jumps JP #0038 (R6)."
+        },
+        {
+            "name": "IM2_TABLE",
+            "addr": "0xBE00",
+            "size": "0x101",
+            "owner": "im2_s1.asm",
+            "desc": "257-byte IM2 vector table, uniformly filled with im2.fill_byte so every vector byte (including the 0xFF/0x100 straddle) resolves to IM2_STUB (R6/R9)."
+        }
+    ]
+}
