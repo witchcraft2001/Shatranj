@@ -132,10 +132,12 @@ frame_wait:
         or      a
         ret
 
-; R11 exit discipline: IM2 uninstalled first (so no stray interrupt lands
-; mid-transition), video mode/screen restored from HDR, PORT_Y parked,
-; DSS.Exit. Does not return.
+; R11 exit discipline: network torn down first (ng_shutdown needs EI and
+; WIN1 still resident -- S3), then IM2 uninstalled (so no stray interrupt
+; lands mid-transition), video mode/screen restored from HDR, PORT_Y
+; parked, DSS.Exit. Does not return.
 exit_stand:
+        call    ng_shutdown
         di
         call    im2_uninstall
         ld      a,(HDR+HDR_SAVED_SCREEN_OFFSET)

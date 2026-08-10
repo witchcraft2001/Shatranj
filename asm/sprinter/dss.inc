@@ -42,6 +42,9 @@ DSS_FREEMEM           EQU #3E    ; A=block handle
 DSS_EXIT              EQU #41    ; B=exit code; does not return
 DSS_APPINFO           EQU #47
 DSS_APPINFO_EXE_HOMEDIR EQU #01
+DSS_ENVIRON           EQU #46    ; B=sub-function (DSS_ENV_GET), HL/DE args
+DSS_ENV_GET           EQU #01    ; HL=NAME asciiz, DE=value buffer ->
+                                 ; A=#FF found / 0 not found
 DSS_SETVMOD           EQU #50    ; A=mode, B=screen(0/1)
 DSS_GETVMOD           EQU #51    ; -> A=mode, B=screen
 DSS_PCHARS            EQU #5C    ; HL=NUL-terminated string

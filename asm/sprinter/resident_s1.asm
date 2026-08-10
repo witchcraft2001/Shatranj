@@ -92,6 +92,7 @@ main_loop:
         ld      (tick_count),hl
 
         call    rtc_sample              ; DSS call: EI, canonical windows
+        call    echo_tick               ; S3: no-op unless ECHO_STATE_ECHO
 
         di
         in      a,(WIN3_PORT)
@@ -105,6 +106,7 @@ main_loop:
         ld      ix,16
         ld      c,32
         call    draw_rtc
+        call    echo_draw_stats         ; S3: rows C=48..96, same DI/WIN3 span
         ld      a,#C0
         out     (PORT_Y),a
         ld      a,(.saved_win3)
@@ -132,10 +134,20 @@ main_loop:
         jr      z,.do_accel_probe
         cp      '9'
         jr      z,.do_board_strip
+        cp      'N'
+        jr      z,.do_net_up
+        cp      'C'
+        jr      z,.do_echo_connect
+        cp      'D'
+        jr      z,.do_echo_disconnect
+        cp      'L'
+        jr      z,.do_echo_lasterr
+        cp      'O'
+        jr      z,.do_overlay_probe
         cp      'Q'
         jr      z,.quit
         cp      'q'
-        jr      nz,main_loop
+        jp      nz,main_loop
 .quit:
         jp      exit_stand
 .do_flip:
@@ -167,18 +179,42 @@ main_loop:
 .do_board_strip:
         call    bench_board_strip
         jp      main_loop
+.do_net_up:
+        call    net_up_probe
+        call    echo_note_net_up
+        jp      main_loop
+.do_echo_connect:
+        call    echo_connect_probe
+        jp      main_loop
+.do_echo_disconnect:
+        call    echo_disconnect_probe
+        jp      main_loop
+.do_echo_lasterr:
+        call    echo_lasterr_probe
+        jp      main_loop
+.do_overlay_probe:
+        call    ovl_probe
+        jp      main_loop
 .saved_win3: DB 0
 
 tick_count: DW 0
 
-        INCLUDE "im2_s1.asm"
         INCLUDE "font_hex.asm"
         INCLUDE "video_s1.asm"
         INCLUDE "gfx_core.asm"
         INCLUDE "text640.asm"
         INCLUDE "bench_s2.asm"
+        INCLUDE "ovl_s3.asm"
 
-        DS      PSP_LANDING_ADDR - $, 0
+        ; S3 overlay probe slot (port.md section 3.10/S3): empty in the
+        ; static image. ovl_s3.asm copies a packed overlay here at runtime
+        ; from the asset page via win0_map_di/LDIR/win0_restore under DI.
+        DS      OVL_SLOT_ADDR - $, 0
+        ASSERT  $ = OVL_SLOT_ADDR
+        DS      OVL_SLOT_SIZE, 0
+        ; OVL_SLOT ends exactly where PSP_LANDING begins (no gap): an extra
+        ; DS PSP_LANDING_ADDR-$,0 here would be a zero-length fill and
+        ; sjasmplus warns on that ("shortblock"), so just assert instead.
         ASSERT  $ = PSP_LANDING_ADDR
         DS      PSP_LANDING_SIZE, 0    ; loader overwrites with the real PSP
 
@@ -209,6 +245,33 @@ svmod_safe:
         out     (WIN1_PORT),a
         ret
 .saved_win1: DB 0
+
+; frame_flag/im2_saved_i (and the routines around them) live here, in the
+; WIN2 half, not the WIN1 half: S3's l_call sequences run with WIN1 occupied
+; by a DLL and interrupts enabled (RTL enables EI internally; entering with
+; EI is required -- ftpclient's precedent). A frame tick during any blocking
+; DLL call would otherwise write frame_flag into the mapped DLL's image.
+; tools/check_sprinter_net_sections.py pins this placement permanently.
+        INCLUDE "im2_s1.asm"
+
+        ; libman (extern/libman, pinned) and net_gate.asm's funnel: WIN2-
+        ; half only, so a DLL loaded into WIN1 during l_call never displaces
+        ; them. LIBMAN_NO_LEGACY_API keeps every reference module-qualified
+        ; (LIBMAN.l_call, ...); LIBMAN_MAX_LIBS 1 matches this stand driving
+        ; a single backend DLL at a time; LIBMAN_DIAGNOSTICS exposes
+        ; l_load_stage/l_init_status for the S3 diagnostics screen.
+        DEFINE  LIBMAN_MAX_LIBS 1
+        DEFINE  LIBMAN_DIAGNOSTICS
+        DEFINE  LIBMAN_NO_LEGACY_API
+        INCLUDE "libman.asm"
+        INCLUDE "net_gate.asm"
+        INCLUDE "echo_s3.asm"
+
+        ; S3 overlay probe context (ovl_s3.asm, WIN1-half dispatch code):
+        ; kept here so every piece of S3 cross-mechanism state lives in one
+        ; half, alongside net_gate.asm/echo_s3.asm's own -- tools/check_
+        ; sprinter_net_sections.py pins the ovl_ctx prefix to WIN2 too.
+ovl_ctx: DS 16, 0
 
         DS      CANARY_ADDR - $, 0
         ASSERT  $ = CANARY_ADDR

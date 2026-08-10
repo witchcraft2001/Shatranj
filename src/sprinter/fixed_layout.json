@@ -23,6 +23,13 @@
             "desc": "Fixed handoff target the loader JPs to blindly: maps WIN2 from HDR_PAGE2, sets SP=STACK_TOP, JP crt0."
         },
         {
+            "name": "OVL_SLOT",
+            "addr": "0x7800",
+            "size": "0x800",
+            "owner": "ovl_s3.asm",
+            "desc": "S3 overlay probe slot (port.md section 3.10/S3): 2 KiB in the WIN1 half, empty in the static image. ovl_s3.asm copies a packed overlay here from the asset page (slot 36) via win0_map_di/LDIR/win0_restore under DI (R1) before dispatching into it."
+        },
+        {
             "name": "PSP_LANDING",
             "addr": "0x8000",
             "size": "0x100",

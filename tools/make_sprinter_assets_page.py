@@ -19,7 +19,11 @@ Slot layout (asm/sprinter/bench_s2.asm's ASSET_* EQUs must match):
     32..33  TILE_WIDE: opaque 40x20 checker, colours 9/10 (512-byte aligned:
             32*256 = 8192 = 16*512, proving the parametric blitter's second
             stride)
-    34..63  unused (zero)
+    34..35  unused (zero) -- gap before the overlay probe
+    36..43  dummy overlay (S3, asm/sprinter/dummy_overlay.asm): exactly
+            2048 bytes, copied at runtime by ovl_s3.asm's ovl_exec via
+            win0_map_di/LDIR/win0_restore into OVL_SLOT (#7800)
+    44..63  unused (zero)
 
 Tiles are generated in code, not stored as binary fixtures, so the page is
 reproducible from this file plus the pinned extern/sprinter-libs font.bin
@@ -45,6 +49,10 @@ TILE_KEY_SLOT = 30
 TILE_C_SLOT = 31
 TILE_WIDE_SLOT = 32
 TILE_WIDE_SLOTS = 2
+
+OVERLAY_SLOT = 36
+OVERLAY_SLOTS = 8
+OVERLAY_SIZE = OVERLAY_SLOTS * SLOT_SIZE  # 2048
 
 TILE32_W, TILE32_H, TILE32_STRIDE = 32, 16, 16
 TILE40_W, TILE40_H, TILE40_STRIDE = 40, 20, 20
@@ -94,9 +102,12 @@ def _key_tile(color_inside: int, w_px: int, h_px: int, stride: int) -> bytes:
     return data
 
 
-def build_assets_page(font_bin: bytes) -> bytes:
+def build_assets_page(font_bin: bytes, overlay_bin: bytes | None = None) -> bytes:
     if len(font_bin) != FONT_BIN_SIZE:
         fail(f"font.bin is {len(font_bin)} bytes, expected {FONT_BIN_SIZE}")
+    if overlay_bin is not None and len(overlay_bin) != OVERLAY_SIZE:
+        fail(f"overlay-bin is {len(overlay_bin)} bytes, expected "
+             f"{OVERLAY_SIZE} (the fixed OVL_SLOT size)")
 
     page = bytearray(PAGE_SIZE)
     page[0:len(font_bin)] = font_bin
@@ -115,6 +126,8 @@ def build_assets_page(font_bin: bytes) -> bytes:
     place(TILE_C_SLOT, _checker_tile(6, 7, TILE32_W, TILE32_H, TILE32_STRIDE), 1)
     place(TILE_WIDE_SLOT, _checker_tile(9, 10, TILE40_W, TILE40_H, TILE40_STRIDE),
           TILE_WIDE_SLOTS)
+    if overlay_bin is not None:
+        place(OVERLAY_SLOT, overlay_bin, OVERLAY_SLOTS)
 
     data = bytes(page)
     assert len(data) == PAGE_SIZE
@@ -125,6 +138,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--font-bin", type=Path,
                         default=Path("extern/sprinter-libs/afnt640/font.bin"))
+    parser.add_argument("--overlay-bin", type=Path,
+                        help="S3 dummy overlay (asm/sprinter/dummy_overlay.asm "
+                             "build product); omit to leave slots 36-43 zero")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -132,7 +148,13 @@ def main() -> int:
         fail(f"missing font.bin: {args.font_bin} "
              "(run 'git submodule update --init extern/sprinter-libs')")
 
-    page = build_assets_page(args.font_bin.read_bytes())
+    overlay_bin = None
+    if args.overlay_bin is not None:
+        if not args.overlay_bin.is_file():
+            fail(f"missing overlay-bin: {args.overlay_bin}")
+        overlay_bin = args.overlay_bin.read_bytes()
+
+    page = build_assets_page(args.font_bin.read_bytes(), overlay_bin)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(page)
     digest = hashlib.sha256(page).hexdigest()

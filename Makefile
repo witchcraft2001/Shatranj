@@ -902,22 +902,26 @@ endif
 # never touches the rules or artifacts of the other platforms.
 
 .PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image \
-        sprinter-layout-check sprinter-z80-test sprinter-resident-test sprinter-gates clean-sprinter
+        sprinter-hw-zip sprinter-layout-check sprinter-z80-test sprinter-resident-test \
+        sprinter-gates sprinter-section-gate clean-sprinter
 
 SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
 SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
 SPRINTER_EXE := $(SPRINTER_RELEASE_DIR)/SHATRANJ.EXE
 SPRINTER_SMOKE_IMG := $(SPRINTER_BUILD_DIR)/SHATRANJ-SMOKE.IMG
+SPRINTER_HW_ZIP := $(SPRINTER_BUILD_DIR)/SHATRANJ-HW.zip
 SPRINTER_ASM_DIR := asm/sprinter
 SPRINTER_LOADER_BIN := $(SPRINTER_BUILD_DIR)/preload_loader.bin
 SPRINTER_RESIDENT_BIN := $(SPRINTER_BUILD_DIR)/resident_s1.bin
+SPRINTER_RESIDENT_SYM := $(SPRINTER_BUILD_DIR)/resident_s1.sym
 SPRINTER_DLLS := extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
 
 SPRINTER_LAYOUT_JSON := src/sprinter/fixed_layout.json
 SPRINTER_GENERATED_DIR := $(SPRINTER_BUILD_DIR)/generated
 SPRINTER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/fixed_layout.inc
 SPRINTER_LAYOUT_H := $(SPRINTER_GENERATED_DIR)/fixed_layout.h
-SJASMPLUS_INCLUDES := -I $(SPRINTER_ASM_DIR) -I $(SPRINTER_GENERATED_DIR)
+SJASMPLUS_INCLUDES := -I $(SPRINTER_ASM_DIR) -I $(SPRINTER_GENERATED_DIR) \
+                       -I extern/libman/libman -I extern/esp_net/src/include
 
 SPRINTER_RENDER_LAYOUT_JSON := src/sprinter/render_layout.json
 SPRINTER_RENDER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/render_layout.inc
@@ -928,9 +932,11 @@ sprinter-deps-check: tools/check_sprinter_deps.py
 	$(PYTHON) tools/check_sprinter_deps.py
 
 sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py \
-                     tests/tools/test_sprinter_assets_page.py tools/make_sprinter_assets_page.py
+                     tests/tools/test_sprinter_assets_page.py tools/make_sprinter_assets_page.py \
+                     tools/sprinter_echo_server.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_assets_page.py
+	$(PYTHON) tools/sprinter_echo_server.py --self-test
 
 sprinter-layout-check: tools/gen_sprinter_layout.py tests/tools/test_sprinter_layout.py $(SPRINTER_LAYOUT_JSON) \
                        tools/gen_sprinter_render_layout.py tests/tools/test_sprinter_render_layout.py \
@@ -947,6 +953,11 @@ sprinter-gates: tools/check_sprinter_accel.py tools/check_sprinter_win0.py
 	$(PYTHON) tools/check_sprinter_win0.py --self-test
 	$(PYTHON) tools/check_sprinter_win0.py --root .
 	@printf "[OK] sprinter-gates: R1/R3 static policy checks green\n"
+
+sprinter-section-gate: tools/check_sprinter_net_sections.py $(SPRINTER_RESIDENT_SYM)
+	$(PYTHON) tools/check_sprinter_net_sections.py --self-test
+	$(PYTHON) tools/check_sprinter_net_sections.py --sym $(SPRINTER_RESIDENT_SYM)
+	@printf "[OK] sprinter-section-gate: WIN1/WIN2 net-mechanics split holds\n"
 
 $(SPRINTER_BUILD_DIR):
 	mkdir -p $(SPRINTER_BUILD_DIR)
@@ -980,20 +991,39 @@ $(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DI
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
 		--raw=$(SPRINTER_LOADER_BIN) $(SPRINTER_ASM_DIR)/preload_loader.asm
 
-$(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs/afnt640/font.bin | $(SPRINTER_BUILD_DIR)
-	$(PYTHON) tools/make_sprinter_assets_page.py \
-		--font-bin extern/sprinter-libs/afnt640/font.bin --output $(SPRINTER_ASSETS_PAGE)
+SPRINTER_DUMMY_OVERLAY_BIN := $(SPRINTER_BUILD_DIR)/dummy_overlay.bin
 
-$(SPRINTER_RESIDENT_BIN): $(SPRINTER_ASM_DIR)/resident_s1.asm $(SPRINTER_ASM_DIR)/im2_s1.asm \
+$(SPRINTER_DUMMY_OVERLAY_BIN): $(SPRINTER_ASM_DIR)/dummy_overlay.asm $(SPRINTER_LAYOUT_INC) \
+                               | $(SPRINTER_BUILD_DIR)
+	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
+		--raw=$(SPRINTER_DUMMY_OVERLAY_BIN) $(SPRINTER_ASM_DIR)/dummy_overlay.asm
+
+$(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs/afnt640/font.bin \
+                         $(SPRINTER_DUMMY_OVERLAY_BIN) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/make_sprinter_assets_page.py \
+		--font-bin extern/sprinter-libs/afnt640/font.bin \
+		--overlay-bin $(SPRINTER_DUMMY_OVERLAY_BIN) \
+		--output $(SPRINTER_ASSETS_PAGE)
+
+SPRINTER_RESIDENT_DEPS := $(SPRINTER_ASM_DIR)/resident_s1.asm $(SPRINTER_ASM_DIR)/im2_s1.asm \
                           $(SPRINTER_ASM_DIR)/font_hex.asm $(SPRINTER_ASM_DIR)/video_s1.asm \
                           $(SPRINTER_ASM_DIR)/win0.inc $(SPRINTER_ASM_DIR)/accel.inc \
                           $(SPRINTER_ASM_DIR)/dss.inc \
                           $(SPRINTER_ASM_DIR)/gfx_core.asm $(SPRINTER_ASM_DIR)/text640.asm \
-                          $(SPRINTER_ASM_DIR)/bench_s2.asm \
+                          $(SPRINTER_ASM_DIR)/bench_s2.asm $(SPRINTER_ASM_DIR)/net_gate.asm \
+                          $(SPRINTER_ASM_DIR)/echo_s3.asm $(SPRINTER_ASM_DIR)/ovl_s3.asm \
                           $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) \
-                          $(SPRINTER_RENDER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
+                          $(SPRINTER_RENDER_LAYOUT_INC)
+
+$(SPRINTER_RESIDENT_BIN): $(SPRINTER_RESIDENT_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
-		--raw=$(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASM_DIR)/resident_s1.asm
+		--raw=$(SPRINTER_RESIDENT_BIN) --sym=$(SPRINTER_RESIDENT_SYM) $(SPRINTER_ASM_DIR)/resident_s1.asm
+
+# Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment
+# above (macOS ships GNU make 3.81, no grouped-target support).
+$(SPRINTER_RESIDENT_SYM): $(SPRINTER_RESIDENT_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
+		--raw=$(SPRINTER_RESIDENT_BIN) --sym=$(SPRINTER_RESIDENT_SYM) $(SPRINTER_ASM_DIR)/resident_s1.asm
 
 $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
@@ -1018,8 +1048,14 @@ sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_SMOKE_IMG)
 
+sprinter-hw-zip: exe tools/make_sprinter_hw_zip.py
+	$(PYTHON) tools/make_sprinter_hw_zip.py --exe $(SPRINTER_EXE) \
+		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
+		--output $(SPRINTER_HW_ZIP)
+
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
-                sprinter-gates sprinter-z80-test sprinter-resident-test sprinter-smoke-image
+                sprinter-gates sprinter-section-gate sprinter-z80-test \
+                sprinter-resident-test sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_SMOKE_IMG).rebuild > /dev/null

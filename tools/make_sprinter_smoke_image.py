@@ -34,6 +34,12 @@ def fail(message: str) -> None:
 def run_mtool(*args: str) -> str:
     env = os.environ.copy()
     env["TZ"] = "UTC"
+    # mformat stamps the volume-label directory entry with wall-clock "now",
+    # which -m (mtime preservation for files) does not cover.  mtools honours
+    # SOURCE_DATE_EPOCH for exactly that entry, so pin it to the same instant
+    # as the staged files; without it two rebuilds straddling a FAT
+    # two-second tick produce byte-different images.
+    env["SOURCE_DATE_EPOCH"] = str(FILE_TIMESTAMP)
     try:
         result = subprocess.run(
             args, check=True, stdout=subprocess.PIPE,

@@ -22,11 +22,11 @@ ROOT = Path(__file__).resolve().parent.parent
 SUBMODULES = {
     "extern/esp_net": (
         "https://github.com/witchcraft2001/sprinter_net.git",
-        "9b08bd4d1b3a2643471f80a17c0ac9a9aa3f20ec",
+        "2a36652b167b49b7ee1bb7a3251d5a7e65d68fb7",
     ),
     "extern/rtl_net": (
         "https://github.com/witchcraft2001/sprinter-rtl8019a.git",
-        "7c710357d56899d625d0ad052ef5bd673076723d",
+        "6e35924466b0a03d254b003669898dc5fd5eeade",
     ),
     "extern/libman": (
         "https://github.com/witchcraft2001/sprinter-libman.git",
@@ -43,12 +43,12 @@ SUBMODULES = {
 # source from extern/sprinter-libs, never linked as a DLL).
 DLLS = {
     "extern/esp_net/UNETESP.DLL": (
-        10_720,
-        "f03352df4f4af42683d1fde4a8260d0bd3a55f51b1366f10b5467b38566e9abc",
+        15_956,
+        "53461c766423e19db1b939312f5fa64adcc052028b9c709b3a2353d53605fd4c",
     ),
     "extern/rtl_net/UNETRTL.DLL": (
-        13_972,
-        "7f4bfbbb38d5363d6fc0dfc4a0f972fda5f04ac94dcc58dde9d569c21fc81b82",
+        16_384,
+        "453713e40f0ee5e3b0dc3c3d5154b3bb68985f586feb3106c06dc7cc52eaf50f",
     ),
 }
 

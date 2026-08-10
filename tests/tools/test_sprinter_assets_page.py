@@ -83,12 +83,58 @@ class SprinterAssetsPageTests(unittest.TestCase):
         page = msap.build_assets_page(font)
         gap = page[27 * msap.SLOT_SIZE:28 * msap.SLOT_SIZE]
         self.assertEqual(gap, bytes(msap.SLOT_SIZE))
+        # Without --overlay-bin, slots 36-43 stay zero along with the rest
+        # of the tail.
         tail = page[34 * msap.SLOT_SIZE:]
         self.assertEqual(tail, bytes(len(tail)))
 
     def test_font_bin_size_guard(self) -> None:
         with self.assertRaises(SystemExit):
             msap.build_assets_page(b"\x00" * (msap.FONT_BIN_SIZE - 1))
+
+    def test_overlay_lands_at_its_slot_and_is_deterministic(self) -> None:
+        font = FONT_BIN.read_bytes()
+        overlay = bytes((i * 7) & 0xFF for i in range(msap.OVERLAY_SIZE))
+        page = msap.build_assets_page(font, overlay)
+        start = msap.OVERLAY_SLOT * msap.SLOT_SIZE
+        self.assertEqual(page[start:start + msap.OVERLAY_SIZE], overlay)
+        self.assertEqual(
+            msap.build_assets_page(font, overlay),
+            msap.build_assets_page(font, overlay),
+        )
+
+    def test_overlay_gap_and_tail_stay_zero(self) -> None:
+        font = FONT_BIN.read_bytes()
+        overlay = bytes((i * 7) & 0xFF for i in range(msap.OVERLAY_SIZE))
+        page = msap.build_assets_page(font, overlay)
+        # Slots 34-35: the deliberate gap before the overlay.
+        gap = page[34 * msap.SLOT_SIZE:msap.OVERLAY_SLOT * msap.SLOT_SIZE]
+        self.assertEqual(gap, bytes(len(gap)))
+        # Slots 44-63: unused tail after the overlay.
+        tail_start = (msap.OVERLAY_SLOT + msap.OVERLAY_SLOTS) * msap.SLOT_SIZE
+        tail = page[tail_start:]
+        self.assertEqual(tail, bytes(len(tail)))
+
+    def test_overlay_does_not_collide_with_tile_wide(self) -> None:
+        # TILE_WIDE occupies slots 32-33; the overlay must start strictly
+        # after it, with the documented 34-35 gap intact.
+        self.assertGreaterEqual(
+            msap.OVERLAY_SLOT, msap.TILE_WIDE_SLOT + msap.TILE_WIDE_SLOTS
+        )
+
+    def test_overlay_bin_size_guard(self) -> None:
+        font = FONT_BIN.read_bytes()
+        with self.assertRaises(SystemExit):
+            msap.build_assets_page(font, b"\x00" * (msap.OVERLAY_SIZE - 1))
+        with self.assertRaises(SystemExit):
+            msap.build_assets_page(font, b"\x00" * (msap.OVERLAY_SIZE + 1))
+
+    def test_overlay_omitted_is_backward_compatible(self) -> None:
+        font = FONT_BIN.read_bytes()
+        self.assertEqual(
+            msap.build_assets_page(font),
+            msap.build_assets_page(font, None),
+        )
 
 
 if __name__ == "__main__":

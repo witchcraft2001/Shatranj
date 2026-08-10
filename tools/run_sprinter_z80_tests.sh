@@ -55,6 +55,7 @@ for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
   rm -f "$dump"
   sjasmplus --nologo --fullpath \
     -I "$repo_root/asm/sprinter" -I "$generated_dir" -I "$harness_dir" \
+    -I "$repo_root/extern/libman/libman" -I "$repo_root/extern/esp_net/src/include" \
     --raw="$bin" "$src"
   "$ticks" -pc 0 -counter "${SPRINTER_Z80_TEST_CYCLES:-4000000}" \
     -output "$dump" "$bin" >/dev/null 2>&1 || true

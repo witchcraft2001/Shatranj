@@ -15,10 +15,12 @@
 ; im2_s1.asm's exit_stand reads HDR+HDR_*_OFFSET; HDR itself is defined by
 ; resident_s1.asm (not included here, since this test only exercises
 ; im2_fill_table). A placeholder satisfies the symbol reference; exit_stand
-; is never called in this test. Same for svmod_safe, the WIN2-half
-; SetVMod wrapper resident_s1.asm defines.
+; is never called in this test. Same for svmod_safe (the WIN2-half
+; SetVMod wrapper resident_s1.asm defines) and ng_shutdown (S3's net
+; teardown, net_gate.asm -- not included here either).
 HDR: DS 256,0
 svmod_safe: ret
+ng_shutdown: ret
 
 start:
         ld      sp,#e800

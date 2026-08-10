@@ -1,0 +1,590 @@
+; net_gate.asm -- S3's single funnel into libman's l_call (port.md section
+; 5/S3). WIN2-half only (INCLUDEd from resident_s1.asm after im2_s1.asm),
+; prefix ng_. Nothing here ever hands the DLL a pointer the caller owns:
+; every uNet argument buffer is one of this file's own WIN2-resident
+; staging buffers, copied into before the call -- a literal assembled into
+; the WIN1 half would vanish the instant l_call maps the DLL over it.
+;
+; ng_call is the ONLY place that invokes LIBMAN.l_call. It enforces, on
+; every call:
+;   - a reentry guard (the uNet library is documented non-reentrant: one
+;     call at a time). A nested call traps instead of corrupting state
+;     silently (R5).
+;   - a stack-canary check (R4) both before and after the dispatch.
+;   - `ei` immediately before the dispatch: the RTL backend enables
+;     interrupts internally, and libman's own contract requires entering
+;     with EI regardless of backend (ftpclient's precedent). This is safe
+;     specifically because frame_flag/im2_saved_i were moved into the WIN2
+;     half in the same S3 step that added this file -- a frame tick firing
+;     mid-call now always lands in resident state, never in the mapped
+;     DLL's image.
+;
+; The higher-level wrappers (ng_up/ng_connect/ng_send/ng_recv/ng_close/
+; ng_lasterr_fetch/ng_shutdown) take no caller pointers at all: callers
+; pass small values (channel is implicitly 0 -- this stand drives a single
+; connection) or copy into a fixed source register pair, and results land
+; in this file's own buffers.
+;
+; libman itself (extern/libman, pinned, MODULE LIBMAN, LIBMAN_NO_LEGACY_API
+; so every reference is qualified) and the uNet ABI (extern/esp_net's
+; unet.inc, FROZEN and byte-identical in rtl_net -- tools/check_sprinter_
+; deps.py enforces that) are the two frozen contracts this file drives.
+; tools/check_sprinter_net_sections.py pins every symbol here to the WIN2
+; half ([#8000,#C000)) permanently.
+
+        IFNDEF SPRINTER_NET_GATE_INC
+        DEFINE SPRINTER_NET_GATE_INC
+
+        INCLUDE "dss.inc"
+        INCLUDE "unet.inc"
+        INCLUDE "render_layout.inc"     ; PANEL_X/STATUS_Y (net_up_probe)
+
+UNET_ABI_MAJOR EQU (UNET_ABI_VERSION >> 8)
+
+NG_BACKEND_NONE EQU 0
+NG_BACKEND_WIFI EQU 1
+NG_BACKEND_RTL  EQU 2
+
+NG_HOST_CAPACITY    EQU 129
+NG_PORT_CAPACITY    EQU 16
+NG_TX_CAPACITY      EQU 32
+NG_RX_CAPACITY      EQU 256
+NG_LASTERR_CAPACITY EQU 64
+NG_INFO_CAPACITY    EQU 32
+NG_ENV_CAPACITY     EQU 64
+
+NG_TRAP_REENTRY EQU 1
+
+; ng_up diagnostic reasons (distinct from uNet's own NERR_* and from
+; libman's l_reason/l_dss_error -- surfaced by the S3 hotkey N screen).
+NG_UP_ERR_ENV      EQU 1   ; NET env not configured/recognised
+NG_UP_ERR_LOAD     EQU 2   ; l_load failed (see LIBMAN.l_reason/l_dss_error)
+NG_UP_ERR_INFO_TAG EQU 3   ; l_info prefix doesn't match the selected backend
+NG_UP_ERR_ABI      EQU 4   ; GETCAPS major version mismatch
+NG_UP_ERR_CAPS     EQU 5   ; GETCAPS missing UNET_CAP_TCP
+NG_UP_ERR_SETOPT   EQU 6   ; SETOPT CANCELKEYS rejected
+NG_UP_ERR_STATUS   EQU 7   ; STATUS(#FF) neither NERR_OK nor NERR_NONET
+NG_UP_ERR_NETINIT  EQU 8   ; NETINIT failed
+NG_UP_ERR_CALL     EQU 9   ; a dispatcher-level ng_call failure (CF=1)
+
+; ---------------------------------------------------------------------------
+; The funnel.
+; ---------------------------------------------------------------------------
+; In: B=uNet function number, A/DE/IX/IY=that function's arguments (unet.inc).
+; Out: CF=0 and A=the uNet status, or CF=1 (dispatcher-level failure --
+; ng_v_last_nerr/ng_v_last_cf latch the outcome for the diagnostics screen).
+; Uses the handle from ng_handle; HL/BC are consumed by the dispatcher (the
+; caller never supplies or gets them back, matching unet.inc's own contract).
+ng_call:
+        push af
+        push de
+        push ix
+        push iy
+        push bc
+
+        ld a,(ng_v_depth)
+        or a
+        jr nz,ng_call_reentry
+
+        ld a,1
+        ld (ng_v_depth),a
+        call canary_check       ; R4, pre-dispatch; does not return on corruption
+
+        pop bc
+        pop iy
+        pop ix
+        pop de
+        pop af
+
+        ei                      ; mandatory immediately before l_call (see banner)
+        ld hl,(ng_handle)
+        call LIBMAN.l_call
+
+        push af
+        push de
+        push ix
+        push iy
+        push bc
+        call canary_check       ; R4, post-dispatch
+        xor a
+        ld (ng_v_depth),a
+        pop bc
+        pop iy
+        pop ix
+        pop de
+        pop af
+
+        push af
+        jr nc,.dispatch_ok
+        ld a,1
+        jr .store_cf
+.dispatch_ok:
+        xor a
+.store_cf:
+        ld (ng_v_last_cf),a
+        pop af
+        ld (ng_v_last_nerr),a
+        ret
+
+; A reentrant ng_call: something invoked ng_call again while already inside
+; one (the library is not reentrant -- unet.inc's own contract). Discard
+; this invocation's saved context first (it never reaches l_call and does
+; not need it restored), THEN trap -- the S3_TEST_HOOK path must return to
+; its true caller with a balanced stack, not leave five stale register
+; pairs sitting under its RET.
+ng_call_reentry:
+        pop bc
+        pop iy
+        pop ix
+        pop de
+        pop af
+        IFDEF S3_TEST_HOOK
+        ld a,NG_TRAP_REENTRY
+        call s3_test_trap_hook
+        ret
+        ELSE
+        ld a,NG_TRAP_REENTRY
+        jp ng_trap_screen
+        ENDIF
+
+; Fatal screen: net_gate reentrancy trap fired (R5). Does not return.
+; Same shape as im2_s1.asm's fatal_stack_overflow: IM2 uninstalled first (a
+; soon-to-be-freed IM2 table must not stay pointed at by I), then a plain
+; T40 message and DSS_EXIT.
+ng_trap_screen:
+        di
+        call im2_uninstall
+        ld b,0
+        ld a,DSS_VMOD_T40
+        call svmod_safe          ; WIN2-half wrapper (SetVMod clobbers WIN1)
+        ld hl,ng_trap_msg
+        ld c,DSS_PCHARS
+        rst RST_DSS
+        ld b,1
+        ld c,DSS_EXIT
+        rst RST_DSS
+.hang:  jr .hang
+
+ng_trap_msg: DB 13,10,"Sprinter S3: net_gate reentrancy trap (R5).",13,10,0
+
+; ---------------------------------------------------------------------------
+; Backend selection (weatherc.asm's SELECT_BACKEND sequence).
+; ---------------------------------------------------------------------------
+; Out: HL=DLL name (ASCIIZ) and CF=0 on success, ng_backend set; CF=1 if the
+; NET env var is missing/unrecognised (ng_backend left at NG_BACKEND_NONE).
+; Clobbers AF, DE.
+ng_select_backend:
+        xor     a
+        ld      (ng_buf_env),a
+        ld      hl,ng_env_name_net
+        ld      de,ng_buf_env
+        ld      b,DSS_ENV_GET
+        ld      c,DSS_ENVIRON
+        rst     RST_DSS
+        jr      c,.not_configured
+        or      a
+        jr      z,.not_configured
+
+        ld      hl,ng_buf_env
+        ld      de,ng_value_wifi
+        call    ng_streq
+        jr      z,.wifi
+
+        ld      hl,ng_buf_env
+        ld      de,ng_value_rtl
+        call    ng_streq
+        jr      z,.rtl
+
+.not_configured:
+        xor     a
+        ld      (ng_backend),a
+        scf
+        ret
+.wifi:
+        ld      a,NG_BACKEND_WIFI
+        ld      (ng_backend),a
+        ld      hl,ng_dll_name_esp
+        or      a
+        ret
+.rtl:
+        ld      a,NG_BACKEND_RTL
+        ld      (ng_backend),a
+        ld      hl,ng_dll_name_rtl
+        or      a
+        ret
+
+; Compare ASCIIZ HL and DE. Z when equal. Clobbers AF, HL, DE.
+ng_streq:
+        ld      a,(de)
+        ld      c,a
+        ld      a,(hl)
+        cp      c
+        ret     nz
+        or      a
+        ret     z
+        inc     hl
+        inc     de
+        jr      ng_streq
+
+; CF=0 if ng_buf_info+16 (the DLL's self-reported short name, NUL-
+; terminated -- weatherc.asm's convention) matches the tag for the
+; currently selected ng_backend; CF=1 otherwise. Clobbers AF, HL, DE.
+ng_validate_info_tag:
+        ld      a,(ng_backend)
+        cp      NG_BACKEND_WIFI
+        ld      de,ng_info_tag_esp
+        jr      z,.compare
+        cp      NG_BACKEND_RTL
+        ld      de,ng_info_tag_rtl
+        jr      z,.compare
+        scf
+        ret
+.compare:
+        ld      hl,ng_buf_info+16
+.loop:
+        ld      a,(de)
+        or      a
+        ret     z
+        cp      (hl)
+        jr      nz,.mismatch
+        inc     hl
+        inc     de
+        jr      .loop
+.mismatch:
+        scf
+        ret
+
+; ---------------------------------------------------------------------------
+; Full bring-up (weatherc.asm's SELECT_BACKEND -> NETINIT sequence).
+; ---------------------------------------------------------------------------
+; Out: A=0 and CF=0 on success; CF=1 and ng_up_reason set otherwise
+; (LIBMAN.l_reason/l_dss_error/l_load_stage/l_init_status carry the detail
+; when ng_up_reason is NG_UP_ERR_LOAD).
+ng_up:
+        call    ng_select_backend
+        jr      nc,.env_ok
+        ld      a,NG_UP_ERR_ENV
+        jr      .fail
+
+.env_ok:
+        ld      a,1                     ; window 1 -- S3's l_call sequences
+        call    LIBMAN.l_load           ; require the DLL resident in WIN1
+        jr      nc,.load_ok
+        ld      a,NG_UP_ERR_LOAD
+        jr      .fail
+
+.load_ok:
+        ld      (ng_handle),hl
+        ld      a,1
+        ld      (ng_loaded),a
+
+        ld      hl,(ng_handle)
+        ld      de,ng_buf_info
+        call    LIBMAN.l_info
+        jr      c,.fail_call
+        call    ng_validate_info_tag
+        jr      nc,.info_ok
+        ld      a,NG_UP_ERR_INFO_TAG
+        jr      .fail
+
+.info_ok:
+        ld      b,UNET_FN_GETCAPS
+        call    ng_call
+        jr      c,.fail_call
+        ld      a,ixh
+        cp      UNET_ABI_MAJOR
+        jr      z,.abi_ok
+        ld      a,NG_UP_ERR_ABI
+        jr      .fail
+.abi_ok:
+        bit     0,e                     ; UNET_CAP_TCP
+        jr      nz,.caps_ok
+        ld      a,NG_UP_ERR_CAPS
+        jr      .fail
+.caps_ok:
+        ld      a,UNET_OPT_CANCELKEYS
+        ld      de,1
+        ld      b,UNET_FN_SETOPT
+        call    ng_call
+        jr      c,.fail_call
+        or      a
+        jr      z,.setopt_ok
+        ld      a,NG_UP_ERR_SETOPT
+        jr      .fail
+.setopt_ok:
+        ld      a,#FF
+        ld      b,UNET_FN_STATUS
+        call    ng_call
+        jr      c,.fail_call
+        cp      NERR_OK
+        jr      z,.status_ok
+        cp      NERR_NONET
+        jr      z,.status_ok
+        ld      a,NG_UP_ERR_STATUS
+        jr      .fail
+.status_ok:
+        ld      b,UNET_FN_NETINIT
+        call    ng_call
+        jr      c,.fail_call
+        or      a
+        jr      z,.up_ok
+        ld      a,NG_UP_ERR_NETINIT
+        jr      .fail
+
+.up_ok:
+        xor     a
+        ld      (ng_up_reason),a
+        or      a
+        ret
+
+.fail_call:
+        ld      a,NG_UP_ERR_CALL
+.fail:
+        ld      (ng_up_reason),a
+        scf
+        ret
+
+; ---------------------------------------------------------------------------
+; Hotkey 'N' (resident_s1.asm main_loop): run the full bring-up and draw a
+; compact status line -- high byte=ng_backend, low byte=ng_up_reason (0=
+; success; NG_UP_ERR_* otherwise). Placed at the STATUS band's own row
+; (render_layout.json: "connection text left"), so it lands where the
+; eventual UI would show it. Own DI/WIN3 bracket and glyph_dest_base save/
+; restore (bench_s2.asm's draw_bench_result pattern): safe to call from the
+; hotkey dispatch regardless of which buffer is currently displayed.
+;
+; l_load only ever transiently maps WIN1 to the DLL for the duration of
+; each individual dispatch inside ng_call (self-modified restore in
+; corecall, extern/libman/libman/libman_core13.asm) -- by the time this
+; routine (and its caller, main_loop, both WIN1-half) runs again, WIN1 is
+; back to holding this resident image, not the DLL.
+NET_STATUS_X EQU PANEL_X
+NET_STATUS_Y EQU STATUS_Y
+
+net_up_probe:
+        call    ng_up                   ; unconditional: the network stack
+                                         ; does not depend on the asset page
+                                         ; -- only the status draw below does
+
+        ld      a,(bench_asset_page)
+        cp      #FF
+        jp      z,draw_no_assets_marker
+
+        call    resolve_buffers
+        ld      hl,(front_base)
+        ld      (glyph_dest_base),hl
+        di
+        in      a,(WIN3_PORT)
+        ld      (.saved_win3),a
+        ld      a,VRAM_ALIAS_OPAQUE
+        out     (WIN3_PORT),a
+
+        ld      hl,(front_base)
+        ld      de,net_up_label
+        ld      ix,NET_STATUS_X
+        ld      c,NET_STATUS_Y
+        ld      a,1                     ; bg=0, fg=1 (white on black)
+        call    text_print
+
+        ld      a,(ng_backend)
+        ld      d,a
+        ld      a,(ng_up_reason)
+        ld      e,a
+        ld      ix,NET_STATUS_X+48
+        ld      c,NET_STATUS_Y
+        call    draw_hex16
+
+        ; l_load diagnostics (LIBMAN.l_reason/l_dss_error): 0000 whenever
+        ; ng_up_reason isn't NG_UP_ERR_LOAD (LR_NONE/no DSS error), the
+        ; real detail when it is -- the one S3 failure mode this stand
+        ; could otherwise only explain by attaching a debugger (a missing/
+        ; misnamed DLL next to SHATRANJ.EXE, or a DSS APPINFO/OPEN error).
+        ld      a,(LIBMAN.l_reason)
+        ld      d,a
+        ld      a,(LIBMAN.l_dss_error)
+        ld      e,a
+        ld      ix,NET_STATUS_X+96
+        ld      c,NET_STATUS_Y
+        call    draw_hex16
+
+        ld      a,#C0
+        out     (PORT_Y),a
+        ld      a,(.saved_win3)
+        out     (WIN3_PORT),a
+        ei
+        jp      restore_glyph_base
+.saved_win3: DB 0
+
+net_up_label: DB "NET",0
+
+; ---------------------------------------------------------------------------
+; Session wrappers. Channel is always 0 (this stand drives one connection).
+; ---------------------------------------------------------------------------
+
+; Copy an ASCIIZ string (HL) into DE, at most BC-1 chars plus NUL. CF=1 if
+; the source had to be truncated (ran out of room before its own NUL).
+; Clobbers AF, HL, DE, BC.
+ng_copy_asciiz:
+        ld      a,b
+        or      c
+        jr      z,.overflow
+.loop:
+        ld      a,(hl)
+        ld      (de),a
+        or      a
+        jr      z,.done
+        inc     hl
+        inc     de
+        dec     bc
+        ld      a,b
+        or      c
+        jr      nz,.loop
+        dec     de
+        xor     a
+        ld      (de),a
+.overflow:
+        scf
+        ret
+.done:
+        or      a
+        ret
+
+; ng_connect: HL=host ASCIIZ (<=128B), DE=port ASCIIZ (<=15B).
+; Out: A=status, CF=1 on dispatcher failure or an oversized argument
+; (NERR_PARAM, checked before ever reaching l_call).
+ng_connect:
+        push    de
+        ld      de,ng_buf_host
+        ld      bc,NG_HOST_CAPACITY
+        call    ng_copy_asciiz
+        jr      c,.overflow_pop
+
+        pop     hl
+        ld      de,ng_buf_port
+        ld      bc,NG_PORT_CAPACITY
+        call    ng_copy_asciiz
+        jr      c,.overflow
+
+        xor     a                       ; channel 0
+        ld      de,ng_buf_host
+        ld      ix,ng_buf_port
+        ld      b,UNET_FN_CONNECT
+        jp      ng_call
+
+.overflow_pop:
+        pop     hl
+.overflow:
+        ld      a,NERR_PARAM
+        scf
+        ret
+
+; ng_send: HL=source, B=length (1..NG_TX_CAPACITY).
+; Out: A=status, DE=bytes sent, CF=1 on dispatcher failure or an oversized
+; length (NERR_PARAM, checked before ever reaching l_call).
+ng_send:
+        ld      a,b
+        or      a
+        jr      z,.bad_len
+        cp      NG_TX_CAPACITY+1
+        jr      nc,.bad_len
+
+        push    bc
+        ld      c,a
+        ld      b,0
+        ld      de,ng_buf_tx
+        ldir
+        pop     bc
+
+        ld      ix,0
+        ld      ixl,b
+        xor     a                       ; channel 0
+        ld      de,ng_buf_tx
+        ld      b,UNET_FN_SEND
+        jp      ng_call
+
+.bad_len:
+        ld      a,NERR_PARAM
+        scf
+        ret
+
+; ng_recv: IY=timeout_ms (caller-preloaded; IY=0 polls without blocking).
+; Received bytes land in ng_buf_rx (not returned by pointer -- the caller
+; reads ng_buf_rx directly, same staging-buffer discipline as everywhere
+; else in this file).
+; Out: A=status, DE=bytes received, IX=flags (RXF_* bits), CF=1 on
+; dispatcher failure.
+ng_recv:
+        xor     a                       ; channel 0
+        ld      de,ng_buf_rx
+        ld      ix,NG_RX_CAPACITY
+        ld      b,UNET_FN_RECV
+        jp      ng_call
+
+; ng_close -> A=status, CF=1 on dispatcher failure. Idempotent (unet.inc).
+ng_close:
+        xor     a                       ; channel 0
+        ld      b,UNET_FN_CLOSE
+        jp      ng_call
+
+; ng_lasterr_fetch: copies the tail of the DLL's last AT/driver response
+; into ng_buf_lasterr (NUL-terminated). Out: A=status, CF=1 on dispatcher
+; failure.
+ng_lasterr_fetch:
+        ld      de,ng_buf_lasterr
+        ld      ix,NG_LASTERR_CAPACITY
+        ld      b,UNET_FN_LASTERR
+        jp      ng_call
+
+; Best-effort CLOSE -> NETDONE -> l_free (R11 exit discipline). A no-op if
+; ng_up never got far enough to load a library. Must run under EI (ng_call
+; requires it); call before im2_uninstall so the frame ISR chain is still
+; live for canary_check's use inside ng_call.
+ng_shutdown:
+        ld      a,(ng_loaded)
+        or      a
+        ret     z
+
+        xor     a                       ; channel 0
+        ld      b,UNET_FN_CLOSE
+        call    ng_call
+
+        ld      b,UNET_FN_NETDONE
+        call    ng_call
+
+        ld      hl,(ng_handle)
+        call    LIBMAN.l_free
+
+        xor     a
+        ld      (ng_loaded),a
+        ret
+
+; ---------------------------------------------------------------------------
+; State (WIN2-resident; tools/check_sprinter_net_sections.py pins the ng_
+; prefix to [#8000,#C000)).
+; ---------------------------------------------------------------------------
+ng_v_depth:      DB 0
+ng_v_last_cf:    DB 0
+ng_v_last_nerr:  DB 0
+
+ng_backend:      DB NG_BACKEND_NONE
+ng_handle:       DW 0
+ng_loaded:       DB 0
+ng_up_reason:    DB 0
+
+ng_env_name_net: DB "NET",0
+ng_value_wifi:   DB "WIFI",0
+ng_value_rtl:    DB "RTL",0
+ng_dll_name_esp: DB "UNETESP.DLL",0
+ng_dll_name_rtl: DB "UNETRTL.DLL",0
+ng_info_tag_esp: DB "UNETESP",0
+ng_info_tag_rtl: DB "UNETRTL",0
+
+ng_buf_host:    DS NG_HOST_CAPACITY,0
+ng_buf_port:    DS NG_PORT_CAPACITY,0
+ng_buf_tx:      DS NG_TX_CAPACITY,0
+ng_buf_rx:      DS NG_RX_CAPACITY,0
+ng_buf_lasterr: DS NG_LASTERR_CAPACITY,0
+ng_buf_info:    DS NG_INFO_CAPACITY,0
+ng_buf_env:     DS NG_ENV_CAPACITY,0
+
+        ENDIF
