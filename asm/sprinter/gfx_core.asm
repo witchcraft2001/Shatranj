@@ -333,7 +333,18 @@ gfx_hline:
 ; the same pattern gfx640.asm itself uses for its prefetched tile state).
 ; Set every field, then CALL gfx_draw_tile.
 tile_dest_base: DW 0    ; #C000 (buf0) or #C140 (buf1)
-tile_x_byte:    DB 0    ; destination byte-column offset (0..)
+tile_x_byte:    DB 0    ; destination byte-column offset, low byte
+tile_x_hi:      DB 0    ; destination byte-column offset, high byte (S4:
+                         ; tile_x_byte alone caps the column at 255, half
+                         ; the 320-byte row -- nothing could be drawn in
+                         ; the right-hand half of the screen. The S4
+                         ; banner's logo lands at byte 230 and would have
+                         ; fitted, but the parameter block is now a full
+                         ; 16-bit column and t_draw_tile pins the >=256
+                         ; case. Callers that predate S4 never write this
+                         ; cell and rely on its 0 default; anything that
+                         ; sets it must set it on EVERY call, since it is
+                         ; sticky module state like the rest of the block.
 tile_y:         DB 0    ; destination starting row (0..255, leave room for rows)
 tile_src_page:  DB 0    ; WIN0 physical page number of the source asset page
 tile_src_slot:  DB 0    ; source slot (slot*256 = byte offset within the page)
@@ -375,7 +386,8 @@ gfx_draw_tile:
         ld      hl,(tile_dest_base)
         ld      a,(tile_x_byte)
         ld      e,a
-        ld      d,0
+        ld      a,(tile_x_hi)
+        ld      d,a
         add     hl,de
         ex      de,hl                   ; DE = dest column address (constant)
 
@@ -428,8 +440,8 @@ gfx_draw_tile:
 ; costs. Measured on MAME 2026-08-09: 0.304 us/byte at 192-byte blocks
 ; against 1.024 us/byte at 24-byte blocks.
 ;
-; HL=source address; tile_dest_base/tile_x_byte/tile_y/tile_stride/
-; tile_width/tile_rows/tile_alias as for gfx_draw_tile.
+; HL=source address; tile_dest_base/tile_x_byte/tile_x_hi/tile_y/
+; tile_stride/tile_width/tile_rows/tile_alias as for gfx_draw_tile.
 ; Clobbers AF, BC, DE, HL.
 gfx_blit_rows:
         ld      (.src),hl
@@ -449,7 +461,8 @@ gfx_blit_rows:
         ld      hl,(tile_dest_base)
         ld      a,(tile_x_byte)
         ld      e,a
-        ld      d,0
+        ld      a,(tile_x_hi)
+        ld      d,a
         add     hl,de
         ex      de,hl                   ; DE = dest column (constant)
         ld      hl,(.src)

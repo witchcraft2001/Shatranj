@@ -136,6 +136,67 @@ class SprinterAssetsPageTests(unittest.TestCase):
             msap.build_assets_page(font, None),
         )
 
+    def test_theme_lands_at_slot_27_and_is_deterministic(self) -> None:
+        font = FONT_BIN.read_bytes()
+        theme = bytes((i * 3) & 0xFF for i in range(84))
+        page = msap.build_assets_page(font, theme_bin=theme)
+        start = msap.THEME_SLOT * msap.SLOT_SIZE
+        self.assertEqual(page[start:start + len(theme)], theme)
+        # Padding to the end of the theme slot must be zero, not garbage.
+        pad_start = start + len(theme)
+        pad_end = start + msap.THEME_MAX_SIZE
+        self.assertEqual(page[pad_start:pad_end], bytes(pad_end - pad_start))
+        self.assertEqual(
+            msap.build_assets_page(font, theme_bin=theme),
+            msap.build_assets_page(font, theme_bin=theme),
+        )
+
+    def test_theme_bin_size_guard(self) -> None:
+        font = FONT_BIN.read_bytes()
+        with self.assertRaises(SystemExit):
+            msap.build_assets_page(font, theme_bin=b"\x00" * (msap.THEME_MAX_SIZE + 1))
+
+    def test_theme_omitted_is_backward_compatible(self) -> None:
+        font = FONT_BIN.read_bytes()
+        self.assertEqual(
+            msap.build_assets_page(font),
+            msap.build_assets_page(font, theme_bin=None),
+        )
+
+    def test_theme_does_not_collide_with_tile_a(self) -> None:
+        self.assertLessEqual(msap.THEME_SLOT + msap.THEME_SLOTS, msap.TILE_A_SLOT)
+
+    def test_ui_assets_land_at_slot_44_and_are_deterministic(self) -> None:
+        font = FONT_BIN.read_bytes()
+        ui_bin = bytes((i * 11) & 0xFF for i in range(msap.UI_ASSETS_MAX_SIZE))
+        page = msap.build_assets_page(font, ui_bin=ui_bin)
+        start = msap.UI_ASSETS_SLOT * msap.SLOT_SIZE
+        self.assertEqual(page[start:start + len(ui_bin)], ui_bin)
+        self.assertEqual(
+            msap.build_assets_page(font, ui_bin=ui_bin),
+            msap.build_assets_page(font, ui_bin=ui_bin),
+        )
+
+    def test_ui_bin_size_guard(self) -> None:
+        font = FONT_BIN.read_bytes()
+        with self.assertRaises(SystemExit):
+            msap.build_assets_page(font, ui_bin=b"\x00" * (msap.UI_ASSETS_MAX_SIZE - 1))
+        with self.assertRaises(SystemExit):
+            msap.build_assets_page(font, ui_bin=b"\x00" * (msap.UI_ASSETS_MAX_SIZE + 1))
+
+    def test_ui_bin_omitted_is_backward_compatible(self) -> None:
+        font = FONT_BIN.read_bytes()
+        self.assertEqual(
+            msap.build_assets_page(font),
+            msap.build_assets_page(font, ui_bin=None),
+        )
+
+    def test_ui_assets_start_immediately_after_the_overlay(self) -> None:
+        self.assertEqual(msap.UI_ASSETS_SLOT, msap.OVERLAY_SLOT + msap.OVERLAY_SLOTS)
+
+    def test_ui_assets_fill_the_page_to_its_end(self) -> None:
+        self.assertEqual(msap.UI_ASSETS_SLOT + msap.UI_ASSETS_SLOTS, 64)
+
 
 if __name__ == "__main__":
     unittest.main()

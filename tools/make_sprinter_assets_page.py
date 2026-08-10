@@ -11,7 +11,8 @@ byte offset within the page).
 
 Slot layout (asm/sprinter/bench_s2.asm's ASSET_* EQUs must match):
     0..26   font.bin (6888 bytes, zero-padded to fill slot 26)
-    27      unused (zero)
+    27      theme table (S4, tools/gen_sprinter_palette.py's --theme-bin-out;
+            <=256 bytes, zero-padded; see assets/sprinter/palette.json)
     28      TILE_A: opaque 32x16 checker, colours 2/3 (board squares)
     29      TILE_B: opaque 32x16 checker, colours 4/5 (white piece body/outline)
     30      TILE_KEY: 32x16 diamond, colour 8 on a #FF hardware-key background
@@ -23,7 +24,10 @@ Slot layout (asm/sprinter/bench_s2.asm's ASSET_* EQUs must match):
     36..43  dummy overlay (S3, asm/sprinter/dummy_overlay.asm): exactly
             2048 bytes, copied at runtime by ovl_s3.asm's ovl_exec via
             win0_map_di/LDIR/win0_restore into OVL_SLOT (#7800)
-    44..63  unused (zero)
+    44..63  UI assets (S4, tools/build_sprinter_ui_assets.py's
+            --ui-bin -- Sprinter logo + point markers, hardware-keyed;
+            exact slot span depends on the logo's committed width, see
+            that tool's own manifest); zero-padded if omitted
 
 Tiles are generated in code, not stored as binary fixtures, so the page is
 reproducible from this file plus the pinned extern/sprinter-libs font.bin
@@ -42,6 +46,14 @@ SLOT_SIZE = 256
 FONT_BIN_SIZE = 6888
 FONT_SLOT_BASE = 0
 FONT_SLOT_COUNT = -(-FONT_BIN_SIZE // SLOT_SIZE)  # ceil division = 27
+
+THEME_SLOT = 27
+THEME_SLOTS = 1
+THEME_MAX_SIZE = THEME_SLOTS * SLOT_SIZE
+
+UI_ASSETS_SLOT = 44
+UI_ASSETS_SLOTS = 20  # slots 44..63, the rest of the page
+UI_ASSETS_MAX_SIZE = UI_ASSETS_SLOTS * SLOT_SIZE
 
 TILE_A_SLOT = 28
 TILE_B_SLOT = 29
@@ -102,12 +114,20 @@ def _key_tile(color_inside: int, w_px: int, h_px: int, stride: int) -> bytes:
     return data
 
 
-def build_assets_page(font_bin: bytes, overlay_bin: bytes | None = None) -> bytes:
+def build_assets_page(font_bin: bytes, overlay_bin: bytes | None = None,
+                       theme_bin: bytes | None = None,
+                       ui_bin: bytes | None = None) -> bytes:
     if len(font_bin) != FONT_BIN_SIZE:
         fail(f"font.bin is {len(font_bin)} bytes, expected {FONT_BIN_SIZE}")
     if overlay_bin is not None and len(overlay_bin) != OVERLAY_SIZE:
         fail(f"overlay-bin is {len(overlay_bin)} bytes, expected "
              f"{OVERLAY_SIZE} (the fixed OVL_SLOT size)")
+    if theme_bin is not None and len(theme_bin) > THEME_MAX_SIZE:
+        fail(f"theme-bin is {len(theme_bin)} bytes, exceeds {THEME_MAX_SIZE} "
+             f"({THEME_SLOTS} slot(s))")
+    if ui_bin is not None and len(ui_bin) != UI_ASSETS_MAX_SIZE:
+        fail(f"ui-bin is {len(ui_bin)} bytes, expected exactly "
+             f"{UI_ASSETS_MAX_SIZE} ({UI_ASSETS_SLOTS} slot(s))")
 
     page = bytearray(PAGE_SIZE)
     page[0:len(font_bin)] = font_bin
@@ -120,6 +140,10 @@ def build_assets_page(font_bin: bytes, overlay_bin: bytes | None = None) -> byte
                  f"{expected_slots} slot(s) ({span} bytes)")
         page[offset:offset + len(data)] = data
 
+    if theme_bin is not None:
+        place(THEME_SLOT, theme_bin, THEME_SLOTS)
+    if ui_bin is not None:
+        place(UI_ASSETS_SLOT, ui_bin, UI_ASSETS_SLOTS)
     place(TILE_A_SLOT, _checker_tile(2, 3, TILE32_W, TILE32_H, TILE32_STRIDE), 1)
     place(TILE_B_SLOT, _checker_tile(4, 5, TILE32_W, TILE32_H, TILE32_STRIDE), 1)
     place(TILE_KEY_SLOT, _key_tile(8, TILE32_W, TILE32_H, TILE32_STRIDE), 1)
@@ -141,6 +165,12 @@ def main() -> int:
     parser.add_argument("--overlay-bin", type=Path,
                         help="S3 dummy overlay (asm/sprinter/dummy_overlay.asm "
                              "build product); omit to leave slots 36-43 zero")
+    parser.add_argument("--theme-bin", type=Path,
+                        help="S4 theme table (tools/gen_sprinter_palette.py's "
+                             "--theme-bin-out); omit to leave slot 27 zero")
+    parser.add_argument("--ui-bin", type=Path,
+                        help="S4 UI assets (tools/build_sprinter_ui_assets.py's "
+                             "--output); omit to leave slots 44-63 zero")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -154,7 +184,19 @@ def main() -> int:
             fail(f"missing overlay-bin: {args.overlay_bin}")
         overlay_bin = args.overlay_bin.read_bytes()
 
-    page = build_assets_page(args.font_bin.read_bytes(), overlay_bin)
+    theme_bin = None
+    if args.theme_bin is not None:
+        if not args.theme_bin.is_file():
+            fail(f"missing theme-bin: {args.theme_bin}")
+        theme_bin = args.theme_bin.read_bytes()
+
+    ui_bin = None
+    if args.ui_bin is not None:
+        if not args.ui_bin.is_file():
+            fail(f"missing ui-bin: {args.ui_bin}")
+        ui_bin = args.ui_bin.read_bytes()
+
+    page = build_assets_page(args.font_bin.read_bytes(), overlay_bin, theme_bin, ui_bin)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(page)
     digest = hashlib.sha256(page).hexdigest()

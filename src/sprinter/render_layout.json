@@ -5,7 +5,7 @@
     "bands": [
         {"name": "BANNER", "y": 0, "h": 16, "desc": "Title/version banner, right-aligned Sprinter logo (hardware-transparent asset)."},
         {"name": "MENU", "y": 16, "h": 12, "desc": "Menu tab row: FILE DISCONNECT RESET FLIP THEME ABOUT."},
-        {"name": "MOVE", "y": 28, "h": 12, "desc": "Current move/timer line."},
+        {"name": "MOVE", "y": 28, "h": 12, "desc": "Right (panel column, under the logo): current move + game/turn timers, as on ZX. Left (over the board): the a-h file letters."},
         {"name": "MAIN", "y": 40, "h": 192, "desc": "Board (left) and info panel (right), side by side."},
         {"name": "STATUS", "y": 232, "h": 12, "desc": "Status bar: connection text left, RTC HH:MM right."},
         {"name": "INPUT", "y": 244, "h": 12, "desc": "Input line: movement/chat/host:port entry, cursor."}
@@ -16,7 +16,7 @@
         "rows": 8,
         "cell_w": 48,
         "cell_h": 24,
-        "desc": "8x8 board, 48x24 px/cell; a-h/1-8 coordinate glyphs render in the edge cells."
+        "desc": "8x8 board, 48x24 px/cell; a-h/1-8 coordinate glyphs render OUTSIDE the playfield as on ZX -- a-h in the MOVE band above it, 1-8 in the margin between the screen edge and x."
     },
     "panel": {
         "x": 408,

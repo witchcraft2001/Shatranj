@@ -42,6 +42,17 @@ python3 "$repo_root/tools/gen_sprinter_render_layout.py" \
   --inc-out "$generated_dir/render_layout.inc" \
   --h-out "$generated_dir/render_layout.h" >/dev/null
 
+python3 "$repo_root/tools/gen_sprinter_palette.py" \
+  --palette "$repo_root/assets/sprinter/palette.json" \
+  --inc-out "$generated_dir/palette_base.inc" \
+  --theme-bin-out "$build_dir/theme_table.bin" >/dev/null
+
+# scene_s4.asm's banner. Same generator the Makefile's
+# $(SPRINTER_VERSION_INC) rule uses -- the template must not exist twice.
+python3 "$repo_root/tools/gen_sprinter_version.py" \
+  --version-file "$repo_root/VERSION" \
+  --inc-out "$generated_dir/sprinter_version.inc" >/dev/null
+
 byte_at() { dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }
 
 fail=0

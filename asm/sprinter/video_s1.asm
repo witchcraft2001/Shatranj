@@ -24,39 +24,24 @@ STRIPE_BYTES EQU 20             ; 320 bytes / 16 stripes = 20 bytes/stripe
 
 ; --- palette -----------------------------------------------------------
 
-; 16 RGB8 triples, a conventional EGA-like ramp (index 0 = black is the
-; grid/counter background; DSS_VMOD_G640's own colour-16 semantics are
-; documented in port.md section 3.5).
-palette_rgb:
-        DB 0x00,0x00,0x00        ; 0 black
-        DB 0x00,0x00,0xAA        ; 1 blue
-        DB 0x00,0xAA,0x00        ; 2 green
-        DB 0x00,0xAA,0xAA        ; 3 cyan
-        DB 0xAA,0x00,0x00        ; 4 red
-        DB 0xAA,0x00,0xAA        ; 5 magenta
-        DB 0xAA,0x55,0x00        ; 6 brown
-        DB 0xAA,0xAA,0xAA        ; 7 light gray
-        DB 0x55,0x55,0x55        ; 8 dark gray
-        DB 0x55,0x55,0xFF        ; 9 light blue
-        DB 0x55,0xFF,0x55        ; 10 light green
-        DB 0x55,0xFF,0xFF        ; 11 light cyan
-        DB 0xFF,0x55,0x55        ; 12 light red
-        DB 0xFF,0x55,0xFF        ; 13 light magenta
-        DB 0xFF,0xFF,0x55        ; 14 yellow
-        DB 0xFF,0xFF,0xFF        ; 15 white
+; 16 RGB8 triples, generated from assets/sprinter/palette.json (S4, port.md
+; section 3.5): the port's semantic palette (0 bg, 1 text, 2/3 board square
+; -- the theme surface, 4-7 piece body/outline, 8-13 HUD, 14 accent, 15 a
+; plain colour -- see tools/gen_sprinter_palette.py's docstring for why 15
+; is not a transparency reservation). Replaces the earlier ad-hoc EGA ramp;
+; the S1 stand's own grid/stripes now render in these colours too.
+        INCLUDE "palette_base.inc"
 
-; Writes all 16 entries to both palette banks (R10: SetVMod for screen 1
-; then 0 is the loader's job; the palette itself must still land in both
-; banks or one screen shows stale colours). WIN3 already carries VRAM at
-; this point in video_init's caller; no DI needed for palette I/O itself
-; (WIN3, not WIN0), but the caller's DI/WIN3-mapping wraps this anyway
-; alongside the grid draw for a single atomic setup pass.
-write_palette:
-        ld      hl,palette_rgb
-        ld      b,0
-.next:  ld      a,b
+; Writes one palette entry (A=index 0..15, HL->3 RGB8 bytes) to both
+; palette banks. Factored out of write_palette's loop body so scene_s4.asm
+; can repaint just the theme-surface indices (2/3) on a theme switch
+; without re-touching the other 14 -- zero tile traffic, per port.md
+; section 3.5. Same op sequence and bank addresses as before; caller must
+; already have WIN3 mapped to VRAM (matches write_palette's contract).
+; Clobbers AF, DE, HL (HL left one past the 3 source bytes, matching the
+; loop below's own advance).
+write_palette_entry:
         out     (PORT_Y),a
-        push    bc
         push    hl
         ld      de,#C3E0
         ld      a,(hl)
@@ -91,7 +76,19 @@ write_palette:
         pop     hl
         ld      de,3
         add     hl,de
-        pop     bc
+        ret
+
+; Writes all 16 entries to both palette banks (R10: SetVMod for screen 1
+; then 0 is the loader's job; the palette itself must still land in both
+; banks or one screen shows stale colours). WIN3 already carries VRAM at
+; this point in video_init's caller; no DI needed for palette I/O itself
+; (WIN3, not WIN0), but the caller's DI/WIN3-mapping wraps this anyway
+; alongside the grid draw for a single atomic setup pass.
+write_palette:
+        ld      hl,palette_rgb
+        ld      b,0
+.next:  ld      a,b
+        call    write_palette_entry
         inc     b
         ld      a,b
         cp      STRIPE_COUNT

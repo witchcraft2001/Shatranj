@@ -146,6 +146,90 @@ start:
         ld      a,3
         call    t_expect_z
 
+        ; --- tile_x_hi: destination byte column >= 256. A mode #82 row is
+        ; 320 bytes wide, so tile_x_byte's own 0..255 range cannot address
+        ; the right-hand third of the screen at all (S4 added the high byte
+        ; for the right-aligned banner logo, which then turned out to land
+        ; at byte 230 -- the mechanism still has to work, and only this case
+        ; exercises it). x_byte=28, x_hi=1 -> offset 284, dest #C11C.
+        ; #C01C (what the address would be if tile_x_hi were ignored) must
+        ; stay untouched, proving the high byte is actually added in, not
+        ; just present and unread.
+        ld      a,#a5
+        ld      (#c11c),a
+        ld      (#c01c),a
+        ld      a,#5a
+        ld      (#d200),a               ; slot #d2, row 0 marker
+
+        ld      hl,#c000
+        ld      (tile_dest_base),hl
+        ld      a,28
+        ld      (tile_x_byte),a
+        ld      a,1
+        ld      (tile_x_hi),a
+        ld      a,80
+        ld      (tile_y),a
+        xor     a
+        ld      (tile_src_page),a
+        ld      a,#d2
+        ld      (tile_src_slot),a
+        ld      a,16
+        ld      (tile_width),a
+        ld      (tile_stride),a
+        ld      a,1
+        ld      (tile_rows),a
+        ld      a,VRAM_ALIAS_OPAQUE
+        ld      (tile_alias),a
+        call    gfx_draw_tile
+
+        ld      a,(#c11c)
+        cp      #5a
+        ld      a,4
+        call    t_expect_z
+
+        ld      a,(#c01c)
+        cp      #a5
+        ld      a,5
+        call    t_expect_z
+
+        ; --- gfx_blit_rows reads the same tile_x_hi cell. It is a separate
+        ; copy of the addressing code (no WIN0 remap, RAM source), so a
+        ; fix applied to only one of the two would go unnoticed: x_byte=30,
+        ; x_hi=1 -> offset 286, dest #C11E, with #C01E left untouched.
+        ld      a,#a5
+        ld      (#c11e),a
+        ld      (#c01e),a
+        ld      a,#3c
+        ld      (blit_src_fixture),a
+
+        ld      hl,#c000
+        ld      (tile_dest_base),hl
+        ld      a,30
+        ld      (tile_x_byte),a
+        ld      a,1
+        ld      (tile_x_hi),a
+        ld      a,90
+        ld      (tile_y),a
+        ld      a,16
+        ld      (tile_width),a
+        ld      (tile_stride),a
+        ld      a,1
+        ld      (tile_rows),a
+        ld      a,VRAM_ALIAS_OPAQUE
+        ld      (tile_alias),a
+        ld      hl,blit_src_fixture
+        call    gfx_blit_rows
+
+        ld      a,(#c11e)
+        cp      #3c
+        ld      a,6
+        call    t_expect_z
+
+        ld      a,(#c01e)
+        cp      #a5
+        ld      a,7
+        call    t_expect_z
+
         call    t_end
         halt
 
@@ -160,6 +244,11 @@ tile16_fixture:
         DB #99,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00
         ENDR
         DB #77,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00
+
+; gfx_blit_rows sources from ordinary RAM, so its fixture is a plain byte
+; here rather than a slot-addressed page.
+blit_src_fixture:
+        DB #00
 
 ; Same idea, stride 20: row 19 (the last) carries the #66 marker.
 tile20_fixture:

@@ -903,7 +903,7 @@ endif
 
 .PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image \
         sprinter-hw-zip sprinter-layout-check sprinter-z80-test sprinter-resident-test \
-        sprinter-gates sprinter-section-gate clean-sprinter
+        sprinter-gates sprinter-section-gate sprinter-about clean-sprinter
 
 SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
 SPRINTER_RELEASE_DIR := $(RELEASE_DIR)/Sprinter
@@ -928,24 +928,74 @@ SPRINTER_RENDER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/render_layout.inc
 SPRINTER_RENDER_LAYOUT_H := $(SPRINTER_GENERATED_DIR)/render_layout.h
 SPRINTER_ASSETS_PAGE := $(SPRINTER_BUILD_DIR)/assets_page.bin
 
+SPRINTER_PALETTE_JSON := assets/sprinter/palette.json
+SPRINTER_PALETTE_INC := $(SPRINTER_GENERATED_DIR)/palette_base.inc
+SPRINTER_THEME_BIN := $(SPRINTER_BUILD_DIR)/theme_table.bin
+
+SPRINTER_SELECTED_SETS_JSON := assets/lichess/selected_next_sets.json
+SPRINTER_PIECES_ROOT := assets/sprinter/pieces
+SPRINTER_PIECE_PAGE1 := $(SPRINTER_BUILD_DIR)/piece_page1.bin
+SPRINTER_PIECE_PAGE2 := $(SPRINTER_BUILD_DIR)/piece_page2.bin
+SPRINTER_PIECE_TILES_MANIFEST := $(SPRINTER_BUILD_DIR)/piece_tiles_manifest.json
+SPRINTER_PIECE_PNGS := $(wildcard $(SPRINTER_PIECES_ROOT)/*/*.png)
+# $(wildcard) is expanded once, at parse time: DELETING a piece PNG would
+# simply drop it from the list, leaving the packed pages stale instead of
+# failing loudly. The containing directories are prerequisites too, and a
+# directory's mtime moves whenever a file in it is added or removed -- so a
+# deletion still forces the packer to re-run (and then reject the missing
+# input by name).
+SPRINTER_PIECE_DIRS := $(SPRINTER_PIECES_ROOT) $(sort $(dir $(SPRINTER_PIECE_PNGS)))
+
+SPRINTER_LOGO_PNG := assets/sprinter/logo_sprinter.png
+SPRINTER_MARKER_DOT_PNG := assets/sprinter/markers/dot.png
+SPRINTER_MARKER_RING_PNG := assets/sprinter/markers/ring.png
+SPRINTER_UI_ASSETS_BIN := $(SPRINTER_BUILD_DIR)/ui_assets.bin
+SPRINTER_UI_ASSETS_MANIFEST := $(SPRINTER_BUILD_DIR)/ui_assets_manifest.json
+
+SPRINTER_ABOUT_PNG := assets/sprinter/about.png
+SPRINTER_ABOUT_PALETTE := $(SPRINTER_BUILD_DIR)/about_palette.bin
+SPRINTER_ABOUT_PAGE_PREFIX := $(SPRINTER_BUILD_DIR)/about_page
+
+SPRINTER_VERSION_INC := $(SPRINTER_GENERATED_DIR)/sprinter_version.inc
+
 sprinter-deps-check: tools/check_sprinter_deps.py
 	$(PYTHON) tools/check_sprinter_deps.py
 
 sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py \
                      tests/tools/test_sprinter_assets_page.py tools/make_sprinter_assets_page.py \
+                     tests/tools/test_rasterize_sprinter_pieces.py tools/rasterize_sprinter_pieces.py \
+                     tests/tools/test_sprinter_piece_tiles.py tools/build_sprinter_piece_tiles.py \
+                     tests/tools/test_prepare_sprinter_logo.py tools/prepare_sprinter_logo.py \
+                     tests/tools/test_make_sprinter_markers.py tools/make_sprinter_markers.py \
+                     tests/tools/test_sprinter_ui_assets.py tools/build_sprinter_ui_assets.py \
+                     tests/tools/test_sprinter_about.py tools/make_sprinter_about.py \
+                     tests/tools/test_scene_logo_dims.py $(SPRINTER_ASM_DIR)/scene_s4.asm \
+                     tests/tools/test_sprinter_version.py tools/gen_sprinter_version.py \
                      tools/sprinter_echo_server.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_assets_page.py
+	$(PYTHON) tests/tools/test_rasterize_sprinter_pieces.py
+	$(PYTHON) tests/tools/test_sprinter_piece_tiles.py
+	$(PYTHON) tests/tools/test_prepare_sprinter_logo.py
+	$(PYTHON) tests/tools/test_make_sprinter_markers.py
+	$(PYTHON) tests/tools/test_sprinter_ui_assets.py
+	$(PYTHON) tests/tools/test_sprinter_about.py
+	$(PYTHON) tests/tools/test_scene_logo_dims.py
+	$(PYTHON) tests/tools/test_sprinter_version.py
 	$(PYTHON) tools/sprinter_echo_server.py --self-test
 
 sprinter-layout-check: tools/gen_sprinter_layout.py tests/tools/test_sprinter_layout.py $(SPRINTER_LAYOUT_JSON) \
                        tools/gen_sprinter_render_layout.py tests/tools/test_sprinter_render_layout.py \
-                       $(SPRINTER_RENDER_LAYOUT_JSON)
+                       $(SPRINTER_RENDER_LAYOUT_JSON) \
+                       tools/gen_sprinter_palette.py tests/tools/test_sprinter_palette.py \
+                       $(SPRINTER_PALETTE_JSON)
 	$(PYTHON) tools/gen_sprinter_layout.py --self-test
 	$(PYTHON) tests/tools/test_sprinter_layout.py
 	$(PYTHON) tools/gen_sprinter_render_layout.py --self-test
 	$(PYTHON) tests/tools/test_sprinter_render_layout.py
-	@printf "[OK] sprinter-layout-check: fixed layout + render layout valid\n"
+	$(PYTHON) tools/gen_sprinter_palette.py --self-test
+	$(PYTHON) tests/tools/test_sprinter_palette.py
+	@printf "[OK] sprinter-layout-check: fixed layout + render layout + palette valid\n"
 
 sprinter-gates: tools/check_sprinter_accel.py tools/check_sprinter_win0.py
 	$(PYTHON) tools/check_sprinter_accel.py --self-test
@@ -985,6 +1035,24 @@ $(SPRINTER_RENDER_LAYOUT_H): tools/gen_sprinter_render_layout.py $(SPRINTER_REND
 	$(PYTHON) tools/gen_sprinter_render_layout.py --layout $(SPRINTER_RENDER_LAYOUT_JSON) \
 		--inc-out $(SPRINTER_RENDER_LAYOUT_INC) --h-out $(SPRINTER_RENDER_LAYOUT_H)
 
+$(SPRINTER_PALETTE_INC): tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON) | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_palette.py --palette $(SPRINTER_PALETTE_JSON) \
+		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN)
+
+# Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment above.
+$(SPRINTER_THEME_BIN): tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON) | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_palette.py --palette $(SPRINTER_PALETTE_JSON) \
+		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN)
+
+# VERSION is the single source of truth (CLAUDE.md rule 5: no version
+# literals in code); scene_s4.asm's banner reads sprinter_banner_msg
+# instead of embedding a string of its own. The template lives in the
+# generator, not here: tools/run_sprinter_z80_tests.sh needs the same file
+# in its own private generated dir, and two inline copies would drift.
+$(SPRINTER_VERSION_INC): tools/gen_sprinter_version.py VERSION | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_version.py --version-file VERSION \
+		--inc-out $(SPRINTER_VERSION_INC)
+
 $(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DIR)/dss.inc \
                         $(SPRINTER_ASM_DIR)/manifest.inc $(SPRINTER_ASM_DIR)/hdr.inc \
                         $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
@@ -998,12 +1066,58 @@ $(SPRINTER_DUMMY_OVERLAY_BIN): $(SPRINTER_ASM_DIR)/dummy_overlay.asm $(SPRINTER_
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
 		--raw=$(SPRINTER_DUMMY_OVERLAY_BIN) $(SPRINTER_ASM_DIR)/dummy_overlay.asm
 
+SPRINTER_UI_ASSETS_DEPS := tools/build_sprinter_ui_assets.py $(SPRINTER_PALETTE_JSON) \
+                           $(SPRINTER_LOGO_PNG) $(SPRINTER_MARKER_DOT_PNG) $(SPRINTER_MARKER_RING_PNG)
+
+$(SPRINTER_UI_ASSETS_BIN): $(SPRINTER_UI_ASSETS_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/build_sprinter_ui_assets.py \
+		--logo $(SPRINTER_LOGO_PNG) --marker-dot $(SPRINTER_MARKER_DOT_PNG) \
+		--marker-ring $(SPRINTER_MARKER_RING_PNG) --palette $(SPRINTER_PALETTE_JSON) \
+		--output $(SPRINTER_UI_ASSETS_BIN) --manifest-out $(SPRINTER_UI_ASSETS_MANIFEST)
+
+# Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment above.
+$(SPRINTER_UI_ASSETS_MANIFEST): $(SPRINTER_UI_ASSETS_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/build_sprinter_ui_assets.py \
+		--logo $(SPRINTER_LOGO_PNG) --marker-dot $(SPRINTER_MARKER_DOT_PNG) \
+		--marker-ring $(SPRINTER_MARKER_RING_PNG) --palette $(SPRINTER_PALETTE_JSON) \
+		--output $(SPRINTER_UI_ASSETS_BIN) --manifest-out $(SPRINTER_UI_ASSETS_MANIFEST)
+
 $(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs/afnt640/font.bin \
-                         $(SPRINTER_DUMMY_OVERLAY_BIN) | $(SPRINTER_BUILD_DIR)
+                         $(SPRINTER_DUMMY_OVERLAY_BIN) $(SPRINTER_THEME_BIN) $(SPRINTER_UI_ASSETS_BIN) \
+                         | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_assets_page.py \
 		--font-bin extern/sprinter-libs/afnt640/font.bin \
 		--overlay-bin $(SPRINTER_DUMMY_OVERLAY_BIN) \
+		--theme-bin $(SPRINTER_THEME_BIN) \
+		--ui-bin $(SPRINTER_UI_ASSETS_BIN) \
 		--output $(SPRINTER_ASSETS_PAGE)
+
+SPRINTER_PIECE_TILES_DEPS := tools/build_sprinter_piece_tiles.py $(SPRINTER_PALETTE_JSON) \
+                             $(SPRINTER_SELECTED_SETS_JSON) $(SPRINTER_PIECE_PNGS) \
+                             $(SPRINTER_PIECE_DIRS)
+
+$(SPRINTER_PIECE_PAGE1): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/build_sprinter_piece_tiles.py \
+		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
+		--palette $(SPRINTER_PALETTE_JSON) \
+		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
+
+# Mirror rules, not a grouped "&:" target -- see the fixed_layout.h comment
+# above (macOS ships GNU make 3.81, no grouped-target support).
+$(SPRINTER_PIECE_PAGE2): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/build_sprinter_piece_tiles.py \
+		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
+		--palette $(SPRINTER_PALETTE_JSON) \
+		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
+
+$(SPRINTER_PIECE_TILES_MANIFEST): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/build_sprinter_piece_tiles.py \
+		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
+		--palette $(SPRINTER_PALETTE_JSON) \
+		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
 SPRINTER_RESIDENT_DEPS := $(SPRINTER_ASM_DIR)/resident_s1.asm $(SPRINTER_ASM_DIR)/im2_s1.asm \
                           $(SPRINTER_ASM_DIR)/font_hex.asm $(SPRINTER_ASM_DIR)/video_s1.asm \
@@ -1012,8 +1126,10 @@ SPRINTER_RESIDENT_DEPS := $(SPRINTER_ASM_DIR)/resident_s1.asm $(SPRINTER_ASM_DIR
                           $(SPRINTER_ASM_DIR)/gfx_core.asm $(SPRINTER_ASM_DIR)/text640.asm \
                           $(SPRINTER_ASM_DIR)/bench_s2.asm $(SPRINTER_ASM_DIR)/net_gate.asm \
                           $(SPRINTER_ASM_DIR)/echo_s3.asm $(SPRINTER_ASM_DIR)/ovl_s3.asm \
+                          $(SPRINTER_ASM_DIR)/scene_s4.asm \
                           $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) \
-                          $(SPRINTER_RENDER_LAYOUT_INC)
+                          $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC) \
+                          $(SPRINTER_VERSION_INC)
 
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_RESIDENT_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
@@ -1026,10 +1142,12 @@ $(SPRINTER_RESIDENT_SYM): $(SPRINTER_RESIDENT_DEPS) | $(SPRINTER_BUILD_DIR)
 		--raw=$(SPRINTER_RESIDENT_BIN) --sym=$(SPRINTER_RESIDENT_SYM) $(SPRINTER_ASM_DIR)/resident_s1.asm
 
 $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
+                 $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
 		--resident $(SPRINTER_RESIDENT_BIN) --assets $(SPRINTER_ASSETS_PAGE) \
+		--assets $(SPRINTER_PIECE_PAGE1) --assets $(SPRINTER_PIECE_PAGE2) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -1040,7 +1158,7 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 	$(PYTHON) tests/tools/test_sprinter_resident.py
 
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
-                   $(SPRINTER_RENDER_LAYOUT_INC)
+                   $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC)
 	tools/run_sprinter_z80_tests.sh
 
 sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py
@@ -1052,6 +1170,14 @@ sprinter-hw-zip: exe tools/make_sprinter_hw_zip.py
 	$(PYTHON) tools/make_sprinter_hw_zip.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_HW_ZIP)
+
+# Not part of sprinter-check/exe: the About screen is not embedded in the
+# EXE until S9 (port.md section 4/S4 decision D4). Convenience target only.
+sprinter-about: tools/make_sprinter_about.py $(SPRINTER_ABOUT_PNG)
+	$(PYTHON) tools/make_sprinter_about.py --input $(SPRINTER_ABOUT_PNG) \
+		--palette-out $(SPRINTER_ABOUT_PALETTE) \
+		--pages-out-prefix $(SPRINTER_ABOUT_PAGE_PREFIX) \
+		--preview-out $(SPRINTER_BUILD_DIR)/preview/about_preview.png
 
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-z80-test \

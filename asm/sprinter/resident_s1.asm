@@ -94,6 +94,10 @@ main_loop:
         call    rtc_sample              ; DSS call: EI, canonical windows
         call    echo_tick               ; S3: no-op unless ECHO_STATE_ECHO
 
+        ld      a,(scene_active)
+        or      a
+        jr      nz,.skip_debug_draw     ; S4: the scene owns the screen
+
         di
         in      a,(WIN3_PORT)
         ld      (.saved_win3),a
@@ -112,6 +116,7 @@ main_loop:
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
         ei
+.skip_debug_draw:
 
         ld      c,DSS_SCANKEY
         rst     RST_DSS
@@ -144,6 +149,12 @@ main_loop:
         jr      z,.do_echo_lasterr
         cp      'O'
         jr      z,.do_overlay_probe
+        cp      'B'
+        jr      z,.do_scene_toggle
+        cp      'T'
+        jr      z,.do_scene_theme
+        cp      'S'
+        jr      z,.do_scene_set
         cp      'Q'
         jr      z,.quit
         cp      'q'
@@ -195,6 +206,15 @@ main_loop:
 .do_overlay_probe:
         call    ovl_probe
         jp      main_loop
+.do_scene_toggle:
+        call    scene_toggle
+        jp      main_loop
+.do_scene_theme:
+        call    scene_theme_next
+        jp      main_loop
+.do_scene_set:
+        call    scene_set_next
+        jp      main_loop
 .saved_win3: DB 0
 
 tick_count: DW 0
@@ -205,6 +225,7 @@ tick_count: DW 0
         INCLUDE "text640.asm"
         INCLUDE "bench_s2.asm"
         INCLUDE "ovl_s3.asm"
+        INCLUDE "scene_s4.asm"
 
         ; S3 overlay probe slot (port.md section 3.10/S3): empty in the
         ; static image. ovl_s3.asm copies a packed overlay here at runtime
