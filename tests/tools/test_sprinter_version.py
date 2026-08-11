@@ -36,13 +36,12 @@ class GenSprinterVersionTests(unittest.TestCase):
         self.assertIn("ENDIF", inc)
         self.assertIn('sprinter_banner_msg: DB "SHATRANJ v9.9",0', inc)
 
-    def test_scene_s4_includes_this_file(self) -> None:
-        # If scene_s4.asm ever stops INCLUDEing sprinter_version.inc, the
-        # banner has grown a literal again (rule 5) -- fail here rather
-        # than let the generator become dead weight nobody notices.
-        scene = (ROOT / "asm/sprinter/scene_s4.asm").read_text(encoding="utf-8")
-        self.assertIn('INCLUDE "sprinter_version.inc"', scene)
-        self.assertIn("sprinter_banner_msg", scene)
+    # scene_s4.asm (the S1-S4 stand's banner renderer) was removed in S5
+    # (plan D4, port.md section 3.10): the banner's real home is render.c/
+    # render_core.asm from substep 3 onward, which doesn't exist yet. This
+    # generator has no INCLUDE consumer in the tree for that gap -- a
+    # cross-file "does X still include sprinter_version.inc" check belongs
+    # back here once that file exists again.
 
     def test_deterministic(self) -> None:
         self.assertEqual(gsv.render_inc("1.1"), gsv.render_inc("1.1"))

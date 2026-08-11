@@ -1,5 +1,5 @@
 {
-    "_comment": "Single source of truth for the fixed anchors in the flat Sprinter resident (port.md section 3.1/3.9). tools/gen_sprinter_layout.py turns this into asm/sprinter/generated/fixed_layout.inc and fixed_layout.h. Regions here are only the addresses other code jumps/points to blindly (loader trampoline target, IM2 table/stub, stack/canary bounds); crt0/main/render code floats between TRAMPOLINE and CANARY and is bounded by an ASSERT in resident_s1.asm instead.",
+    "_comment": "Single source of truth for the fixed anchors in the flat Sprinter resident (port.md section 3.1/3.9). tools/gen_sprinter_layout.py turns this into asm/sprinter/generated/fixed_layout.inc and fixed_layout.h. Regions here are addresses other code has to agree on out-of-band instead of through a linker symbol table: loader trampoline target, IM2 table/stub, stack/canary bounds, and (plan D3) the LOWRAM_* buffers src/spectrum/lowram_map.h's NETCHESSZX_SPRINTER branch points ports/overlays at -- resident C and each overlay .c are separate zcc/z80asm link units, same reason RTC_PRESENT is fixed rather than EXTERNed. crt0/main/render code floats between TRAMPOLINE and CANARY and is bounded by an ASSERT in resident_s1.asm instead.",
     "resident_base": "0x4000",
     "win1_end": "0x8000",
     "win2_base": "0x8000",
@@ -19,15 +19,21 @@
         {
             "name": "TRAMPOLINE",
             "addr": "0x4100",
-            "owner": "resident_s1.asm",
-            "desc": "Fixed handoff target the loader JPs to blindly: maps WIN2 from HDR_PAGE2, sets SP=STACK_TOP, JP crt0."
+            "owner": "asm/sprinter/trampoline.asm",
+            "desc": "Fixed handoff target the loader JPs to blindly: validates the HDR magic, maps WIN2 from HDR_PAGE2, sets SP=STACK_TOP, initializes the canary, samples BIOS_CMOS_TEST into rtc_present, then JPs to C_IMAGE_ENTRY (plan D1, port.md section 3.10/S5). Tiny and fixed at this address by construction; ASSERTs in trampoline.asm keep it inside the gap before C_IMAGE_ENTRY."
+        },
+        {
+            "name": "C_IMAGE_ENTRY",
+            "addr": "0x4180",
+            "owner": "asm/sprinter/zcc/resident_crt0.asm",
+            "desc": "Fixed entry point of the z88dk-built resident C image (plan D1): trampoline.asm's last instruction is an unconditional JP here. resident_crt0.asm is built with -pragma-define:CRT_ORG_CODE matching this address. The C image occupies C_IMAGE_ENTRY..WIN1_END (budget ~15.5 KiB) and must not overrun into PSP_LANDING at win2_base -- enforced by the splicer's overlap gate, not by this JSON."
         },
         {
             "name": "OVL_SLOT",
-            "addr": "0x7800",
+            "addr": "0xA800",
             "size": "0x800",
-            "owner": "ovl_s3.asm",
-            "desc": "S3 overlay probe slot (port.md section 3.10/S3): 2 KiB in the WIN1 half, empty in the static image. ovl_s3.asm copies a packed overlay here from the asset page (slot 36) via win0_map_di/LDIR/win0_restore under DI (R1) before dispatching into it."
+            "owner": "asm/sprinter/overlay_loader_sprinter.asm (successor to ovl_s3.asm)",
+            "desc": "Overlay dispatch slot, 2 KiB, top of the WIN2 half (plan D2, moved here from the S3 probe's 0x7800 -- WIN1 addr -- specifically so the z88dk C image gets a contiguous, uninterrupted WIN1 run up to WIN1_END; a WIN2 slot is also never displaced by LIBMAN.l_call's DLL load, which only maps into WIN1). Empty in the static image; the loader copies a packed overlay here at runtime from the asset page via win0_map_di/LDIR/win0_restore under DI (R1)."
         },
         {
             "name": "PSP_LANDING",
@@ -37,11 +43,116 @@
             "desc": "Reserved: the loader LDIRs the DSS-issued PSP here (via WIN1) so AppInfo keeps working once this page is mapped into WIN2 (weather_loader.asm:113-120 pattern). Resident code starts at PSP_LANDING addr+size, not at WIN2_BASE."
         },
         {
+            "name": "LOWRAM_MOVE_LOG",
+            "addr": "0xB000",
+            "size": "0xE0",
+            "owner": "src/spectrum/ui/gui.c, src/spectrum/overlay/gui_log_ovl.c",
+            "desc": "Plan D3 Sprinter branch of NETCHESSZX_LOWRAM_MOVE_LOG_* (src/spectrum/lowram_map.h): move-log ring, same byte count as ZX/Next -- only the address differs. Fills the OVL_SLOT..CANARY gap left after D2 moved OVL_SLOT to 0xA800."
+        },
+        {
+            "name": "LOWRAM_CHAT_LOG",
+            "addr": "0xB0E0",
+            "size": "0xFC",
+            "owner": "src/spectrum/ui/gui.c, src/spectrum/overlay/gui_log_ovl.c",
+            "desc": "NETCHESSZX_LOWRAM_CHAT_LOG_*: chat-log ring."
+        },
+        {
+            "name": "LOWRAM_CLOCK_SAVE",
+            "addr": "0xB1DC",
+            "size": "0x8",
+            "owner": "src/spectrum/ui/gui.c, src/spectrum/overlay/gui_log_ovl.c",
+            "desc": "NETCHESSZX_LOWRAM_CLOCK_SAVE_*: saved wall-clock snapshot."
+        },
+        {
+            "name": "LOWRAM_GAME_TIMER_SAVE",
+            "addr": "0xB1E4",
+            "size": "0x18",
+            "owner": "src/spectrum/ui/gui.c",
+            "desc": "NETCHESSZX_LOWRAM_GAME_TIMER_SAVE_*: saved GAME/TURN clock state."
+        },
+        {
+            "name": "LOWRAM_LOCAL_INPUT",
+            "addr": "0xB1FC",
+            "size": "0x2B",
+            "owner": "src/spectrum/fileui/fileui.c, src/spectrum/app/app.c, src/spectrum/overlay/input_edit_ovl.c",
+            "desc": "NETCHESSZX_LOWRAM_LOCAL_INPUT_*: shared line-edit buffer (INPUT_EDIT(9) overlay + fileui + app)."
+        },
+        {
+            "name": "LOWRAM_INPUT_HISTORY",
+            "addr": "0xB227",
+            "size": "0x40",
+            "owner": "src/spectrum/ui/gui.c, src/spectrum/app/app.c, src/spectrum/overlay/input_edit_ovl.c",
+            "desc": "NETCHESSZX_LOWRAM_INPUT_HISTORY_*: chat/command input history."
+        },
+        {
+            "name": "LOWRAM_STATUS",
+            "addr": "0xB267",
+            "size": "0x26",
+            "owner": "src/spectrum/ui/gui.c",
+            "desc": "NETCHESSZX_LOWRAM_STATUS_*: HUD status text. ZX aliases LAST_IP/MQTT_PRESENCE inside this span to save bytes (48K budget); Sprinter has room, so LOWRAM_LAST_IP and LOWRAM_MQTT_PRESENCE below get their own regions instead of overlapping this one -- same macro names, non-aliased layout."
+        },
+        {
+            "name": "LOWRAM_LAST_IP",
+            "addr": "0xB28D",
+            "size": "0x12",
+            "owner": "src/spectrum/transport/esp_at.c",
+            "desc": "NETCHESSZX_LOWRAM_LAST_IP_*: last-seen peer IP text."
+        },
+        {
+            "name": "LOWRAM_MQTT_PRESENCE",
+            "addr": "0xB29F",
+            "size": "0x10",
+            "owner": "src/spectrum/transport/mqtt_session_wire.c",
+            "desc": "NETCHESSZX_LOWRAM_MQTT_PRESENCE_*: MQTT presence-topic scratch."
+        },
+        {
+            "name": "LOWRAM_CHESS_BOARD",
+            "addr": "0xB2AF",
+            "size": "0x40",
+            "owner": "src/spectrum/ui/gui.c, src/spectrum/board/board.c, src/spectrum/overlay/board_apply_ovl.c",
+            "desc": "NETCHESSZX_LOWRAM_CHESS_BOARD_*: 64-cell display board (BOARD(1) overlay)."
+        },
+        {
+            "name": "LOWRAM_RULES_BOARD",
+            "addr": "0xB2EF",
+            "size": "0x40",
+            "owner": "src/spectrum/board/board.c, src/spectrum/overlay/board_apply_ovl.c, asm/overlay/rules/rules_stub.asm",
+            "desc": "NETCHESSZX_LOWRAM_RULES_BOARD_*: 64-cell rules-engine board (RULES(0) overlay)."
+        },
+        {
+            "name": "LOWRAM_OVERLAY_CONTEXT",
+            "addr": "0xB32F",
+            "size": "0x8",
+            "owner": "src/spectrum/config/setup_menu.h, src/spectrum/overlay/overlay_context.h",
+            "desc": "NETCHESSZX_LOWRAM_OVERLAY_CONTEXT_*: fixed-size overlay call context, ABI-contractual size (8 bytes) -- must not change independently of overlay_context.h."
+        },
+        {
+            "name": "LOWRAM_HINTED_ROWS",
+            "addr": "0xB337",
+            "size": "0x8",
+            "owner": "src/spectrum/config/session.c",
+            "desc": "NETCHESSZX_LOWRAM_HINTED_ROWS_*: legal-move hint bitmap (RULES(0) hints entries)."
+        },
+        {
+            "name": "LOWRAM_OVERLAY_SCRATCH",
+            "addr": "0xB33F",
+            "size": "0xA0",
+            "owner": "src/spectrum/overlay/mqtt_connect_ovl.c",
+            "desc": "NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_*: scratch shared only by the currently loaded overlay. No NETCHESSZX_LOWRAM_UART_RING equivalent here -- that ZX region reclaims the printer buffer for the serial-transport RX ring (asm/uart/), which Sprinter's uNet DLL transport does not use; add it if/when a Sprinter transport actually needs a fixed RX ring."
+        },
+        {
             "name": "CANARY",
             "addr": "0xB900",
             "size": "0x2",
             "owner": "im2_s1.asm",
             "desc": "Stack canary word, written once at crt0 start and checked by canary_check (R4)."
+        },
+        {
+            "name": "RTC_PRESENT",
+            "addr": "0xBD80",
+            "size": "0x1",
+            "owner": "trampoline.asm writes it once, platform_primitives.asm/rtc_sample and C read it",
+            "desc": "Whether BIOS_CMOS_TEST found a clock (plan D4). Fixed-address, not file-local storage: trampoline.asm samples it before platform_primitives.asm's own code has run at all, so both files (and the C image, via gen_sprinter_platform_defs.py) reference this address by the same generated EQU rather than one file EXTERNing a symbol the other owns -- sjasmplus assembles trampoline.asm and platform_primitives.asm as two independent --raw jobs, not one linked program. Sits in the STACK_TOP..IM2_STUB_ADDR reserve gap (port.md section 3.1), which was already unused scratch."
         },
         {
             "name": "STACK",

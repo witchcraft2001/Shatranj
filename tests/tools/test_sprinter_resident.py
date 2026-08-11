@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import gen_sprinter_layout as gsl
 
-RESIDENT_BIN = ROOT / "build/sprinter/resident_s1.bin"
+RESIDENT_BIN = ROOT / "build/sprinter/resident.bin"
 LAYOUT_JSON = ROOT / "src/sprinter/fixed_layout.json"
 
 HDR_PAGE2_OFFSET = 4
@@ -38,7 +38,7 @@ class SprinterResidentTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         if not RESIDENT_BIN.is_file():
             raise unittest.SkipTest(
-                f"{RESIDENT_BIN} missing; run 'make build/sprinter/resident_s1.bin' "
+                f"{RESIDENT_BIN} missing; run 'make build/sprinter/resident.bin' "
                 "or 'make exe' first"
             )
         cls.layout = gsl.load_layout_file(LAYOUT_JSON)

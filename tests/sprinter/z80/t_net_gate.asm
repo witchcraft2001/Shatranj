@@ -64,19 +64,6 @@ NG_TEST_FN_NERR    EQU 4
 HDR: DS 256,0
 svmod_safe: ret
 
-; net_up_probe (hotkey 'N', not exercised by this test -- it only drives
-; ng_call/ng_select_backend directly) references gfx_core.asm/bench_s2.asm/
-; text640.asm symbols that this test does not include. Placeholders satisfy
-; the symbol references.
-bench_asset_page: DB 0
-glyph_dest_base:  DW 0
-front_base:       DW 0
-draw_no_assets_marker: ret
-resolve_buffers:  ret
-text_print:       ret
-draw_hex16:       ret
-restore_glyph_base: ret
-
 start:
         ld      sp,#e800
         call    t_begin

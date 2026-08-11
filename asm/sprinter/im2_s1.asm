@@ -54,9 +54,19 @@ im2_fill_table:
         ret
 
 ; Install IM2 (R6): fill the table, clear frame_flag, point I at the table,
-; switch mode. Must run under DI; caller EIs afterward. Saves the previous
-; I register for im2_uninstall (R11).
+; switch mode. Self-contained DI/EI (2026-08-10, S5 substep 3 crash
+; investigation): originally documented as "must run under DI; caller EIs
+; afterward" with no caller actually doing so -- main.c's plain
+; im2_install() call ran it fully under EI, the only caller there has ever
+; been. The fixed instruction order here (fill the table completely, THEN
+; point I at it, THEN switch mode) happens to make every individual step
+; interrupt-safe on its own, so this was not confirmed as the render_
+; board_full crash's mechanism, but it is a real, verifiable gap between
+; the documented contract and what ran, worth closing outright rather than
+; leaving the single call site to keep getting it wrong by inspection.
+; Saves the previous I register for im2_uninstall (R11).
 im2_install:
+        di
         call    im2_fill_table
         xor     a
         ld      (frame_flag),a
@@ -65,6 +75,7 @@ im2_install:
         ld      a,high IM2_TABLE_ADDR
         ld      i,a
         im      2
+        ei
         ret
 
 ; Restore IM 1 and the previous I register (R11). Must run under DI.
@@ -132,6 +143,112 @@ frame_wait:
         or      a
         ret
 
+; Non-blocking keyboard poll, translating DSS's raw keyboard-buffer output
+; into this port's own semantic key codes (the same convention ZX/Next's
+; spectrum_input_poll_event contract already uses -- src/spectrum/ui/
+; gui.h/gui.c, asm/spectrum/screen.asm: 0x81/0x82/0x83/0x84 = up/down/
+; left/right, 0x8A = CANCEL, 0x08 = backspace, 0x20-0x7E = printable
+; ASCII passthrough), so a future real input handler can share that
+; contract instead of inventing a Sprinter-specific one. The DSS side of
+; this (TESTKEY-peek-then-SCANKEY, and reading D as a positional scan
+; code when A/ascii is 0) recovers the approach the previous, since-
+; restarted Sprinter port attempt already worked out (runtime.asm's
+; sprinter_key_poll, branch sprinter-port commit 59d158e -- CLAUDE.md's
+; "old branch reference-only" applies to that branch's architecture, not
+; to this specific, independently-checkable DSS API fact) -- cross-
+; checked against Estex-DSS's own KEYINTER.ASM XLAT_T table rather than
+; trusted as-is: raw PS/2 Set-2 scancode 0x75 (Up) translates to
+; positional #58, 0x72 (Down) to #52, 0x6B (Left) to #54, 0x74 (Right) to
+; #56 -- exactly the four positional values used below, confirmed against
+; DSS's own scancode-translation table, not just the old branch's say-so.
+;
+; Uses DSS_TESTKEY (non-destructive peek) before DSS_SCANKEY (consumes
+; the queued event) so an empty buffer costs one cheap peek, not a wasted
+; consuming read.
+;
+; Writes the result to key_code, a shared cell rather than a returned
+; register value (same reasoning rtc_sample's rtc_valid/rtc_hour etc use:
+; this port has already shipped one real bug from assuming a z88dk
+; calling/return convention instead of verifying it -- overlay_loader_
+; sprinter.asm's SP+2 argument decode, docs/sprinter-testnotes/S5.md's
+; first MAME run). key_code is a LATCH, not a per-frame snapshot: it is
+; only overwritten when a key press actually translates to a recognised
+; non-zero code, and left untouched on every frame with nothing pending
+; or with an unmapped key -- deliberately, so a human reading the debug
+; echo (render_input_key_echo, render_core.asm) sees the last real key
+; for as long as it takes to read, instead of it reverting to "00" one
+; frame (~20ms) after the keypress, which is unreadable (human tester
+; feedback, 2026-08-11, on the first version of this routine that reset
+; to 0 every frame with nothing newly queued). A real input consumer
+; (later substep-3 work) will need its own poll-and-clear contract on top
+; of this, matching ZX's own _spectrum_input_poll_event -- this cell is
+; not that yet, only a persistent "last key" for visibility. Safe to call
+; while IM2 is installed: the IM2 stub (resident_s1.asm's im2_stub) tail-
+; jumps to DSS's own #0038 handler for anything that is not a frame tick,
+; so DSS's keyboard FIFO keeps filling exactly as it would under DSS's
+; native interrupt mode (port.md's R6). Clobbers AF, BC, DE.
+key_poll:
+        ld      c,DSS_TESTKEY
+        rst     RST_DSS
+        ret     z                       ; nothing queued -- key_code unchanged
+        ld      c,DSS_SCANKEY
+        rst     RST_DSS
+        ld      (.scan_ascii),a
+        ld      a,d
+        and     $7F
+        ld      (.scan_pos),a
+
+        ld      a,(.scan_ascii)
+        or      a
+        jr      z,.positional
+
+        cp      $1B                     ; ESC
+        jr      z,.cancel
+        cp      8                       ; backspace
+        jr      z,.store
+        cp      $0D                     ; enter/CR
+        jr      z,.store
+        cp      $7F                     ; delete -> backspace
+        jr      z,.backspace
+        cp      $20
+        jr      c,.none                 ; control code, not handled
+        cp      $7F
+        jr      nc,.none                ; > printable range
+        jr      .store                  ; 0x20-0x7E: printable ASCII
+
+.positional:
+        ld      a,(.scan_pos)
+        cp      $58
+        jr      z,.up
+        cp      $52
+        jr      z,.down
+        cp      $54
+        jr      z,.left
+        cp      $56
+        jr      z,.right
+        jr      .none
+
+.cancel:     ld      a,$8A
+             jr      .store
+.backspace:  ld      a,8
+             jr      .store
+.up:         ld      a,$81
+             jr      .store
+.down:       ld      a,$82
+             jr      .store
+.left:       ld      a,$83
+             jr      .store
+.right:      ld      a,$84
+             jr      .store
+.store:
+        ld      (key_code),a
+.none:
+        ret
+.scan_ascii: DB 0
+.scan_pos:   DB 0
+
+key_code: DB 0
+
 ; R11 exit discipline: network torn down first (ng_shutdown needs EI and
 ; WIN1 still resident -- S3), then IM2 uninstalled (so no stray interrupt
 ; lands mid-transition), video mode/screen restored from HDR, PORT_Y
@@ -140,9 +257,9 @@ exit_stand:
         call    ng_shutdown
         di
         call    im2_uninstall
-        ld      a,(HDR+HDR_SAVED_SCREEN_OFFSET)
+        ld      a,(HDR_ADDR+HDR_SAVED_SCREEN_OFFSET)
         ld      b,a
-        ld      a,(HDR+HDR_SAVED_MODE_OFFSET)
+        ld      a,(HDR_ADDR+HDR_SAVED_MODE_OFFSET)
         call    svmod_safe              ; WIN2-half wrapper (SetVMod clobbers
                                          ; the WIN1 mapping; this code is
                                          ; WIN1-half -- see resident_s1.asm)

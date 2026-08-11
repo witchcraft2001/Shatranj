@@ -408,6 +408,11 @@ def main() -> int:
     parser.add_argument("--h-out", type=Path)
     parser.add_argument("--check", action="store_true",
                         help="validate only, do not write output files")
+    parser.add_argument("--print-symbol", metavar="NAME",
+                        help="print one computed symbol's value (e.g. "
+                             "C_IMAGE_ENTRY_ADDR) as 0xHHHH and exit; lets "
+                             "Makefile recipes stay in sync with the JSON "
+                             "without hand-duplicating an address")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
@@ -422,6 +427,13 @@ def main() -> int:
         for error in errors:
             print(f"  {error}")
         return 1
+
+    if args.print_symbol:
+        symbols = compute_symbols(layout)
+        if args.print_symbol not in symbols:
+            raise SystemExit(f"gen_sprinter_layout: unknown symbol {args.print_symbol!r}")
+        print(f"0x{symbols[args.print_symbol]:04X}")
+        return 0
 
     if args.check:
         print(f"[OK] {args.layout}: fixed-layout invariants hold")

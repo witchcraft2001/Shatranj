@@ -123,9 +123,16 @@ class SprinterAssetsPageTests(unittest.TestCase):
         )
 
     def test_overlay_bin_size_guard(self) -> None:
+        # Real overlay content (e.g. build/sprinter/overlay_control_sprinter.bin,
+        # S5 substep 2) varies in size and is smaller than the fixed 2 KiB
+        # OVL_SLOT -- shorter is fine and zero-padded (ovl_copy_slot always
+        # LDIRs exactly OVERLAY_SIZE bytes regardless of how much of that
+        # span is "real"); only exceeding the slot is an error.
         font = FONT_BIN.read_bytes()
-        with self.assertRaises(SystemExit):
-            msap.build_assets_page(font, b"\x00" * (msap.OVERLAY_SIZE - 1))
+        page = msap.build_assets_page(font, b"\xAA" * (msap.OVERLAY_SIZE - 1))
+        offset = msap.OVERLAY_SLOT * msap.SLOT_SIZE
+        self.assertEqual(page[offset:offset + msap.OVERLAY_SIZE - 1], b"\xAA" * (msap.OVERLAY_SIZE - 1))
+        self.assertEqual(page[offset + msap.OVERLAY_SIZE - 1], 0)
         with self.assertRaises(SystemExit):
             msap.build_assets_page(font, b"\x00" * (msap.OVERLAY_SIZE + 1))
 

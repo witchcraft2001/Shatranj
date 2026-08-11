@@ -5,11 +5,12 @@ During any blocking libman l_call, WIN1 is occupied by the loaded DLL AND
 interrupts are enabled (the RTL backend re-enables EI internally; entering
 l_call with EI is required -- ftpclient's precedent). Anything that must
 survive such a call -- the frame-tick ISR state, net_gate's own state, the
-echo client's state, the overlay dispatch context -- must therefore live in
-the WIN2 half ([#8000,#C000)), which stays mapped throughout. This gate reads
-the sjasmplus --sym output of the assembled resident and checks that split
-statically, so a symbol drifting back into WIN1 fails the build instead of
-corrupting a loaded DLL's image at runtime the next time someone touches it.
+overlay dispatch context -- must therefore live in the WIN2 half
+([#8000,#C000)), which stays mapped throughout. This gate reads the
+sjasmplus --sym output of the assembled platform primitives blob and checks
+that split statically, so a symbol drifting back into WIN1 fails the build
+instead of corrupting a loaded DLL's image at runtime the next time someone
+touches it.
 
 libman itself (extern/libman, pinned) is placed in the WIN2 half too (no
 LIBMAN_WIN0), except LIBMAN.ll_path, which is `EQU 0xC000` by design (a
@@ -43,20 +44,20 @@ WIN2_HIGH = 0xC000  # exclusive
 LIBMAN_PREFIX = "LIBMAN."
 LIBMAN_ALLOWLIST = {"LIBMAN.ll_path"}
 
-WIN2_REQUIRED_PREFIXES = ("ng_", "echo_", "ovl_ctx")
+WIN2_REQUIRED_PREFIXES = ("ng_", "ovl_ctx")
 WIN2_REQUIRED_EXACT = ("frame_flag", "im2_saved_i")
 
-# Grows with each S3 step as the corresponding module is wired in (port.md
-# section 5 sequencing): frame_flag/im2_saved_i first (the defect this gate
-# exists to pin down), then libman/net_gate (LIBMAN.l_call/ng_call/
-# ng_v_depth), then the echo client (echo_tick).
+# Grows as each module is wired in (port.md section 5/S5 sequencing):
+# frame_flag/im2_saved_i first (the defect this gate exists to pin down),
+# then libman/net_gate (LIBMAN.l_call/ng_call/ng_v_depth). echo_tick (S3's
+# echo-client stand) was required here through S4; the stand -- and the
+# requirement -- were removed in S5 (plan D4, port.md section 3.10).
 REQUIRED_PRESENT = (
     "frame_flag",
     "im2_saved_i",
     "LIBMAN.l_call",
     "ng_call",
     "ng_v_depth",
-    "echo_tick",
 )
 LIBMAN_MIN_SYMBOLS = 20
 
@@ -162,12 +163,10 @@ def _clean_lines() -> list[str]:
         # The defect this gate exists to catch, now fixed.
         _sym_line("frame_flag", 0x8191),
         _sym_line("im2_saved_i", 0x8192),
-        # net_gate.asm / echo_s3.asm state, correctly in WIN2.
+        # net_gate.asm state, correctly in WIN2.
         _sym_line("ng_call", 0x8200),
         _sym_line("ng_v_depth", 0x8210),
         _sym_line("ng_up", 0x8220),
-        _sym_line("echo_tick", 0x8300),
-        _sym_line("echo_rx_account", 0x8310),
         # Overlay dispatch code lives in WIN1 (future S5 location); only its
         # context buffer is required to live in WIN2.
         _sym_line("ovl_exec", 0x5000),
@@ -232,15 +231,6 @@ def self_test() -> None:
     _expect_reject(
         broken, "must live in the WIN2 half",
         "accepted ng_call placed in the WIN1 half",
-    )
-
-    broken = [
-        l.replace("0x00008300", "0x0000C000") if l.startswith("echo_tick:") else l
-        for l in _clean_lines()
-    ]
-    _expect_reject(
-        broken, "must live in the WIN2 half",
-        "accepted echo_tick placed at/above WIN2_HIGH",
     )
 
     broken = [
@@ -323,7 +313,7 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sym", type=Path,
-                        default=Path("build/sprinter/resident_s1.sym"))
+                        default=Path("build/sprinter/platform_primitives.sym"))
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 

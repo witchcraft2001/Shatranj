@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Bridge sjasmplus's resident symbol table into z88dk-linkable defc's.
+
+Mirrors tools/gen_overlay_defs.py's role for the ZX/Next overlay ABI (plan
+D1, port.md section 3.10/S5): sjasmplus assembles the Sprinter platform
+primitives (asm/sprinter/platform_core.asm, once restructured from
+resident_s1.asm) with --sym, producing a flat "NAME: EQU 0xADDR" table with
+every label and manifest constant in the file, local labels included as
+dotted parent.child names. This tool filters that table down to
+PLATFORM_SYMBOLS -- the curated set of primitives the C image and the two
+z88dk-z80asm modules (render_core.asm, overlay_loader_sprinter.asm) are
+allowed to call -- and renders sjasmplus-syntax-compatible z80asm output:
+both the plain name (for the raw-ASM consumers, matching sjasmplus's own
+spelling) and an underscore-prefixed alias (for C externs, which z88dk
+always references with a leading underscore regardless of whether the
+symbol is C- or ASM-defined). Both point at the same address; the
+duplication costs nothing in the linked image (defc's carry no bytes).
+
+The output is a pure function of the input .sym file (no timestamps), so
+reruns are byte-identical -- same contract as gen_sprinter_layout.py.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+# Curated allowlist: only these platform_core primitives are exposed to the
+# C image / render_core.asm / overlay_loader_sprinter.asm. Adding a new
+# platform_core routine to that call surface means adding its name here --
+# same discipline as gen_overlay_defs.py's REQUIRED_SYMBOLS for the ZX/Next
+# overlay ABI. A name absent from the assembled .sym is a hard error: the
+# call surface must never silently shrink.
+PLATFORM_SYMBOLS = [
+    # gfx_core.asm -- tile/rect primitives, all __z88dk_fastcall-style
+    # (args in fixed memory locations set by the caller, see gfx_core.asm).
+    "gfx_swap_buffers",
+    "gfx_clear_buffer",
+    "gfx_fill_rect",
+    "gfx_hline",
+    "gfx_draw_tile",
+    "gfx_blit_rows",
+    # text640.asm
+    "text_print",
+    # buffers.asm (production subset of bench_s2.asm)
+    "bench_init",
+    "resolve_buffers",
+    "bench_asset_page",
+    "piece_page1",
+    "piece_page2",
+    "front_base",
+    "back_base",
+    # gfx_core.asm's tile_* parameter cells: gfx_draw_tile/gfx_blit_rows take
+    # their arguments through these module-level cells rather than
+    # registers (S2, port.md section 5) -- fine for other sjasmplus files
+    # sharing the same assembly job, but render_core.asm (a z88dk-z80asm
+    # module, substep 3) needs each cell bridged individually, the same way
+    # OVL_SLOT_ADDR/OVL_SLOT_SIZE already are for overlay_loader_sprinter.asm.
+    "tile_dest_base",
+    "tile_x_byte",
+    "tile_x_hi",
+    "tile_y",
+    "tile_src_page",
+    "tile_src_slot",
+    "tile_stride",
+    "tile_width",
+    "tile_rows",
+    "tile_alias",
+    # render_layout.inc / fixed_layout.inc EQU constants (S5 substep 3):
+    # sjasmplus-only "#XX" hex literal syntax means render_core.asm cannot
+    # INCLUDE either file directly (see platform_primitives.asm's own
+    # comment) -- these are the board geometry and shared cross-platform
+    # board-buffer address it needs, bridged the same way OVL_SLOT_ADDR is.
+    "BOARD_X",
+    "BOARD_Y",
+    "BOARD_COLS",
+    "BOARD_ROWS",
+    "BOARD_CELL_W",
+    "BOARD_CELL_H",
+    "LOWRAM_CHESS_BOARD_ADDR",
+    # MOVE band (S5 substep 3, coordinate labels): the a-h file letters
+    # paint into this band, above the board (render_layout.json).
+    "MOVE_Y",
+    # STATUS band (S5 substep 3, status-bar clock): render_status_clock
+    # paints the RTC HH:MM readout into this band (render_layout.json).
+    "STATUS_Y",
+    # BANNER/MENU/INPUT bands (S5 substep 3, HUD chrome batch): title +
+    # logo, the static menu-tab row, and the input-line prompt
+    # (render_layout.json).
+    "BANNER_Y",
+    "MENU_Y",
+    "INPUT_Y",
+    # video.asm (production subset of video_s1.asm): palette/video_init
+    # setup, and RTC sampling for the HUD clock
+    "write_palette",
+    "write_palette_entry",
+    "video_init",
+    "ovl_test_signal",
+    "clear_bg_signal",
+    "rtc_sample",
+    "rtc_present",
+    "rtc_valid",
+    "rtc_hour",
+    "rtc_minute",
+    "rtc_second",
+    # im2_s1.asm -- boot/interrupt/exit primitives, called once each from
+    # crt0/_main rather than from the frame loop.
+    "im2_install",
+    "im2_uninstall",
+    "canary_check",
+    "frame_wait",
+    "exit_stand",
+    # im2_s1.asm -- non-blocking keyboard poll, called every frame from
+    # the frame loop (S5 substep 3, input handling's first slice).
+    "key_poll",
+    "key_code",
+    # net_gate.asm -- the funnel into LIBMAN.l_call (ng_* wrappers take no
+    # caller-supplied pointers; buffers are net_gate's own WIN2-resident
+    # ones, per port.md's "R5" note).
+    "ng_up",
+    "ng_connect",
+    "ng_send",
+    "ng_recv",
+    "ng_close",
+    "ng_lasterr_fetch",
+    "ng_shutdown",
+    # overlay slot copy (substep 2's overlay_loader_sprinter.asm is a
+    # z88dk-z80asm module and must not touch WIN0_PORT itself -- R1)
+    "ovl_copy_slot",
+    "OVL_SLOT_ADDR",
+    "OVL_SLOT_SIZE",
+]
+
+GENERATED_BANNER = (
+    "Generated by tools/gen_sprinter_platform_defs.py from a sjasmplus "
+    "--sym file. Do not edit by hand."
+)
+
+SYM_LINE = re.compile(r"^(\S+):\s+EQU\s+0x([0-9A-Fa-f]+)\s*$")
+
+
+class PlatformDefsError(Exception):
+    pass
+
+
+def parse_sym(path: Path) -> dict[str, int]:
+    symbols: dict[str, int] = {}
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            match = SYM_LINE.match(line.strip())
+            if match:
+                symbols[match.group(1)] = int(match.group(2), 16)
+    return symbols
+
+
+def render(symbols: dict[str, int], names: list[str]) -> str:
+    missing = [name for name in names if name not in symbols]
+    if missing:
+        raise PlatformDefsError(
+            "missing platform symbol(s) (add to platform_core.asm or drop "
+            "from PLATFORM_SYMBOLS): " + ", ".join(missing)
+        )
+    lines = [f";; {GENERATED_BANNER}", ";; z88dk-z80asm syntax (consumed by"
+             " render_core.asm / overlay_loader_sprinter.asm / the C image)",
+             ""]
+    for name in names:
+        addr = symbols[name]
+        lines.append(f"PUBLIC {name}")
+        lines.append(f"defc {name} = ${addr:04X}")
+        lines.append(f"PUBLIC _{name}")
+        lines.append(f"defc _{name} = ${addr:04X}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _clean_fixture() -> str:
+    return (
+        "GFX_SLOT: EQU 0x00000010\n"
+        "gfx_swap_buffers: EQU 0x00004774\n"
+        "gfx_swap_buffers.local: EQU 0x00004777\n"
+        "gfx_clear_buffer: EQU 0x0000477B\n"
+        "gfx_fill_rect: EQU 0x000047B2\n"
+        "gfx_hline: EQU 0x00004881\n"
+        "gfx_draw_tile: EQU 0x00004902\n"
+        "gfx_blit_rows: EQU 0x0000496B\n"
+        "text_print: EQU 0x000049C6\n"
+        "bench_init: EQU 0x00008200\n"
+        "resolve_buffers: EQU 0x00008210\n"
+        "bench_asset_page: EQU 0x00008220\n"
+        "front_base: EQU 0x00008222\n"
+        "back_base: EQU 0x00008224\n"
+        "piece_page1: EQU 0x00008226\n"
+        "piece_page2: EQU 0x00008227\n"
+        "tile_dest_base: EQU 0x00004920\n"
+        "tile_x_byte: EQU 0x00004922\n"
+        "tile_x_hi: EQU 0x00004923\n"
+        "tile_y: EQU 0x00004924\n"
+        "tile_src_page: EQU 0x00004925\n"
+        "tile_src_slot: EQU 0x00004926\n"
+        "tile_stride: EQU 0x00004927\n"
+        "tile_width: EQU 0x00004928\n"
+        "tile_rows: EQU 0x00004929\n"
+        "tile_alias: EQU 0x0000492A\n"
+        "BOARD_X: EQU 0x00000010\n"
+        "BOARD_Y: EQU 0x00000028\n"
+        "BOARD_COLS: EQU 0x00000008\n"
+        "BOARD_ROWS: EQU 0x00000008\n"
+        "BOARD_CELL_W: EQU 0x00000030\n"
+        "BOARD_CELL_H: EQU 0x00000018\n"
+        "LOWRAM_CHESS_BOARD_ADDR: EQU 0x0000B2AF\n"
+        "MOVE_Y: EQU 0x0000001C\n"
+        "STATUS_Y: EQU 0x000000E8\n"
+        "BANNER_Y: EQU 0x00000000\n"
+        "MENU_Y: EQU 0x00000010\n"
+        "INPUT_Y: EQU 0x000000F4\n"
+        "write_palette: EQU 0x000044F5\n"
+        "write_palette_entry: EQU 0x000044CA\n"
+        "video_init: EQU 0x00004600\n"
+        "ovl_test_signal: EQU 0x00004650\n"
+        "clear_bg_signal: EQU 0x00004660\n"
+        "rtc_sample: EQU 0x000045B6\n"
+        "rtc_present: EQU 0x00004700\n"
+        "rtc_valid: EQU 0x00004701\n"
+        "rtc_hour: EQU 0x00004702\n"
+        "rtc_minute: EQU 0x00004703\n"
+        "rtc_second: EQU 0x00004704\n"
+        "im2_install: EQU 0x0000811F\n"
+        "im2_uninstall: EQU 0x00008130\n"
+        "canary_check: EQU 0x00008140\n"
+        "frame_wait: EQU 0x00008150\n"
+        "exit_stand: EQU 0x00008160\n"
+        "key_poll: EQU 0x00008165\n"
+        "key_code: EQU 0x00008170\n"
+        "ng_up: EQU 0x0000899F\n"
+        "ng_connect: EQU 0x000089A0\n"
+        "ng_send: EQU 0x000089B0\n"
+        "ng_recv: EQU 0x000089C0\n"
+        "ng_close: EQU 0x000089D0\n"
+        "ng_lasterr_fetch: EQU 0x000089E0\n"
+        "ng_shutdown: EQU 0x000089F0\n"
+        "ovl_copy_slot: EQU 0x00008A00\n"
+        "OVL_SLOT_ADDR: EQU 0x0000A800\n"
+        "OVL_SLOT_SIZE: EQU 0x00000800\n"
+    )
+
+
+def self_test() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sym_path = Path(tmp) / "clean.sym"
+        sym_path.write_text(_clean_fixture(), encoding="ascii")
+        symbols = parse_sym(sym_path)
+
+        if symbols.get("GFX_SLOT") != 0x10:
+            raise SystemExit("[ERR] platform-defs self-test: manifest constant not parsed")
+        if "gfx_swap_buffers.local" not in symbols:
+            raise SystemExit("[ERR] platform-defs self-test: dotted local label not parsed")
+
+        out1 = render(symbols, PLATFORM_SYMBOLS)
+        out2 = render(symbols, PLATFORM_SYMBOLS)
+        if out1 != out2:
+            raise SystemExit("[ERR] platform-defs self-test: rendering is not deterministic")
+        if "PUBLIC gfx_swap_buffers" not in out1:
+            raise SystemExit("[ERR] platform-defs self-test: plain name missing from output")
+        if "PUBLIC _gfx_swap_buffers" not in out1:
+            raise SystemExit("[ERR] platform-defs self-test: underscored alias missing")
+        if "defc _gfx_swap_buffers = $4774" not in out1:
+            raise SystemExit("[ERR] platform-defs self-test: address mismatch")
+        # A local label sneaking into PLATFORM_SYMBOLS should resolve fine
+        # (the allowlist controls the call surface, not the .sym parser) --
+        # what must fail is a name genuinely absent from the .sym.
+        try:
+            render(symbols, PLATFORM_SYMBOLS + ["gfx_totally_missing"])
+        except PlatformDefsError as exc:
+            if "gfx_totally_missing" not in str(exc):
+                raise SystemExit(
+                    "[ERR] platform-defs self-test: wrong missing-symbol diagnostic"
+                )
+        else:
+            raise SystemExit(
+                "[ERR] platform-defs self-test: missing symbol was not rejected"
+            )
+
+    print("[OK] Sprinter platform-defs self-test")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sym", type=Path, help="sjasmplus --sym output to read")
+    parser.add_argument("--out", type=Path, help="platform_defs.asm to write")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+
+    if args.self_test:
+        self_test()
+        return 0
+
+    if not args.sym or not args.out:
+        raise SystemExit(
+            "gen_sprinter_platform_defs: --sym and --out are required unless --self-test"
+        )
+
+    symbols = parse_sym(args.sym)
+    try:
+        text = render(symbols, PLATFORM_SYMBOLS)
+    except PlatformDefsError as exc:
+        print(f"[ERR] {args.sym}: {exc}", file=sys.stderr)
+        return 1
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(text, encoding="ascii")
+    print(f"[OK] {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

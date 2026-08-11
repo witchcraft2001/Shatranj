@@ -20,10 +20,16 @@ Slot layout (asm/sprinter/bench_s2.asm's ASSET_* EQUs must match):
     32..33  TILE_WIDE: opaque 40x20 checker, colours 9/10 (512-byte aligned:
             32*256 = 8192 = 16*512, proving the parametric blitter's second
             stride)
-    34..35  unused (zero) -- gap before the overlay probe
-    36..43  dummy overlay (S3, asm/sprinter/dummy_overlay.asm): exactly
-            2048 bytes, copied at runtime by ovl_s3.asm's ovl_exec via
-            win0_map_di/LDIR/win0_restore into OVL_SLOT (#7800)
+    34..35  unused (zero) -- gap before the overlay slot
+    36..43  overlay atlas id 14 (CONTROL, S5 substep 2,
+            $(SPRINTER_OVL_CONTROL_BIN) in the Makefile): exactly 2048
+            bytes, copied at runtime by overlay_loader_sprinter.asm's
+            ovl_exec via platform_primitives.asm's ovl_copy_slot
+            (win0_map_di/LDIR/win0_restore) into OVL_SLOT (#A800). Only
+            one overlay slot exists in this page; ids 0-13 in
+            overlay_atlas_table_sprinter.asm are still unported
+            placeholders (port.md) -- a real subset atlas needs its own
+            page(s) once more than one overlay has real content.
     44..63  UI assets (S4, tools/build_sprinter_ui_assets.py's
             --ui-bin -- Sprinter logo + point markers, hardware-keyed;
             exact slot span depends on the logo's committed width, see
@@ -119,8 +125,8 @@ def build_assets_page(font_bin: bytes, overlay_bin: bytes | None = None,
                        ui_bin: bytes | None = None) -> bytes:
     if len(font_bin) != FONT_BIN_SIZE:
         fail(f"font.bin is {len(font_bin)} bytes, expected {FONT_BIN_SIZE}")
-    if overlay_bin is not None and len(overlay_bin) != OVERLAY_SIZE:
-        fail(f"overlay-bin is {len(overlay_bin)} bytes, expected "
+    if overlay_bin is not None and len(overlay_bin) > OVERLAY_SIZE:
+        fail(f"overlay-bin is {len(overlay_bin)} bytes, exceeds "
              f"{OVERLAY_SIZE} (the fixed OVL_SLOT size)")
     if theme_bin is not None and len(theme_bin) > THEME_MAX_SIZE:
         fail(f"theme-bin is {len(theme_bin)} bytes, exceeds {THEME_MAX_SIZE} "
