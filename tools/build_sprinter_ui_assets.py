@@ -22,7 +22,9 @@ loudly instead of overlapping the markers.
     44..49   Sprinter logo (tools/prepare_sprinter_logo.py), <=6 slots
     50       marker "dot" (16x8)
     51       marker "ring" (16x8)
-    52..63   unused (zero)
+    52..54   board cursor frame (48x24, one whole cell)
+    55..57   board selection frame (48x24, one whole cell)
+    58..63   unused (zero)
 
 Output is a single UI_ASSETS_SIZE-byte blob (slots 44-63, 5120 bytes) meant
 for tools/make_sprinter_assets_page.py's --ui-bin.
@@ -60,14 +62,27 @@ DOT_SLOT = 50
 DOT_SLOTS = 1
 RING_SLOT = 51
 RING_SLOTS = 1
+# The two board-cursor frames (S5 substep 3c). Unlike the point markers
+# these cover a whole board cell -- BOARD_CELL_W x BOARD_CELL_H from
+# build/sprinter/generated/render_layout.inc -- because that is what the
+# asset is: ZX/Next draw the cursor as a rectangle around the square
+# (asm/spectrum/screen.asm's draw_square_mark), not as a dot in it. 48x24
+# at 4bpp is 24 bytes x 24 rows = 576 B, so three slots each.
+CURSOR_SLOT = 52
+CURSOR_SLOTS = 3
+SELECT_SLOT = 55
+SELECT_SLOTS = 3
 
 MARKER_W, MARKER_H = 16, 8
+FRAME_W, FRAME_H = 48, 24
 KEY_BYTE = 0xFF
 
 DEFAULT_PALETTE = ROOT / "assets/sprinter/palette.json"
 DEFAULT_LOGO = ROOT / "assets/sprinter/logo_sprinter.png"
 DEFAULT_DOT = ROOT / "assets/sprinter/markers/dot.png"
 DEFAULT_RING = ROOT / "assets/sprinter/markers/ring.png"
+DEFAULT_CURSOR = ROOT / "assets/sprinter/markers/cursor.png"
+DEFAULT_SELECT = ROOT / "assets/sprinter/markers/select.png"
 
 MANIFEST_FORMAT = "shatranj-sprinter-ui-assets-v1"
 
@@ -150,6 +165,7 @@ def pack_keyed_asset(path: Path, ref_rgb_to_index: dict,
 
 
 def build_ui_assets(logo_path: Path, dot_path: Path, ring_path: Path,
+                     cursor_path: Path, select_path: Path,
                      palette: dict) -> tuple[bytes, dict]:
     ref = _ref_rgb_to_index(palette)
     blob = bytearray(UI_ASSETS_SIZE)  # unused tail stays zero, matching
@@ -180,6 +196,10 @@ def build_ui_assets(logo_path: Path, dot_path: Path, ring_path: Path,
           max_h=LOGO_MAX_H)
     place("marker_dot", dot_path, DOT_SLOT, DOT_SLOTS, MARKER_W, MARKER_H)
     place("marker_ring", ring_path, RING_SLOT, RING_SLOTS, MARKER_W, MARKER_H)
+    place("frame_cursor", cursor_path, CURSOR_SLOT, CURSOR_SLOTS,
+          FRAME_W, FRAME_H)
+    place("frame_select", select_path, SELECT_SLOT, SELECT_SLOTS,
+          FRAME_W, FRAME_H)
 
     manifest = {
         "format": MANIFEST_FORMAT,
@@ -191,6 +211,8 @@ def build_ui_assets(logo_path: Path, dot_path: Path, ring_path: Path,
             "logo": hashlib.sha256(logo_path.read_bytes()).hexdigest(),
             "marker_dot": hashlib.sha256(dot_path.read_bytes()).hexdigest(),
             "marker_ring": hashlib.sha256(ring_path.read_bytes()).hexdigest(),
+            "frame_cursor": hashlib.sha256(cursor_path.read_bytes()).hexdigest(),
+            "frame_select": hashlib.sha256(select_path.read_bytes()).hexdigest(),
         },
     }
     return bytes(blob), manifest
@@ -202,6 +224,8 @@ def main() -> int:
     parser.add_argument("--logo", type=Path, default=DEFAULT_LOGO)
     parser.add_argument("--marker-dot", type=Path, default=DEFAULT_DOT)
     parser.add_argument("--marker-ring", type=Path, default=DEFAULT_RING)
+    parser.add_argument("--frame-cursor", type=Path, default=DEFAULT_CURSOR)
+    parser.add_argument("--frame-select", type=Path, default=DEFAULT_SELECT)
     parser.add_argument("--palette", type=Path, default=DEFAULT_PALETTE)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--manifest-out", type=Path, default=None)
@@ -212,7 +236,8 @@ def main() -> int:
     if errors:
         fail(f"{args.palette} is invalid: " + "; ".join(errors))
 
-    blob, manifest = build_ui_assets(args.logo, args.marker_dot, args.marker_ring, palette)
+    blob, manifest = build_ui_assets(args.logo, args.marker_dot, args.marker_ring,
+                                      args.frame_cursor, args.frame_select, palette)
     manifest["sha256"]["palette_json"] = hashlib.sha256(args.palette.read_bytes()).hexdigest()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

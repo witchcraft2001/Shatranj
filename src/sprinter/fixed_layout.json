@@ -85,57 +85,64 @@
             "desc": "NETCHESSZX_LOWRAM_INPUT_HISTORY_*: chat/command input history."
         },
         {
-            "name": "LOWRAM_STATUS",
+            "name": "LOWRAM_NOTICE_TEXT",
             "addr": "0xB267",
+            "size": "0x20",
+            "owner": "src/spectrum/ui/gui.c",
+            "desc": "gui.c's notice_text is #define'd as ((char *)NETCHESSZX_LOWRAM_INPUT_HISTORY_END) on every platform, not a named lowram_map.h macro -- it just needs NETCHESSZX_NOTICE_TEXT_SIZE (29 bytes, src/spectrum/ui/layout.h) of free space between LOWRAM_INPUT_HISTORY's end and LOWRAM_STATUS's start (gui.c's own compile-time assert enforces this on every platform). ZX gets that gap for free from its overlapping/hand-packed 48K layout; Sprinter's back-to-back regions do not, so this region reserves it explicitly (S5-finish plan D9 size pass, 2026-08-11) -- 32 bytes rounded up from the 29-byte requirement, not aliased by any other region."
+        },
+        {
+            "name": "LOWRAM_STATUS",
+            "addr": "0xB287",
             "size": "0x26",
             "owner": "src/spectrum/ui/gui.c",
             "desc": "NETCHESSZX_LOWRAM_STATUS_*: HUD status text. ZX aliases LAST_IP/MQTT_PRESENCE inside this span to save bytes (48K budget); Sprinter has room, so LOWRAM_LAST_IP and LOWRAM_MQTT_PRESENCE below get their own regions instead of overlapping this one -- same macro names, non-aliased layout."
         },
         {
             "name": "LOWRAM_LAST_IP",
-            "addr": "0xB28D",
+            "addr": "0xB2AD",
             "size": "0x12",
             "owner": "src/spectrum/transport/esp_at.c",
             "desc": "NETCHESSZX_LOWRAM_LAST_IP_*: last-seen peer IP text."
         },
         {
             "name": "LOWRAM_MQTT_PRESENCE",
-            "addr": "0xB29F",
+            "addr": "0xB2BF",
             "size": "0x10",
             "owner": "src/spectrum/transport/mqtt_session_wire.c",
             "desc": "NETCHESSZX_LOWRAM_MQTT_PRESENCE_*: MQTT presence-topic scratch."
         },
         {
             "name": "LOWRAM_CHESS_BOARD",
-            "addr": "0xB2AF",
+            "addr": "0xB2CF",
             "size": "0x40",
             "owner": "src/spectrum/ui/gui.c, src/spectrum/board/board.c, src/spectrum/overlay/board_apply_ovl.c",
             "desc": "NETCHESSZX_LOWRAM_CHESS_BOARD_*: 64-cell display board (BOARD(1) overlay)."
         },
         {
             "name": "LOWRAM_RULES_BOARD",
-            "addr": "0xB2EF",
+            "addr": "0xB30F",
             "size": "0x40",
             "owner": "src/spectrum/board/board.c, src/spectrum/overlay/board_apply_ovl.c, asm/overlay/rules/rules_stub.asm",
             "desc": "NETCHESSZX_LOWRAM_RULES_BOARD_*: 64-cell rules-engine board (RULES(0) overlay)."
         },
         {
             "name": "LOWRAM_OVERLAY_CONTEXT",
-            "addr": "0xB32F",
+            "addr": "0xB34F",
             "size": "0x8",
             "owner": "src/spectrum/config/setup_menu.h, src/spectrum/overlay/overlay_context.h",
             "desc": "NETCHESSZX_LOWRAM_OVERLAY_CONTEXT_*: fixed-size overlay call context, ABI-contractual size (8 bytes) -- must not change independently of overlay_context.h."
         },
         {
             "name": "LOWRAM_HINTED_ROWS",
-            "addr": "0xB337",
+            "addr": "0xB357",
             "size": "0x8",
             "owner": "src/spectrum/config/session.c",
             "desc": "NETCHESSZX_LOWRAM_HINTED_ROWS_*: legal-move hint bitmap (RULES(0) hints entries)."
         },
         {
             "name": "LOWRAM_OVERLAY_SCRATCH",
-            "addr": "0xB33F",
+            "addr": "0xB35F",
             "size": "0xA0",
             "owner": "src/spectrum/overlay/mqtt_connect_ovl.c",
             "desc": "NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_*: scratch shared only by the currently loaded overlay. No NETCHESSZX_LOWRAM_UART_RING equivalent here -- that ZX region reclaims the printer buffer for the serial-transport RX ring (asm/uart/), which Sprinter's uNet DLL transport does not use; add it if/when a Sprinter transport actually needs a fixed RX ring."

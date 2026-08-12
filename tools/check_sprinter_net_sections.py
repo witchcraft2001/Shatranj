@@ -44,8 +44,21 @@ WIN2_HIGH = 0xC000  # exclusive
 LIBMAN_PREFIX = "LIBMAN."
 LIBMAN_ALLOWLIST = {"LIBMAN.ll_path"}
 
-WIN2_REQUIRED_PREFIXES = ("ng_", "ovl_ctx")
-WIN2_REQUIRED_EXACT = ("frame_flag", "im2_saved_i")
+WIN2_REQUIRED_PREFIXES = ("ng_", "ovl_ctx", "flip_")
+WIN2_REQUIRED_EXACT = (
+    "frame_flag",
+    "im2_saved_i",
+    # S5-finish plan D11 (buffer flip): flip_request is read/written from
+    # im2_frame_isr, the frame-tick ISR tail -- the exact same "must
+    # survive a blocking l_call with WIN1 foreign and EI in effect" hazard
+    # frame_flag/im2_saved_i were pinned here for. im2_frame_core/
+    # im2_frame_isr are the ISR code itself, not just its state, but the
+    # same hazard applies to code: a frame tick during a blocking l_call
+    # must find its handler resident regardless of what DLL occupies WIN1.
+    "flip_request",
+    "im2_frame_core",
+    "im2_frame_isr",
+)
 
 # Grows as each module is wired in (port.md section 5/S5 sequencing):
 # frame_flag/im2_saved_i first (the defect this gate exists to pin down),
@@ -55,6 +68,7 @@ WIN2_REQUIRED_EXACT = ("frame_flag", "im2_saved_i")
 REQUIRED_PRESENT = (
     "frame_flag",
     "im2_saved_i",
+    "flip_request",
     "LIBMAN.l_call",
     "ng_call",
     "ng_v_depth",
@@ -163,6 +177,14 @@ def _clean_lines() -> list[str]:
         # The defect this gate exists to catch, now fixed.
         _sym_line("frame_flag", 0x8191),
         _sym_line("im2_saved_i", 0x8192),
+        # S5-finish plan D11 (buffer flip): frame-tick ISR tail state/code,
+        # correctly in WIN2.
+        _sym_line("flip_request", 0x8193),
+        _sym_line("im2_frame_core", 0x8194),
+        _sym_line("im2_frame_isr", 0x81a0),
+        # buffers.asm's dirty-rect ring (flip_ prefix), correctly in WIN2.
+        _sym_line("flip_ring_reset", 0x81b0),
+        _sym_line("flip_ring_count", 0x81c0),
         # net_gate.asm state, correctly in WIN2.
         _sym_line("ng_call", 0x8200),
         _sym_line("ng_v_depth", 0x8210),
@@ -231,6 +253,46 @@ def self_test() -> None:
     _expect_reject(
         broken, "must live in the WIN2 half",
         "accepted ng_call placed in the WIN1 half",
+    )
+
+    # S5-finish plan D11: the flip-related ISR state/code and the ring's
+    # flip_ prefix must all be pinned to WIN2, the same way frame_flag/
+    # im2_saved_i are -- a blocking l_call hazard for exactly the same
+    # reason.
+    broken = [
+        l.replace("0x00008193", "0x00004500") if l.startswith("flip_request:") else l
+        for l in _clean_lines()
+    ]
+    _expect_reject(
+        broken, "must live in the WIN2 half",
+        "accepted flip_request placed back in the WIN1 half",
+    )
+
+    broken = [
+        l.replace("0x00008194", "0x00004500") if l.startswith("im2_frame_core:") else l
+        for l in _clean_lines()
+    ]
+    _expect_reject(
+        broken, "must live in the WIN2 half",
+        "accepted im2_frame_core placed back in the WIN1 half",
+    )
+
+    broken = [
+        l.replace("0x000081A0", "0x00004500") if l.startswith("im2_frame_isr:") else l
+        for l in _clean_lines()
+    ]
+    _expect_reject(
+        broken, "must live in the WIN2 half",
+        "accepted im2_frame_isr placed back in the WIN1 half",
+    )
+
+    broken = [
+        l.replace("0x000081B0", "0x00004500") if l.startswith("flip_ring_reset:") else l
+        for l in _clean_lines()
+    ]
+    _expect_reject(
+        broken, "must live in the WIN2 half",
+        "accepted a flip_-prefixed symbol (flip_ring_reset) placed in WIN1",
     )
 
     broken = [

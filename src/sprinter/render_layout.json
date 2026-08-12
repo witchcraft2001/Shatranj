@@ -24,8 +24,8 @@
         "sections": [
             {"name": "HEADER", "y": 40, "h": 12, "desc": "Title/connection status."},
             {"name": "MOVES", "y": 52, "h": 89, "desc": "Move list, two columns."},
-            {"name": "DIVIDER", "y": 141, "h": 8, "desc": "Divider + chat header."},
-            {"name": "CHAT", "y": 149, "h": 71, "desc": "Chat: icon, time, text."},
+            {"name": "DIVIDER", "y": 141, "h": 7, "desc": "Divider + chat header."},
+            {"name": "CHAT", "y": 148, "h": 72, "desc": "Chat: icon, time, text -- 9 rows x 8px, one AFNT640 glyph row per chat line, no inter-line gap (S5-finish, plan D9 panel layout)."},
             {"name": "NOTICE", "y": 220, "h": 12, "desc": "Notice line."}
         ]
     }

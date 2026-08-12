@@ -905,6 +905,8 @@ endif
         sprinter-hw-zip sprinter-layout-check sprinter-z80-test sprinter-resident-test \
         sprinter-gates sprinter-section-gate sprinter-crt0-check sprinter-platform-defs-check \
         sprinter-overlay-defs-check sprinter-overlay-control-check \
+        sprinter-overlay-rules-check sprinter-overlay-board-check \
+        sprinter-size-report \
         sprinter-about clean-sprinter
 
 SPRINTER_BUILD_DIR := $(BUILD_DIR)/sprinter
@@ -944,6 +946,8 @@ SPRINTER_ASSETS_PAGE := $(SPRINTER_BUILD_DIR)/assets_page.bin
 # silently resolve empty (the same class of bug SPRINTER_GENERATED_DIR hit
 # earlier in this file).
 SPRINTER_OVL_CONTROL_BIN := $(SPRINTER_BUILD_DIR)/overlay_control_sprinter.bin
+SPRINTER_OVL_RULES_BIN := $(SPRINTER_BUILD_DIR)/overlay_rules_sprinter.bin
+SPRINTER_OVL_BOARD_BIN := $(SPRINTER_BUILD_DIR)/overlay_board_sprinter.bin
 
 SPRINTER_PALETTE_JSON := assets/sprinter/palette.json
 SPRINTER_PALETTE_INC := $(SPRINTER_GENERATED_DIR)/palette_base.inc
@@ -966,6 +970,8 @@ SPRINTER_PIECE_DIRS := $(SPRINTER_PIECES_ROOT) $(sort $(dir $(SPRINTER_PIECE_PNG
 SPRINTER_LOGO_PNG := assets/sprinter/logo_sprinter.png
 SPRINTER_MARKER_DOT_PNG := assets/sprinter/markers/dot.png
 SPRINTER_MARKER_RING_PNG := assets/sprinter/markers/ring.png
+SPRINTER_FRAME_CURSOR_PNG := assets/sprinter/markers/cursor.png
+SPRINTER_FRAME_SELECT_PNG := assets/sprinter/markers/select.png
 SPRINTER_UI_ASSETS_BIN := $(SPRINTER_BUILD_DIR)/ui_assets.bin
 SPRINTER_UI_ASSETS_MANIFEST := $(SPRINTER_BUILD_DIR)/ui_assets_manifest.json
 
@@ -980,6 +986,7 @@ sprinter-deps-check: tools/check_sprinter_deps.py
 
 sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py \
                      tests/tools/test_sprinter_assets_page.py tools/make_sprinter_assets_page.py \
+                     tests/tools/test_sprinter_overlay_page.py tools/make_sprinter_overlay_page.py \
                      tests/tools/test_rasterize_sprinter_pieces.py tools/rasterize_sprinter_pieces.py \
                      tests/tools/test_sprinter_piece_tiles.py tools/build_sprinter_piece_tiles.py \
                      tests/tools/test_prepare_sprinter_logo.py tools/prepare_sprinter_logo.py \
@@ -990,6 +997,7 @@ sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
                      tools/sprinter_echo_server.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_assets_page.py
+	$(PYTHON) tests/tools/test_sprinter_overlay_page.py
 	$(PYTHON) tests/tools/test_rasterize_sprinter_pieces.py
 	$(PYTHON) tests/tools/test_sprinter_piece_tiles.py
 	$(PYTHON) tests/tools/test_prepare_sprinter_logo.py
@@ -1116,19 +1124,24 @@ $(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DI
 		--raw=$(SPRINTER_LOADER_BIN) $(SPRINTER_ASM_DIR)/preload_loader.asm
 
 SPRINTER_UI_ASSETS_DEPS := tools/build_sprinter_ui_assets.py $(SPRINTER_PALETTE_JSON) \
-                           $(SPRINTER_LOGO_PNG) $(SPRINTER_MARKER_DOT_PNG) $(SPRINTER_MARKER_RING_PNG)
+                           $(SPRINTER_LOGO_PNG) $(SPRINTER_MARKER_DOT_PNG) $(SPRINTER_MARKER_RING_PNG) \
+                           $(SPRINTER_FRAME_CURSOR_PNG) $(SPRINTER_FRAME_SELECT_PNG)
 
 $(SPRINTER_UI_ASSETS_BIN): $(SPRINTER_UI_ASSETS_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/build_sprinter_ui_assets.py \
 		--logo $(SPRINTER_LOGO_PNG) --marker-dot $(SPRINTER_MARKER_DOT_PNG) \
-		--marker-ring $(SPRINTER_MARKER_RING_PNG) --palette $(SPRINTER_PALETTE_JSON) \
+		--marker-ring $(SPRINTER_MARKER_RING_PNG) \
+		--frame-cursor $(SPRINTER_FRAME_CURSOR_PNG) \
+		--frame-select $(SPRINTER_FRAME_SELECT_PNG) --palette $(SPRINTER_PALETTE_JSON) \
 		--output $(SPRINTER_UI_ASSETS_BIN) --manifest-out $(SPRINTER_UI_ASSETS_MANIFEST)
 
 # Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment above.
 $(SPRINTER_UI_ASSETS_MANIFEST): $(SPRINTER_UI_ASSETS_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/build_sprinter_ui_assets.py \
 		--logo $(SPRINTER_LOGO_PNG) --marker-dot $(SPRINTER_MARKER_DOT_PNG) \
-		--marker-ring $(SPRINTER_MARKER_RING_PNG) --palette $(SPRINTER_PALETTE_JSON) \
+		--marker-ring $(SPRINTER_MARKER_RING_PNG) \
+		--frame-cursor $(SPRINTER_FRAME_CURSOR_PNG) \
+		--frame-select $(SPRINTER_FRAME_SELECT_PNG) --palette $(SPRINTER_PALETTE_JSON) \
 		--output $(SPRINTER_UI_ASSETS_BIN) --manifest-out $(SPRINTER_UI_ASSETS_MANIFEST)
 
 $(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs/afnt640/font.bin \
@@ -1188,7 +1201,7 @@ SPRINTER_PLATFORM_PRIMITIVES_DEPS := $(SPRINTER_ASM_DIR)/platform_primitives.asm
                           $(SPRINTER_ASM_DIR)/gfx_core.asm $(SPRINTER_ASM_DIR)/text640.asm \
                           $(SPRINTER_ASM_DIR)/net_gate.asm \
                           $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) \
-                          $(SPRINTER_PALETTE_INC)
+                          $(SPRINTER_PALETTE_INC) $(SPRINTER_RENDER_LAYOUT_INC)
 
 $(SPRINTER_PLATFORM_PRIMITIVES_BIN): $(SPRINTER_PLATFORM_PRIMITIVES_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
@@ -1216,8 +1229,12 @@ $(SPRINTER_PLATFORM_DEFS_ASM): tools/gen_sprinter_platform_defs.py $(SPRINTER_PL
 # needs the same functions. SPRINTER_OVERLAY_DEFS_ASM (below) is what lets
 # overlay C sources EXTERN this resident copy instead of re-linking it.
 SPRINTER_RESIDENT_C_SRC := src/sprinter/main.c \
+                           src/sprinter/gui_log_sprinter.c \
                            src/common/protocol/game_protocol.c \
-                           src/common/protocol/mqtt_session_protocol.c
+                           src/common/protocol/mqtt_session_protocol.c \
+                           src/spectrum/board/board.c \
+                           src/common/chess/move_coords.c \
+                           src/spectrum/ui/gui.c
 SPRINTER_RESIDENT_CRT0 := $(SPRINTER_ASM_DIR)/zcc/resident_crt0.asm
 SPRINTER_OVERLAY_LOADER_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_loader_sprinter.asm
 SPRINTER_OVERLAY_ATLAS_TABLE_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_atlas_table_sprinter.asm
@@ -1298,6 +1315,83 @@ $(SPRINTER_OVL_CONTROL_BIN): $(SPRINTER_OVL_CONTROL_ENTRY_ASM) src/spectrum/over
 sprinter-overlay-control-check: $(SPRINTER_OVL_CONTROL_BIN) tests/tools/test_sprinter_overlay_control.py
 	$(PYTHON) tests/tools/test_sprinter_overlay_control.py
 
+# RULES (SPECTRUM_OVL_RULES=0u, plan D7, S5 substep 3b): entries 0/1 only
+# (play/check) -- rules_stub_sprinter.asm's own header explains why hints
+# (2/3) are not ported yet. Pure Z80, no C and no resident-symbol
+# dependency (unlike BOARD below), so this link needs platform_defs.asm
+# (for LOWRAM_OVERLAY_SCRATCH_ADDR) but neither overlay_defs_sprinter.asm
+# nor the clib/crt0 archives CONTROL/BOARD need for their C code. Linked at
+# WIN3 slot 0 (#C000) and mapped, not copied -- plan D7-bis, see
+# tools/make_sprinter_overlay_page.py and the atlas table's own header.
+SPRINTER_OVL_RULES_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_rules_sprinter.asm
+SPRINTER_OVL_RULES_STUB_ASM := $(SPRINTER_ASM_DIR)/zcc/rules_stub_sprinter.asm
+
+$(SPRINTER_OVL_RULES_BIN): $(SPRINTER_OVL_RULES_ENTRY_ASM) $(SPRINTER_OVL_RULES_STUB_ASM) \
+                           $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_H) \
+                           $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(Z80ASM) $(SPRINTER_OVL_RULES_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVL_RULES_STUB_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-slot-org 0) \
+		-o=$(SPRINTER_OVL_RULES_BIN) \
+		$(SPRINTER_ASM_DIR)/zcc/entry_rules_sprinter.o $(SPRINTER_ASM_DIR)/zcc/rules_stub_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_rules_sprinter.o $(SPRINTER_ASM_DIR)/zcc/rules_stub_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+sprinter-overlay-rules-check: $(SPRINTER_OVL_RULES_BIN)
+
+# BOARD (SPECTRUM_OVL_BOARD=1u, plan D7, S5 substep 3b): all four entries.
+# src/spectrum/overlay/board_apply_ovl.c is untouched, shared byte-for-byte
+# with ZX/Next; board_helpers_sprinter.c replaces asm/overlay/board/
+# helpers.asm (SDCC/IY-only stack ABI, incompatible with Sprinter's classic
+# z88dk C -- see that file's own header). Needs overlay_defs_sprinter.asm
+# for _side_to_move/_castle_rights/_ep_square (board.c resident globals,
+# now linked into the resident -- SPRINTER_RESIDENT_C_SRC above),
+# platform_defs.asm for LOWRAM_CHESS_BOARD_ADDR (entry_board_sprinter.asm's
+# hand-ported snapshot-save routine), and the clib/crt0 archives (its C
+# code needs the runtime helpers CONTROL's own comment on
+# SPRINTER_OVL_LIBDIRS explains).
+SPRINTER_OVL_BOARD_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_board_sprinter.asm
+SPRINTER_OVL_BOARD_HELPERS_C := $(SPRINTER_ASM_DIR)/zcc/board_helpers_sprinter.c
+
+$(SPRINTER_OVL_BOARD_BIN): $(SPRINTER_OVL_BOARD_ENTRY_ASM) src/spectrum/overlay/board_apply_ovl.c \
+                           $(SPRINTER_OVL_BOARD_HELPERS_C) $(SPRINTER_OVERLAY_DEFS_ASM) \
+                           $(SPRINTER_PLATFORM_DEFS_ASM) \
+                           $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/board_apply_ovl.c \
+		-o $(SPRINTER_BUILD_DIR)/board_apply_ovl.o
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c $(SPRINTER_OVL_BOARD_HELPERS_C) \
+		-o $(SPRINTER_BUILD_DIR)/board_helpers_sprinter.o
+	$(Z80ASM) $(SPRINTER_OVL_BOARD_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-slot-org 1) \
+		-o=$(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
+		$(SPRINTER_ASM_DIR)/zcc/entry_board_sprinter.o $(SPRINTER_BUILD_DIR)/board_apply_ovl.o \
+		$(SPRINTER_BUILD_DIR)/board_helpers_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_board_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+sprinter-overlay-board-check: $(SPRINTER_OVL_BOARD_BIN)
+
+# WIN3 overlay page (tools/make_sprinter_overlay_page.py, plan D7-bis):
+# RULES/BOARD's own bytes, each linked at its own ORG inside #C000-#FFFF and
+# packed at fixed 4 KiB slots. Published to HDR as the fourth asset page and
+# read by asm/sprinter/buffers.asm's bench_init into ovl_win3_page; the
+# loader maps it into WIN3 with a single OUT instead of copying it (see
+# overlay_atlas_table_sprinter.asm for why RULES/BOARD qualify). Two slots
+# stay reserved for GUI_LOG/STATUS.
+SPRINTER_OVL_WIN3_PAGE := $(SPRINTER_BUILD_DIR)/ovl_win3_page.bin
+
+$(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RULES_BIN) \
+                       $(SPRINTER_OVL_BOARD_BIN) | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/make_sprinter_overlay_page.py \
+		--rules-bin $(SPRINTER_OVL_RULES_BIN) --board-bin $(SPRINTER_OVL_BOARD_BIN) \
+		--output $(SPRINTER_OVL_WIN3_PAGE)
+
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) \
                           $(SPRINTER_PLATFORM_PRIMITIVES_BIN) tools/make_sprinter_resident.py \
                           $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
@@ -1306,12 +1400,13 @@ $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) 
 		--platform-primitives $(SPRINTER_PLATFORM_PRIMITIVES_BIN) --output $(SPRINTER_RESIDENT_BIN)
 
 $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
-                 $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) \
+                 $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) $(SPRINTER_OVL_WIN3_PAGE) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
 		--resident $(SPRINTER_RESIDENT_BIN) --assets $(SPRINTER_ASSETS_PAGE) \
 		--assets $(SPRINTER_PIECE_PAGE1) --assets $(SPRINTER_PIECE_PAGE2) \
+		--assets $(SPRINTER_OVL_WIN3_PAGE) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -1326,6 +1421,28 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
                    $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC)
 	tools/run_sprinter_z80_tests.sh
+
+SPRINTER_SIZE_REPORT_JSON := $(SPRINTER_BUILD_DIR)/size_report.json
+SPRINTER_SIZE_REPORT_MD := $(SPRINTER_BUILD_DIR)/size_report.md
+
+sprinter-size-report: exe tools/gen_sprinter_size_report.py $(SPRINTER_RESIDENT_C_BIN) \
+                       $(SPRINTER_RESIDENT_BIN) $(SPRINTER_PLATFORM_PRIMITIVES_BIN) \
+                       $(SPRINTER_OVL_CONTROL_BIN) $(SPRINTER_OVL_RULES_BIN) \
+                       $(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_WIN3_PAGE)
+	$(PYTHON) tools/gen_sprinter_size_report.py --self-test
+	$(PYTHON) tools/gen_sprinter_size_report.py \
+		--resident-c-map $(SPRINTER_RESIDENT_C_MAP) \
+		--resident-c-bin $(SPRINTER_RESIDENT_C_BIN) \
+		--resident-bin $(SPRINTER_RESIDENT_BIN) \
+		--platform-primitives-bin $(SPRINTER_PLATFORM_PRIMITIVES_BIN) \
+		--ovl-control-bin $(SPRINTER_OVL_CONTROL_BIN) \
+		--ovl-rules-bin $(SPRINTER_OVL_RULES_BIN) \
+		--ovl-board-bin $(SPRINTER_OVL_BOARD_BIN) \
+		--ovl-win3-page $(SPRINTER_OVL_WIN3_PAGE) \
+		--c-image-base $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol C_IMAGE_ENTRY_ADDR) \
+		--win1-end $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol WIN1_END) \
+		--ovl-slot-size $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol OVL_SLOT_SIZE) \
+		--json $(SPRINTER_SIZE_REPORT_JSON) --markdown $(SPRINTER_SIZE_REPORT_MD)
 
 sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
@@ -1348,8 +1465,9 @@ sprinter-about: tools/make_sprinter_about.py $(SPRINTER_ABOUT_PNG)
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-crt0-check \
                 sprinter-platform-defs-check sprinter-overlay-defs-check \
-                sprinter-overlay-control-check sprinter-z80-test sprinter-resident-test \
-                sprinter-smoke-image
+                sprinter-overlay-control-check sprinter-overlay-rules-check \
+                sprinter-overlay-board-check sprinter-z80-test sprinter-resident-test \
+                sprinter-size-report sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_SMOKE_IMG).rebuild > /dev/null

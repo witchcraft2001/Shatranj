@@ -314,6 +314,25 @@ text_print:
         or      a
         jp      z,.close                ; nothing fit -> nothing to render
 
+        ; S5-finish plan D11: log the painted rect before rendering (the
+        ; cells below don't change during rendering, so the order versus
+        ; the render itself doesn't matter, only that .scan_col has
+        ; already been finalised by the prescan above). Width is in the
+        ; same byte-column units as .start_col -- how many byte-columns
+        ; the staged string actually consumed, not a pixel width.
+        ld      hl,(.start_col)
+        ld      (flip_arg_x),hl
+        ld      a,(.y)
+        ld      (flip_arg_y),a
+        ld      hl,(.scan_col)
+        ld      de,(.start_col)
+        or      a
+        sbc     hl,de
+        ld      (flip_arg_w),hl
+        ld      a,8                     ; font height, fixed (see the file
+        ld      (flip_arg_h),a          ; banner: 8 rows/glyph)
+        call    flip_log_rect
+
         ; --- render .stage (afnt640.asm text_out_640, from "read_page"
         ; through "text_out_640_exit" above) ------------------------------
         ld      a,VRAM_ALIAS_OPAQUE

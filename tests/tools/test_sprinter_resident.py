@@ -25,12 +25,37 @@ import gen_sprinter_layout as gsl
 
 RESIDENT_BIN = ROOT / "build/sprinter/resident.bin"
 LAYOUT_JSON = ROOT / "src/sprinter/fixed_layout.json"
+PLATFORM_PRIMITIVES_SYM = ROOT / "build/sprinter/platform_primitives.sym"
 
 HDR_PAGE2_OFFSET = 4
 
 
 def _region(layout, name):
     return gsl._region(layout, name)
+
+
+def _parse_sym(path: Path) -> dict:
+    # Minimal "NAME: EQU 0xADDR" reader, same shape as tools/
+    # check_sprinter_net_sections.py's parse_sym -- this file predates
+    # that gate and does not import it to avoid a tools/ dependency this
+    # test otherwise has no need for.
+    symbols: dict[str, int] = {}
+    if not path.is_file():
+        return symbols
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or ":" not in stripped:
+            continue
+        name, _, rest = stripped.partition(":")
+        rest = rest.strip()
+        if not rest.startswith("EQU"):
+            continue
+        value = rest[len("EQU"):].strip()
+        try:
+            symbols[name] = int(value, 16) if value.lower().startswith("0x") else int(value)
+        except ValueError:
+            continue
+    return symbols
 
 
 class SprinterResidentTests(unittest.TestCase):
@@ -44,6 +69,7 @@ class SprinterResidentTests(unittest.TestCase):
         cls.layout = gsl.load_layout_file(LAYOUT_JSON)
         cls.symbols = gsl.compute_symbols(cls.layout)
         cls.data = RESIDENT_BIN.read_bytes()
+        cls.platform_symbols = _parse_sym(PLATFORM_PRIMITIVES_SYM)
 
     def _slice(self, region_name: str) -> bytes:
         region = _region(self.layout, region_name)
@@ -109,18 +135,27 @@ class SprinterResidentTests(unittest.TestCase):
         self.assertIn(page2_load, window)
 
     def test_im2_stub_bytes(self) -> None:
-        # R6 minimal ISR: PUSH AF; IN A,(SIO_A_CTRL); RRA; JR C,+5;
-        # LD A,1; LD (frame_flag),A; POP AF; JP #0038. Exactly
-        # IM2_STUB_SIZE (15) bytes, ending in a tail-jump to DSS's #0038.
+        # R6 minimal ISR (S5-finish plan D11, buffer flip): PUSH AF;
+        # IN A,(SIO_A_CTRL); RRA; JR C,+5; JP im2_frame_isr; DS 2,0
+        # (padding -- the jp is 2 bytes shorter than the ld a,1/ld
+        # (frame_flag),a it replaced); .chain: POP AF; JP #0038. Exactly
+        # IM2_STUB_SIZE (15) bytes; .chain stays at the same offset (11)
+        # as before this change, so only the frame-tick branch (offsets
+        # 6-10) actually differs.
         stub = self._slice("IM2_STUB")
         self.assertEqual(len(stub), self.symbols["IM2_STUB_SIZE"])
         self.assertEqual(stub[0], 0xF5)          # push af
         self.assertEqual(stub[1:3], bytes([0xDB, 0x19]))  # in a,(#19)
         self.assertEqual(stub[3], 0x1F)          # rra
         self.assertEqual(stub[4], 0x38)          # jr c,.chain
-        self.assertEqual(stub[6:8], bytes([0x3E, 0x01]))  # ld a,1
-        self.assertEqual(stub[8], 0x32)          # ld (frame_flag),a
-        self.assertEqual(stub[11], 0xF1)         # pop af
+        self.assertEqual(stub[6], 0xC3)          # jp im2_frame_isr
+        self.assertIn("im2_frame_isr", self.platform_symbols)
+        self.assertEqual(
+            int.from_bytes(stub[7:9], "little"),
+            self.platform_symbols["im2_frame_isr"],
+        )
+        self.assertEqual(stub[9:11], b"\x00\x00")  # padding
+        self.assertEqual(stub[11], 0xF1)         # pop af (.chain)
         self.assertEqual(stub[12:15], bytes([0xC3, 0x38, 0x00]))  # jp #0038
 
 

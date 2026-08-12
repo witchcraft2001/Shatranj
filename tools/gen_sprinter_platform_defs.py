@@ -47,9 +47,14 @@ PLATFORM_SYMBOLS = [
     # buffers.asm (production subset of bench_s2.asm)
     "bench_init",
     "resolve_buffers",
+    # S5-finish plan D11 (buffer flip): main() calls this once, right
+    # after resolve_buffers(), to start the dirty-rect ring clean before
+    # any drawing begins -- see buffers.asm's own flip_ring_reset comment.
+    "flip_ring_reset",
     "bench_asset_page",
     "piece_page1",
     "piece_page2",
+    "ovl_win3_page",
     "front_base",
     "back_base",
     # gfx_core.asm's tile_* parameter cells: gfx_draw_tile/gfx_blit_rows take
@@ -80,6 +85,25 @@ PLATFORM_SYMBOLS = [
     "BOARD_CELL_W",
     "BOARD_CELL_H",
     "LOWRAM_CHESS_BOARD_ADDR",
+    # Move-log low-RAM ring (S5-finish plan D12, GUI_LOG(2) scope):
+    # src/sprinter/gui_log_sprinter.c and render_core.asm's move-list
+    # painter both need the fixed address src/spectrum/lowram_map.h's
+    # Sprinter branch already reserves for it (src/sprinter/fixed_
+    # layout.json's LOWRAM_MOVE_LOG region).
+    "LOWRAM_MOVE_LOG_ADDR",
+    # Overlay call context (S5 substep 3b): the ONE buffer both sides of the
+    # overlay ABI must agree on. Portable resident C reaches it by the
+    # cross-platform name (src/spectrum/overlay/overlay_context.h's
+    # spectrum_overlay_context -> NETCHESSZX_LOWRAM_OVERLAY_CONTEXT_ADDR);
+    # overlay_loader_sprinter.asm hands its address to every entry in DE/HL.
+    # Bridging it here is what keeps those two the same address -- they were
+    # NOT, before this pass (the loader had its own private BSS buffer), and
+    # nothing caught it until board.c became the first portable caller.
+    "LOWRAM_OVERLAY_CONTEXT_ADDR",
+    # RULES(0) overlay scratch board (S5 substep 3b, rules_stub_sprinter.asm):
+    # r_tmp must equal this exact address, the same way rules_stub.asm's own
+    # r_tmp EQU is required to equal ZX's NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_ADDR.
+    "LOWRAM_OVERLAY_SCRATCH_ADDR",
     # MOVE band (S5 substep 3, coordinate labels): the a-h file letters
     # paint into this band, above the board (render_layout.json).
     "MOVE_Y",
@@ -92,6 +116,23 @@ PLATFORM_SYMBOLS = [
     "BANNER_Y",
     "MENU_Y",
     "INPUT_Y",
+    # Info panel geometry (S5-finish, gui.c integration surface, plan D8/D9):
+    # spectrum_info_show_game (panel chrome) and the notice line both live
+    # in the right-hand panel column (render_layout.json's "panel" object),
+    # not one of the fixed-width bands above -- these are the panel's own
+    # x-origin and three of its sections' y-origins.
+    "PANEL_X",
+    "PANEL_HEADER_Y",
+    "PANEL_DIVIDER_Y",
+    "PANEL_NOTICE_Y",
+    # Move-list panel section (S5-finish, GUI_LOG(2) scope, plan D12): the
+    # only remaining panel-section y-origin render_core.asm's move-list
+    # painter needs (src/sprinter/gui_log_sprinter.c's Sprinter-native
+    # replacement for the ZX/Next GUI_LOG overlay -- see that file's own
+    # header for why this port does not link the ZX overlay's Z80 word-
+    # wrap/ply-parsing helpers).
+    "PANEL_MOVES_Y",
+    "PANEL_CHAT_Y",
     # video.asm (production subset of video_s1.asm): palette/video_init
     # setup, and RTC sampling for the HUD clock
     "write_palette",
@@ -105,6 +146,11 @@ PLATFORM_SYMBOLS = [
     "rtc_hour",
     "rtc_minute",
     "rtc_second",
+    # S5-finish plan D12 (THEME menu action): cycles the board light/dark
+    # square palette entries (2/3) through a small preset table -- see
+    # video.asm's own theme_set_squares comment for why this is a palette
+    # rewrite, not a redraw, unlike ZX's ATTR-based board_theme_apply.
+    "theme_set_squares",
     # im2_s1.asm -- boot/interrupt/exit primitives, called once each from
     # crt0/_main rather than from the frame loop.
     "im2_install",
@@ -131,6 +177,13 @@ PLATFORM_SYMBOLS = [
     "ovl_copy_slot",
     "OVL_SLOT_ADDR",
     "OVL_SLOT_SIZE",
+    # WIN3-paged overlays (plan D7-bis, S5 substep 3b): the 2 KiB copy slot
+    # above cannot hold a compiled C overlay of real size (BOARD links to
+    # 2772 bytes), so RULES/BOARD are instead linked at their own ORG inside
+    # the WIN3 window and mapped with a single OUT rather than copied. The
+    # port number itself is bridged (rather than spelled #E2 in the z88dk-
+    # z80asm loader) so dss.inc stays the one place that names it.
+    "WIN3_PORT",
 ]
 
 GENERATED_BANNER = (
@@ -188,11 +241,13 @@ def _clean_fixture() -> str:
         "text_print: EQU 0x000049C6\n"
         "bench_init: EQU 0x00008200\n"
         "resolve_buffers: EQU 0x00008210\n"
+        "flip_ring_reset: EQU 0x00008216\n"
         "bench_asset_page: EQU 0x00008220\n"
         "front_base: EQU 0x00008222\n"
         "back_base: EQU 0x00008224\n"
         "piece_page1: EQU 0x00008226\n"
         "piece_page2: EQU 0x00008227\n"
+        "ovl_win3_page: EQU 0x00008228\n"
         "tile_dest_base: EQU 0x00004920\n"
         "tile_x_byte: EQU 0x00004922\n"
         "tile_x_hi: EQU 0x00004923\n"
@@ -210,11 +265,20 @@ def _clean_fixture() -> str:
         "BOARD_CELL_W: EQU 0x00000030\n"
         "BOARD_CELL_H: EQU 0x00000018\n"
         "LOWRAM_CHESS_BOARD_ADDR: EQU 0x0000B2AF\n"
+        "LOWRAM_MOVE_LOG_ADDR: EQU 0x0000B36F\n"
+        "LOWRAM_OVERLAY_CONTEXT_ADDR: EQU 0x0000B32F\n"
+        "LOWRAM_OVERLAY_SCRATCH_ADDR: EQU 0x0000B33F\n"
         "MOVE_Y: EQU 0x0000001C\n"
         "STATUS_Y: EQU 0x000000E8\n"
         "BANNER_Y: EQU 0x00000000\n"
         "MENU_Y: EQU 0x00000010\n"
         "INPUT_Y: EQU 0x000000F4\n"
+        "PANEL_X: EQU 0x00000198\n"
+        "PANEL_HEADER_Y: EQU 0x00000028\n"
+        "PANEL_DIVIDER_Y: EQU 0x0000008D\n"
+        "PANEL_NOTICE_Y: EQU 0x000000DC\n"
+        "PANEL_MOVES_Y: EQU 0x00000034\n"
+        "PANEL_CHAT_Y: EQU 0x00000094\n"
         "write_palette: EQU 0x000044F5\n"
         "write_palette_entry: EQU 0x000044CA\n"
         "video_init: EQU 0x00004600\n"
@@ -243,6 +307,8 @@ def _clean_fixture() -> str:
         "ovl_copy_slot: EQU 0x00008A00\n"
         "OVL_SLOT_ADDR: EQU 0x0000A800\n"
         "OVL_SLOT_SIZE: EQU 0x00000800\n"
+        "WIN3_PORT: EQU 0x000000E2\n"
+        "theme_set_squares: EQU 0x00004680\n"
     )
 
 

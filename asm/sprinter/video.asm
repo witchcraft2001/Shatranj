@@ -171,6 +171,86 @@ clear_bg_signal:
         ret
 .saved_win3: DB 0
 
+; --- board theme (S5-finish, menu THEME action, plan D12) ------------------
+;
+; ZX's netchesszx_board_theme_apply (asm/spectrum/screen.asm) recolours the
+; board by rewriting each square's ATTR byte and repainting -- there is no
+; equivalent "attribute" concept on Sprinter's 4bpp linear framebuffer.
+; render_core.asm's draw_square_into already paints every square through
+; palette indices 2 (light) / 3 (dark) (assets/sprinter/palette.json), so
+; recolouring the board here means rewriting those two palette ENTRIES, not
+; touching a single framebuffer byte: every square on screen recolours the
+; next time the accelerator/CRT reads that palette index, no redraw needed
+; at all (port.md's own "Палитра — в VRAM" fact). Cheaper and simpler than
+; porting ZX's redraw-based approach, not a missing feature standing in for
+; it.
+THEME_COUNT EQU 5
+theme_squares_rgb:
+        ; 0 CLASSIC (palette_base.inc's own boot default -- restoring index
+        ; 0 here keeps a full cycle back-to-back with write_palette's own
+        ; boot values, so nothing looks "off" landing back on theme 0)
+        DB #F0,#D9,#B5          ; light
+        DB #B5,#88,#63          ; dark
+        ; 1 BLUE
+        DB #D9,#E6,#F5
+        DB #5A,#78,#B5
+        ; 2 GREEN
+        DB #E2,#F0,#D9
+        DB #6B,#9E,#5A
+        ; 3 CYAN
+        DB #D9,#F5,#F0
+        DB #4A,#A8,#A0
+        ; 4 MAGENTA
+        DB #F5,#D9,#F0
+        DB #A8,#4A,#9E
+
+; C-callable (single uint8_t arg at SP+2, see ovl_test_signal's own comment
+; on this convention): theme index, taken mod THEME_COUNT so a caller never
+; needs its own range check. Rewrites palette indices 2/3 (board light/dark
+; squares) from theme_squares_rgb's matching pair. Same WIN3 save/
+; map(#50)/restore/park dance as ovl_test_signal/clear_bg_signal. Clobbers
+; AF,BC,DE,HL.
+theme_set_squares:
+        ld      hl,2
+        add     hl,sp
+        ld      a,(hl)
+.mod:   cp      THEME_COUNT
+        jr      c,.have_index
+        sub     THEME_COUNT
+        jr      .mod
+.have_index:
+        ; hl = theme_squares_rgb + index*6 (6 bytes/theme: light RGB, dark
+        ; RGB) -- THEME_COUNT is small (5), a plain add loop is clearer than
+        ; a shift-based multiply for a range this size.
+        ld      hl,theme_squares_rgb
+        or      a
+        jr      z,.at_offset
+        ld      b,a
+.add6:  ld      de,6
+        add     hl,de
+        djnz    .add6
+.at_offset:
+        push    hl                       ; hl -> {light RGB, dark RGB}
+        di
+        in      a,(WIN3_PORT)
+        ld      (.saved_win3),a
+        ld      a,#50
+        out     (WIN3_PORT),a
+        pop     hl
+        ld      a,2                      ; palette index 2 = square_light
+        call    write_palette_entry      ; hl left one past the 3 source
+                                          ; bytes (its own contract) -- that
+                                          ; is exactly the dark-square RGB
+        ld      a,3                      ; palette index 3 = square_dark
+        call    write_palette_entry
+        ld      a,#C0
+        out     (PORT_Y),a
+        ld      a,(.saved_win3)
+        out     (WIN3_PORT),a
+        ei
+        ret
+.saved_win3: DB 0
+
 ; --- RTC -------------------------------------------------------------------
 
 ; rtc_present is NOT file-local storage: trampoline.asm (a separate

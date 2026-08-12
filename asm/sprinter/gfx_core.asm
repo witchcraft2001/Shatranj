@@ -74,6 +74,8 @@ gfx_clear_buffer:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
+        call    flip_mark_dirty_all     ; S5-finish plan D11: a strict
+                                         ; superset of any ring entry
         ei
         ret
 .fill_byte:  DB 0
@@ -227,6 +229,19 @@ gfx_fill_rect:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
+        ld      a,(.x_byte)             ; S5-finish plan D11: log the
+        ld      l,a                     ; painted rect (x zero-extended to
+        ld      h,0                     ; a word -- gfx_core.asm's own
+        ld      (flip_arg_x),hl         ; tile_x_byte/tile_x_hi precedent)
+        ld      a,(.y)
+        ld      (flip_arg_y),a
+        ld      a,(.w)
+        ld      l,a
+        ld      h,0
+        ld      (flip_arg_w),hl
+        ld      a,(.h)
+        ld      (flip_arg_h),a
+        call    flip_log_rect
         ei
         ret
 .dest_base:  DW 0
@@ -318,6 +333,19 @@ gfx_hline:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
+        ld      a,(.x_byte)             ; S5-finish plan D11: log the
+        ld      l,a                     ; painted row (h=1 -- a single-row
+        ld      h,0                     ; primitive)
+        ld      (flip_arg_x),hl
+        ld      a,(.y)
+        ld      (flip_arg_y),a
+        ld      a,(.w)
+        ld      l,a
+        ld      h,0
+        ld      (flip_arg_w),hl
+        ld      a,1
+        ld      (flip_arg_h),a
+        call    flip_log_rect
         ei
         ret
 .dest_base:  DW 0
@@ -419,6 +447,17 @@ gfx_draw_tile:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
+        ld      hl,(tile_x_byte)        ; S5-finish plan D11: tile_x_byte/
+        ld      (flip_arg_x),hl         ; tile_x_hi are adjacent DB cells,
+        ld      a,(tile_y)              ; so this reads them as one word
+        ld      (flip_arg_y),a          ; (same layout gfx_draw_tile's own
+        ld      a,(tile_width)          ; callers already rely on)
+        ld      l,a
+        ld      h,0
+        ld      (flip_arg_w),hl
+        ld      a,(tile_rows)
+        ld      (flip_arg_h),a
+        call    flip_log_rect
         win0_restore
         ret
 .stride16:   DW 0
@@ -490,6 +529,17 @@ gfx_blit_rows:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
+        ld      hl,(tile_x_byte)        ; S5-finish plan D11 (see the
+        ld      (flip_arg_x),hl         ; matching comment in gfx_draw_tile)
+        ld      a,(tile_y)
+        ld      (flip_arg_y),a
+        ld      a,(tile_width)
+        ld      l,a
+        ld      h,0
+        ld      (flip_arg_w),hl
+        ld      a,(tile_rows)
+        ld      (flip_arg_h),a
+        call    flip_log_rect
         ei
         ret
 .src:        DW 0

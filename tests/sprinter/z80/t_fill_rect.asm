@@ -155,3 +155,10 @@ start:
         assert  $ < TEST_RESULT
 
         include "gfx_core.asm"
+        ; S5-finish plan D11 (buffer flip): gfx_fill_rect/gfx_hline/
+        ; gfx_clear_buffer now call flip_log_rect/flip_mark_dirty_all
+        ; (buffers.asm) after every paint -- needed to assemble standalone.
+        ; text640.asm is buffers.asm's own dependency (bench_init's
+        ; text_font_page), not this test's.
+        include "text640.asm"
+        include "buffers.asm"

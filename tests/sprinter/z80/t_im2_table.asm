@@ -62,4 +62,12 @@ start:
         assert $ < IM2_TABLE_ADDR - 1
         assert $ < TEST_RESULT
 
+        ; S5-finish plan D11 (buffer flip): frame_wait (im2_s1.asm) now
+        ; references buffers.asm's flip_ring_count/flip_dirty_all/
+        ; resolve_buffers/flip_sync unconditionally -- needed to assemble
+        ; standalone, even though this test never calls frame_wait itself.
+        ; text640.asm is buffers.asm's own dependency (bench_init's
+        ; text_font_page).
+        include "text640.asm"
+        include "buffers.asm"
         include "im2_s1.asm"

@@ -124,8 +124,41 @@ canary_check:
 ; the timeout itself never resolves either. This is a deliberate, documented
 ; limitation (port.md section 3.9) -- on the live system keyboard IRQs alone
 ; wake it well within the timeout even during a frame-tick gap.
+;
+; S5-finish plan D11 (buffer flip): if render_core.asm has logged any
+; unflushed paint since the last flip (buffers.asm's flip_ring_count/
+; flip_dirty_all), request a flip before waiting -- DI-set flip_request,
+; the same cell im2_frame_isr's tail reads. The ISR runs to completion
+; (set frame_flag, act on flip_request, clear it) before HALT ever returns
+; control here, so by the time .got_frame is reached the ISR that set
+; frame_flag has already either consumed our request or not seen one --
+; no separate race window exists between "woke up" and "checked
+; flip_request" to close (unlike a preemptive OS), this DI block is
+; defensive symmetry with every other flip_request access, not a fix for
+; an observed race. Only calls resolve_buffers/flip_sync when THIS call
+; actually asked for a flip (@requested) and the request was consumed
+; (flip_request now 0): a timeout leaves flip_request set and the ring
+; untouched, so the next frame_wait call re-requests the same pending
+; paint instead of silently dropping it.
 frame_wait:
         call    canary_check
+
+        xor     a
+        ld      (@requested),a
+        ld      a,(flip_ring_count)
+        or      a
+        jr      nz,@do_request
+        ld      a,(flip_dirty_all)
+        or      a
+        jr      z,@wait
+@do_request:
+        di
+        ld      a,1
+        ld      (flip_request),a
+        ei
+        ld      a,1
+        ld      (@requested),a
+@wait:
         ld      b,0                     ; DJNZ over 256: 0 wraps to 255 first
 .wait_loop:
         di
@@ -140,16 +173,34 @@ frame_wait:
         scf
         ret
 .got_frame:
+        ld      a,(@requested)
+        or      a
+        jr      z,.done
+        di
+        ld      a,(flip_request)
+        ei
+        or      a
+        jr      nz,.done                ; not consumed this tick -- retry
+                                         ; on the next frame_wait call
+        call    resolve_buffers
+        call    flip_sync
+.done:
         or      a
         ret
+@requested: DB 0
 
 ; Non-blocking keyboard poll, translating DSS's raw keyboard-buffer output
 ; into this port's own semantic key codes (the same convention ZX/Next's
 ; spectrum_input_poll_event contract already uses -- src/spectrum/ui/
 ; gui.h/gui.c, asm/spectrum/screen.asm: 0x81/0x82/0x83/0x84 = up/down/
 ; left/right, 0x8A = CANCEL, 0x08 = backspace, 0x20-0x7E = printable
-; ASCII passthrough), so a future real input handler can share that
-; contract instead of inventing a Sprinter-specific one. The DSS side of
+; ASCII passthrough, 0x90 = SPECTRUM_GUI_KEY_MENU), so a future real input
+; handler can share that contract instead of inventing a Sprinter-specific
+; one. 0x90 is this port's own addition (S5-finish plan D12): ZX's own
+; MENU key is a specific physical Spectrum key this port's PS/2 mapping
+; has no equivalent for, so TAB (raw ASCII 9, otherwise unclaimed) is
+; mapped to it instead -- everything else in this table is a cross-checked
+; ZX/Next convention, this one line is not. The DSS side of
 ; this (TESTKEY-peek-then-SCANKEY, and reading D as a positional scan
 ; code when A/ascii is 0) recovers the approach the previous, since-
 ; restarted Sprinter port attempt already worked out (runtime.asm's
@@ -204,6 +255,14 @@ key_poll:
 
         cp      $1B                     ; ESC
         jr      z,.cancel
+        cp      9                       ; TAB -- opens/closes the menu bar
+        jr      z,.menu                 ; (SPECTRUM_GUI_KEY_MENU, gui.h) --
+                                          ; Sprinter's own key choice: ZX's
+                                          ; own physical MENU key does not
+                                          ; exist on this port's PS/2
+                                          ; keyboard mapping, and TAB is not
+                                          ; otherwise claimed by anything
+                                          ; above (S5-finish plan D12).
         cp      8                       ; backspace
         jr      z,.store
         cp      $0D                     ; enter/CR
@@ -229,6 +288,8 @@ key_poll:
         jr      .none
 
 .cancel:     ld      a,$8A
+             jr      .store
+.menu:       ld      a,$90
              jr      .store
 .backspace:  ld      a,8
              jr      .store
@@ -263,6 +324,17 @@ exit_stand:
         call    svmod_safe              ; WIN2-half wrapper (SetVMod clobbers
                                          ; the WIN1 mapping; this code is
                                          ; WIN1-half -- see resident_s1.asm)
+        ; S5-finish plan D11/F2: SetVMod's B parameter restores the saved
+        ; screen's own descriptor/mode but is independent of PORT_RGMOD --
+        ; im2_frame_core may have left RGMOD bit 0 selecting buffer 1
+        ; (mid-game flips), and DSS.Exit does not touch video state (see
+        ; port.md's platform cheat-sheet). Park it back to buffer 0 so
+        ; whatever runs next (DSS, a reloaded program) sees a known,
+        ; boot-matching buffer instead of whichever one gameplay happened
+        ; to leave selected.
+        in      a,(PORT_RGMOD)
+        and     $FE
+        out     (PORT_RGMOD),a
         ld      a,#C0
         out     (PORT_Y),a
         ei
@@ -270,6 +342,47 @@ exit_stand:
         ld      c,DSS_EXIT
         rst     RST_DSS
 .hang:  jr      .hang
+
+; --- frame-tick ISR tail (S5-finish plan D11: buffer flip) -----------------
+;
+; im2_stub (platform_primitives.asm, the pinned 15-byte fixed-address stub)
+; tail-jumps here instead of setting frame_flag inline, on the branch that
+; already determined (via SIO RR0 bit 0) that this interrupt is a frame
+; tick and not a keyboard one. Splits into a body (im2_frame_core, RET --
+; callable directly from tests/sprinter/z80/t_frame_wait.asm's mock to
+; simulate "the ISR fired") and a thin ISR wrapper (im2_frame_isr) that
+; replicates the stub's own .chain tail (pop af / jp #0038) the stub no
+; longer falls through to once it has jumped away.
+;
+; im2_frame_core sets frame_flag unconditionally (im2_stub's own previous
+; behaviour), then -- only if the main loop asked for a flip via frame_wait
+; setting flip_request -- toggles PORT_RGMOD and clears flip_request. Both
+; happen inside the same interrupt, atomically with respect to frame_wait's
+; own mainline code (an ISR runs to completion before the HALT it woke
+; returns control), so there is no window where frame_flag is visibly set
+; while a pending flip_request is not yet acted on. Clobbers AF.
+im2_frame_core:
+        ld      a,1
+        ld      (frame_flag),a
+        ld      a,(flip_request)
+        or      a
+        ret     z
+        in      a,(PORT_RGMOD)
+        xor     1
+        out     (PORT_RGMOD),a
+        xor     a
+        ld      (flip_request),a
+        ret
+
+; Real ISR entry point (jumped to from im2_stub with AF already pushed by
+; the stub). Clobbers nothing visible to the interrupted code: AF is
+; restored before the tail jump, matching im2_stub's own .chain contract.
+im2_frame_isr:
+        call    im2_frame_core
+        pop     af
+        jp      #0038
+
+flip_request:   DB 0
 
 CANARY_SENTINEL EQU #5A5A
 

@@ -2,11 +2,20 @@
 ;
 ; S1_TEST_HOOK (defined here, before including im2_s1.asm) swaps frame_
 ; wait's HALT for a call to s1_test_mock_interrupt, a small test double
-; with its own call counter that sets frame_flag on a configurable target
-; call -- simulating "the ISR fired on wait N" without needing a real IM2
-; interrupt in the harness. Only the intact-canary path is exercised: a
-; corrupted canary jumps to fatal_stack_overflow, which makes real DSS RST
-; calls the harness cannot service.
+; with its own call counter that calls im2_frame_core (im2_s1.asm) on a
+; configurable target call -- simulating "the ISR fired on wait N" without
+; needing a real IM2 interrupt in the harness. Only the intact-canary path
+; is exercised: a corrupted canary jumps to fatal_stack_overflow, which
+; makes real DSS RST calls the harness cannot service.
+;
+; S5-finish plan D11 (buffer flip): frame_wait now also requests a flip
+; (im2_s1.asm's flip_request) when buffers.asm's dirty-rect ring is
+; non-empty, and resolves+syncs once that request is confirmed consumed --
+; buffers.asm is included below (im2_s1.asm's frame_wait references
+; flip_ring_count/flip_dirty_all/resolve_buffers/flip_sync directly, all
+; defined there) the same way t_fill_rect.asm/t_draw_tile.asm/
+; t_text_clip.asm now pull it in for gfx_core.asm/text640.asm's own new
+; flip_log_rect calls.
 
         device noslot64k
         org 0
@@ -64,6 +73,59 @@ start:
         ld      a,5
         call    t_expect_z
 
+        ; --- S5-finish plan D11: flip integration --------------------------
+        ; A non-empty ring makes frame_wait DI-set flip_request before
+        ; waiting; the mock's im2_frame_core call (3rd wait step) simulates
+        ; the ISR consuming it (sets frame_flag, flips, clears flip_
+        ; request); frame_wait then resolves+syncs and leaves the ring
+        ; empty.
+        call    flip_ring_reset
+        ld      hl,5
+        ld      (flip_arg_x),hl
+        xor     a
+        ld      (flip_arg_y),a
+        ld      hl,4
+        ld      (flip_arg_w),hl
+        ld      a,1
+        ld      (flip_arg_h),a
+        call    flip_log_rect
+        ld      a,(flip_ring_count)
+        cp      1
+        ld      a,6
+        call    t_expect_z
+
+        xor     a
+        ld      (s1_test_call_counter),a
+        ld      a,3
+        ld      (s1_test_target_call),a
+        call    frame_wait
+        ld      a,7
+        call    t_expect_nc
+
+        ld      a,(flip_request)
+        or      a
+        ld      a,8
+        call    t_expect_z              ; consumed by im2_frame_core
+
+        ld      a,(flip_ring_count)
+        or      a
+        ld      a,9
+        call    t_expect_z              ; flip_sync reset the ring
+
+        ; A frame_wait call with an empty ring must NOT touch flip_request
+        ; at all (no request means nothing to consume or resolve).
+        xor     a
+        ld      (s1_test_call_counter),a
+        ld      a,2
+        ld      (s1_test_target_call),a
+        call    frame_wait
+        ld      a,10
+        call    t_expect_nc
+        ld      a,(flip_request)
+        or      a
+        ld      a,11
+        call    t_expect_z
+
         call    t_end
         halt
 
@@ -73,10 +135,13 @@ s1_test_call_counter: DB 0
 s1_test_target_call:  DB 0
 
 ; Test double for HALT under S1_TEST_HOOK: increments its call counter and
-; sets frame_flag exactly when the counter reaches s1_test_target_call.
-; target=0 means "never fire" -- checked explicitly, not via a plain CP:
-; an 8-bit counter incremented 256 times wraps back to 0 on the very last
-; call, which would otherwise collide with a target of 0.
+; calls im2_frame_core (the real ISR body, minus the pop af/jp #0038 tail)
+; exactly when the counter reaches s1_test_target_call -- simulating the
+; frame-tick ISR firing, frame_flag and flip_request handling included,
+; not just a bare frame_flag poke. target=0 means "never fire" -- checked
+; explicitly, not via a plain CP: an 8-bit counter incremented 256 times
+; wraps back to 0 on the very last call, which would otherwise collide
+; with a target of 0.
 s1_test_mock_interrupt:
         ld      hl,s1_test_call_counter
         inc     (hl)
@@ -87,8 +152,11 @@ s1_test_mock_interrupt:
         ld      hl,s1_test_target_call
         cp      (hl)
         ret     nz
-        ld      a,1
-        ld      (frame_flag),a
+        call    im2_frame_core
         ret
 
+        ; text640.asm is buffers.asm's own dependency (bench_init's
+        ; text_font_page), not this test's.
+        include "text640.asm"
+        include "buffers.asm"
         include "im2_s1.asm"

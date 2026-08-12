@@ -255,3 +255,7 @@ str_empty:  DB 0
 
         include "gfx_core.asm"
         include "text640.asm"
+        ; S5-finish plan D11 (buffer flip): text_print now calls
+        ; flip_log_rect (buffers.asm) after staging -- needed to assemble
+        ; standalone.
+        include "buffers.asm"

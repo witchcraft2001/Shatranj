@@ -138,16 +138,21 @@ ovl_copy_slot:
         ASSERT  $ = IM2_STUB_ADDR
 
 ; Minimal ISR (R6, 15 bytes): discriminate a frame tick from a keyboard
-; interrupt via SIO RR0 bit 0, set frame_flag on a frame tick, then
-; tail-jump into DSS's own #0038 handler. Pinned to this exact address by
-; gen_sprinter_layout.py's fill_byte*0x101 invariant.
+; interrupt via SIO RR0 bit 0, then either tail-jump into im2_s1.asm's
+; im2_frame_isr (frame tick: sets frame_flag and acts on a pending
+; flip_request, S5-finish plan D11) or DSS's own #0038 handler (anything
+; else). Pinned to this exact address by gen_sprinter_layout.py's
+; fill_byte*0x101 invariant -- `jp im2_frame_isr` is 2 bytes shorter than
+; the `ld a,1 / ld (frame_flag),a` it replaces, padded back to size so the
+; ASSERT below still holds; the pad bytes are never reached (the jp always
+; jumps away, .chain is only reached via the jr c above).
 im2_stub:
         push    af
         in      a,(SIO_A_CTRL)
         rra
         jr      c,.chain
-        ld      a,1
-        ld      (frame_flag),a
+        jp      im2_frame_isr
+        DS      2, 0
 .chain: pop     af
         jp      #0038
         ASSERT  $ - im2_stub = IM2_STUB_SIZE

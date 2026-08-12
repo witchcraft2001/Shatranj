@@ -49,6 +49,14 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "NETCHESS_PROTO_BYE",
     "NETCHESS_PROTO_TAKEBACK_PREFIX",
     "NETCHESS_PROTO_ACK_PING",
+    # board.c (S5 substep 3b, RULES(0)/BOARD(1) port): the BOARD overlay's
+    # snapshot-save entry (entry_board_sprinter.asm, hand-ported inline asm
+    # mirroring entry_board.asm:24-43) reads/writes these three globals
+    # directly, the same way it does on ZX/Next via entry_board.asm's own
+    # EXTERNs.
+    "side_to_move",
+    "castle_rights",
+    "ep_square",
 ]
 
 GENERATED_BANNER = (
@@ -144,6 +152,15 @@ def _clean_fixture() -> str:
         "_NETCHESS_PROTO_ACK_PING        = $4A3D ; addr, public, , "
         "src_common_protocol_game_protocol_c, rodata_compiler, "
         "src/common/protocol/game_protocol.c:24\n"
+        "_side_to_move                   = $4B01 ; addr, public, , "
+        "src_spectrum_board_board_c, bss_compiler, "
+        "src/spectrum/board/board.c:51\n"
+        "_castle_rights                  = $4B02 ; addr, public, , "
+        "src_spectrum_board_board_c, bss_compiler, "
+        "src/spectrum/board/board.c:52\n"
+        "_ep_square                      = $4B03 ; addr, public, , "
+        "src_spectrum_board_board_c, bss_compiler, "
+        "src/spectrum/board/board.c:53\n"
         "i_15                            = $4259 ; addr, local, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"

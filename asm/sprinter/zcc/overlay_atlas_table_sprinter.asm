@@ -1,28 +1,76 @@
-; Overlay atlas: id -> source offset within the asset page (WIN0-relative,
-; i.e. slot*256), consumed by overlay_loader_sprinter.asm's ovl_exec_cached.
+; Overlay atlas, consumed by overlay_loader_sprinter.asm's ovl_exec_cached.
 ;
 ; Dense from 0 (SPECTRUM_OVL_RULES) through 14 (SPECTRUM_OVL_CONTROL,
-; src/spectrum/overlay/overlay.h) -- ovl_atlas_table is indexed directly by
-; id*2, so representing "only id 14 is real" needs every lower slot filled,
-; not skipped. Ids 0-13 point at asset-page slot 0 (the font, never an
-; overlay's own bytes): harmless placeholder content since nothing calls
-; those ids yet (main.c only ever dispatches id 14), and unambiguously not
-; a real overlay if anyone reads this table before porting one -- swap an
-; id's entry from 0x0000 to its own slot the same day its real content
-; lands in the assets page, no other change needed here or in
-; overlay_loader_sprinter.asm.
+; src/spectrum/overlay/overlay.h) -- both tables are indexed directly by id,
+; so representing "only some ids are real" needs every lower slot filled,
+; not skipped.
 ;
-; Id 14 (CONTROL) is real: src/spectrum/overlay/control_ovl.c, compiled and
-; linked by the Makefile's $(SPRINTER_OVL_CONTROL_BIN) rule, embedded at
-; asset-page slot 36 (tools/make_sprinter_assets_page.py's OVERLAY_SLOT) --
-; the same slot the S3-successor proof payload (overlay_probe_sprinter.asm)
-; held before CONTROL superseded it (port.md, S5 substep 2).
+; TWO DISPATCH MODES (plan D2 vs D7-bis), selected per id by
+; ovl_atlas_mode_table below. This is the whole reason there are two tables:
+;
+;   mode 0 -- COPY. ovl_atlas_table[id] is a WIN0-relative source offset
+;     (slot*256) inside the main assets page; the loader LDIRs
+;     OVL_SLOT_SIZE bytes from there into OVL_SLOT_ADDR and dispatches out
+;     of the slot. This is S5 substep 2's original mechanism (plan D2),
+;     MAME-proven for CONTROL (id 14), and unchanged here.
+;
+;   mode 1 -- MAP (plan D7-bis). ovl_atlas_table[id] is an ABSOLUTE address
+;     inside the WIN3 window (#C000-#FFFF) where that overlay's entry table
+;     was linked; the loader maps ovl_win3_page into WIN3 with a single OUT
+;     and dispatches in place, no copy at all. Adopted for RULES/BOARD
+;     because the 2 KiB copy slot cannot hold a compiled C overlay of real
+;     size: BOARD links to 2772 bytes (measured, S5 substep 3b), and the
+;     three remaining D7 overlays (GUI_LOG/STATUS/INPUT_EDIT) are C too.
+;     Mode 1 raises the per-overlay ceiling from 2 KiB to 4 KiB (four
+;     overlays per WIN3 page) and drops the copy cost (~4 ms of LDIR per
+;     switch, D7-ter) to one OUT.
+;
+; Mode 1 is safe for exactly the overlays that never touch WIN3 themselves,
+; which is what RULES/BOARD are: pure computation over resident WIN1/WIN2
+; memory (the board buffers at LOWRAM_CHESS_BOARD/LOWRAM_RULES_BOARD, the
+; overlay context, board.c's own globals) with no text_print/gfx_*/DSS/
+; libman call and no string literals of their own. The two hazards plan
+; D7-bis calls out -- overlay-owned string pointers handed to text640.asm
+; (whose contract already forbids WIN0/WIN3 sources) and DSS/uNet taking
+; WIN3 for themselves -- simply do not arise for these two. An overlay that
+; DOES need either must stay mode 0 until those are solved.
+;
+; WIN3 window layout for mode-1 overlays (tools/make_sprinter_overlay_page.py
+; packs the page image to match, 4 KiB per slot):
+;     #C000  RULES  (id 0)   -- linked size 1628 bytes
+;     #D000  BOARD  (id 1)   -- linked size 2772 bytes
+;     #E000  free            -- reserved for GUI_LOG (id 2)
+;     #F000  free            -- reserved for STATUS (id 7)
+; INPUT_EDIT (id 9) needs a second WIN3 page; ovl_win3_page is a single
+; global today, so that is the point at which it becomes a per-id page
+; table (the mode byte already leaves room for the distinction).
+;
+; Id 14 (CONTROL) stays mode 0: src/spectrum/overlay/control_ovl.c, embedded
+; at assets-page slot 36 (tools/make_sprinter_assets_page.py's OVERLAY_SLOT),
+; 1082 bytes, comfortably inside the 2 KiB slot and already confirmed
+; end-to-end in MAME -- no reason to move it onto a mechanism whose first
+; hardware run is this pass.
+;
+; Ids with no real content yet are mode 0 pointing at assets-page slot 0
+; (the font, never an overlay's own bytes): harmless placeholder content
+; since nothing dispatches those ids, and unambiguously not a real overlay
+; if anyone reads this table.
 
 ovl_atlas_count EQU 15
 
+OVL_MODE_COPY EQU 0
+OVL_MODE_WIN3 EQU 1
+
+; WIN3 window base and per-overlay slot size for mode-1 overlays. Must match
+; tools/make_sprinter_overlay_page.py's WIN3_BASE/SLOT_SIZE and the -r link
+; addresses in the Makefile's $(SPRINTER_OVL_RULES_BIN)/$(SPRINTER_OVL_BOARD_BIN)
+; rules.
+OVL_WIN3_BASE EQU 0xC000
+OVL_WIN3_SLOT EQU 0x1000
+
 ovl_atlas_table:
-    defw 0x0000   ; id 0  (RULES)       -- not yet ported (needs render_core)
-    defw 0x0000   ; id 1  (BOARD)       -- not yet ported (needs render_core)
+    defw OVL_WIN3_BASE + 0*OVL_WIN3_SLOT  ; id 0  (RULES)   -- WIN3 #C000
+    defw OVL_WIN3_BASE + 1*OVL_WIN3_SLOT  ; id 1  (BOARD)   -- WIN3 #D000
     defw 0x0000   ; id 2  (GUI_LOG)     -- not yet ported (needs render_core)
     defw 0x0000   ; id 3  (NET_CONNECT) -- S7/S8 scope
     defw 0x0000   ; id 4  (MQTT_TX)     -- S7/S8 scope
@@ -35,4 +83,23 @@ ovl_atlas_table:
     defw 0x0000   ; id 11 (RESTORE)     -- S6 scope
     defw 0x0000   ; id 12 (ABOUT)       -- S9 scope
     defw 0x0000   ; id 13 (FILEUI)      -- S6 scope
-    defw 0x2400   ; id 14 (CONTROL)     -- real, asset-page slot 36 (36*256)
+    defw 0x2400   ; id 14 (CONTROL)     -- real, assets-page slot 36 (36*256)
+
+; Dispatch mode, one byte per id, same indexing as ovl_atlas_table but not
+; doubled (indexed by id, not id*2).
+ovl_atlas_mode_table:
+    defb OVL_MODE_WIN3   ; id 0  (RULES)
+    defb OVL_MODE_WIN3   ; id 1  (BOARD)
+    defb OVL_MODE_COPY   ; id 2  (GUI_LOG)     -- placeholder
+    defb OVL_MODE_COPY   ; id 3  (NET_CONNECT) -- placeholder
+    defb OVL_MODE_COPY   ; id 4  (MQTT_TX)     -- placeholder
+    defb OVL_MODE_COPY   ; id 5  (DIRECT)      -- placeholder
+    defb OVL_MODE_COPY   ; id 6  (MENU_CONFIG) -- placeholder
+    defb OVL_MODE_COPY   ; id 7  (STATUS)      -- placeholder
+    defb OVL_MODE_COPY   ; id 8  (SETUP)       -- placeholder
+    defb OVL_MODE_COPY   ; id 9  (INPUT_EDIT)  -- placeholder
+    defb OVL_MODE_COPY   ; id 10 (SAVELOAD)    -- placeholder
+    defb OVL_MODE_COPY   ; id 11 (RESTORE)     -- placeholder
+    defb OVL_MODE_COPY   ; id 12 (ABOUT)       -- placeholder
+    defb OVL_MODE_COPY   ; id 13 (FILEUI)      -- placeholder
+    defb OVL_MODE_COPY   ; id 14 (CONTROL)     -- real, unchanged

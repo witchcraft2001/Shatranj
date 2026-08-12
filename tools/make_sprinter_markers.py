@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the two demo point-marker PNGs for the S4 scene.
+"""Generate the point-marker and square-frame PNGs for the board.
 
 Manual, one-off tool (mirrors tools/rasterize_sprinter_pieces.py and
 tools/prepare_sprinter_logo.py -- never part of the build): port.md section
@@ -8,6 +8,31 @@ hint, last move, ...) as small tiles through the hardware transparency key.
 This generates the two markers scene_s4.asm demonstrates the key with:
 "dot" (palette index 9, hud_hint -- the legal-move-hint marker) and "ring"
 (index 10, hud_lastmove -- the last-move marker), both 16x8.
+
+It also generates the two board-cursor frames (S5 substep 3c), which are
+whole-cell 48x24 outlines rather than point markers, because that is what
+ZX/Next actually draw: asm/spectrum/screen.asm's draw_square_mark paints a
+one-pixel rectangle around the 2x2-character square, and adds a SECOND,
+inner rectangle when the square is the selected one (its `mark_mode`
+branch) -- Next carries the same distinction as its marker sprite's
+NEXT_MARKER_FLAG_MARK / _SELECTED flags. So:
+
+    cursor.png    single hairline frame  -- where the cursor is
+    select.png    double hairline frame  -- the picked-up piece's square
+
+Frame thickness is one byte-pair (2px) horizontally and one row
+vertically, which is a visually even hairline in mode #82: its pixels are
+about half as wide as they are tall, so 2px across reads the same weight
+as 1px down (and matches ZX's own 1px frame proportionally).
+
+Colours are the palette's own declared roles: hud_select (index 8,
+"Selected square highlight") for the selection frame, accent (index 14)
+for the cursor frame. NOT index 15, despite it being named "cursor": in a
+keyed tile the nibble value 15 IS the hardware transparency code, so an
+index-15 pixel is a hole, not a colour (build_sprinter_ui_assets.py's
+KEYED_OPAQUE_INDICES enforces this). Index 15's palette entry stays what
+its name says for the text input line, which is painted by text640, not
+through the key.
 
 Transparency is constructed in even-aligned pixel PAIRS by design, not
 validated after the fact: each output pixel is decided at 2-pixel-block
@@ -35,6 +60,16 @@ DEFAULT_OUT_DIR = ROOT / "assets/sprinter/markers"
 MARKER_W, MARKER_H = 16, 8
 DOT_INDEX = 9     # hud_hint
 RING_INDEX = 10   # hud_lastmove
+
+# One whole board cell: BOARD_CELL_W/H in build/sprinter/generated/
+# render_layout.inc (48x24 px = 24 bytes x 24 rows at 4bpp). Kept as
+# literals here the same way MARKER_W/H are -- this is a manual art tool
+# whose output is committed; build_sprinter_ui_assets.py is the place that
+# pins the sizes for the build.
+FRAME_W, FRAME_H = 48, 24
+CURSOR_INDEX = 14   # accent -- see the module docstring on index 15
+SELECT_INDEX = 8    # hud_select
+FRAME_INNER_INSET = 2   # blocks/rows between the outer and inner hairline
 
 
 def _uniform_pair_tile(color_rgb: tuple[int, int, int], w_px: int, h_px: int,
@@ -80,6 +115,26 @@ def build_ring(color_rgb: tuple[int, int, int], w_px: int = MARKER_W,
     return _uniform_pair_tile(color_rgb, w_px, h_px, inside)
 
 
+def build_frame(color_rgb: tuple[int, int, int], double: bool,
+                w_px: int = FRAME_W, h_px: int = FRAME_H) -> Image.Image:
+    """A hairline rectangle around the whole cell; `double` adds a second
+    rectangle inset by FRAME_INNER_INSET, which is how screen.asm's
+    draw_square_mark distinguishes the selected square from the cursor."""
+    inset = FRAME_INNER_INSET
+
+    def on_rect(bx: int, y: int, bw: int, h: int, d: int) -> bool:
+        if bx < d or y < d or bx >= bw - d or y >= h - d:
+            return False
+        return bx == d or y == d or bx == bw - 1 - d or y == h - 1 - d
+
+    def inside(bx: int, y: int, bw: int, h: int) -> bool:
+        if on_rect(bx, y, bw, h, 0):
+            return True
+        return double and on_rect(bx, y, bw, h, inset)
+
+    return _uniform_pair_tile(color_rgb, w_px, h_px, inside)
+
+
 def _rgb(palette: dict, index: int) -> tuple[int, int, int]:
     entry = next(e for e in palette["base"] if e["index"] == index)
     return gsp._parse_rgb(entry["rgb"], "marker")
@@ -101,14 +156,15 @@ def main() -> int:
 
     dot = build_dot(_rgb(palette, DOT_INDEX))
     ring = build_ring(_rgb(palette, RING_INDEX))
+    cursor = build_frame(_rgb(palette, CURSOR_INDEX), double=False)
+    select = build_frame(_rgb(palette, SELECT_INDEX), double=True)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    dot_path = args.out_dir / "dot.png"
-    ring_path = args.out_dir / "ring.png"
-    dot.save(dot_path)
-    ring.save(ring_path)
-    print(f"[OK] {dot_path}")
-    print(f"[OK] {ring_path}")
+    for name, image in (("dot", dot), ("ring", ring),
+                        ("cursor", cursor), ("select", select)):
+        path = args.out_dir / f"{name}.png"
+        image.save(path)
+        print(f"[OK] {path}")
     return 0
 
 

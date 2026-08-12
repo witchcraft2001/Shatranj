@@ -264,6 +264,17 @@ fake_dll_unused:
 
         include "im2_s1.asm"
 
+        ; S5-finish plan D11 (buffer flip): frame_wait (im2_s1.asm) now
+        ; references buffers.asm's flip_ring_count/flip_dirty_all/
+        ; resolve_buffers/flip_sync unconditionally -- needed to assemble
+        ; standalone, even though this test never calls frame_wait itself.
+        ; Placed after im2_s1.asm's own include (not before the #8000
+        ; padding above) so it cannot disturb that fixed-address
+        ; assertion. text640.asm is buffers.asm's own dependency
+        ; (bench_init's text_font_page).
+        include "text640.asm"
+        include "buffers.asm"
+
         DEFINE  LIBMAN_MAX_LIBS 1
         DEFINE  LIBMAN_DIAGNOSTICS
         DEFINE  LIBMAN_NO_LEGACY_API

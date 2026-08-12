@@ -342,3 +342,17 @@ predicts.
 - The hardware `#FF`-key tile and the 40×20 wide tile drawn by hotkey `6`
   are visual-only checks (`docs/sprinter-testnotes/S2.md` P4); they are
   not separately timed.
+- **S5's buffer flip (port.md D11) does not change any number on this
+  page.** These benches (this file's own `bench_s2.asm` stand, now retired
+  — port.md's S5 D4) measured pure draw cost by construction: draw into
+  the non-displayed buffer, flip once outside the timed loop, same as this
+  file's own "board bench" note above. S5's production flip reuses that
+  same shape at the primitive level: every live `render_core.asm` routine
+  now writes only to `back_base` (never the displayed buffer) and logs its
+  rectangle to a 16-entry ring; `frame_wait` requests a flip only once a
+  frame, and the frame-tick ISR performs it as a single `OUT (PORT_RGMOD)`
+  (`asm/sprinter/im2_s1.asm`'s `im2_frame_core`) — an operation too cheap
+  to move any of the per-op numbers above. What S5 adds beyond a single
+  `OUT` is the front→back dirty-rectangle sync after a confirmed flip
+  (`flip_sync`, `asm/sprinter/buffers.asm`), which runs *after* the flip,
+  off the critical path these benches measure, not before it.

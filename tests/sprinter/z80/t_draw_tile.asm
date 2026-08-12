@@ -258,3 +258,9 @@ tile20_fixture:
         DB #66,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00,#00
 
         include "gfx_core.asm"
+        ; S5-finish plan D11 (buffer flip): gfx_draw_tile/gfx_blit_rows
+        ; now call flip_log_rect (buffers.asm) after every paint -- needed
+        ; to assemble standalone. text640.asm is buffers.asm's own
+        ; dependency (bench_init's text_font_page), not this test's.
+        include "text640.asm"
+        include "buffers.asm"
