@@ -906,6 +906,8 @@ endif
         sprinter-gates sprinter-section-gate sprinter-crt0-check sprinter-platform-defs-check \
         sprinter-overlay-defs-check sprinter-overlay-control-check \
         sprinter-overlay-rules-check sprinter-overlay-board-check \
+        sprinter-overlay-saveload-check sprinter-overlay-restore-check \
+        sprinter-overlay-fileui-check \
         sprinter-size-report \
         sprinter-about clean-sprinter
 
@@ -948,6 +950,9 @@ SPRINTER_ASSETS_PAGE := $(SPRINTER_BUILD_DIR)/assets_page.bin
 SPRINTER_OVL_CONTROL_BIN := $(SPRINTER_BUILD_DIR)/overlay_control_sprinter.bin
 SPRINTER_OVL_RULES_BIN := $(SPRINTER_BUILD_DIR)/overlay_rules_sprinter.bin
 SPRINTER_OVL_BOARD_BIN := $(SPRINTER_BUILD_DIR)/overlay_board_sprinter.bin
+SPRINTER_OVL_SAVELOAD_BIN := $(SPRINTER_BUILD_DIR)/overlay_saveload_sprinter.bin
+SPRINTER_OVL_RESTORE_BIN := $(SPRINTER_BUILD_DIR)/overlay_restore_sprinter.bin
+SPRINTER_OVL_FILEUI_BIN := $(SPRINTER_BUILD_DIR)/overlay_fileui_sprinter.bin
 
 SPRINTER_PALETTE_JSON := assets/sprinter/palette.json
 SPRINTER_PALETTE_INC := $(SPRINTER_GENERATED_DIR)/palette_base.inc
@@ -1199,7 +1204,7 @@ SPRINTER_PLATFORM_PRIMITIVES_DEPS := $(SPRINTER_ASM_DIR)/platform_primitives.asm
                           $(SPRINTER_ASM_DIR)/win0.inc $(SPRINTER_ASM_DIR)/accel.inc \
                           $(SPRINTER_ASM_DIR)/dss.inc \
                           $(SPRINTER_ASM_DIR)/gfx_core.asm $(SPRINTER_ASM_DIR)/text640.asm \
-                          $(SPRINTER_ASM_DIR)/net_gate.asm \
+                          $(SPRINTER_ASM_DIR)/net_gate.asm $(SPRINTER_ASM_DIR)/dss_fileio.asm \
                           $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) \
                           $(SPRINTER_PALETTE_INC) $(SPRINTER_RENDER_LAYOUT_INC)
 
@@ -1234,7 +1239,10 @@ SPRINTER_RESIDENT_C_SRC := src/sprinter/main.c \
                            src/common/protocol/mqtt_session_protocol.c \
                            src/spectrum/board/board.c \
                            src/common/chess/move_coords.c \
-                           src/spectrum/ui/gui.c
+                           src/spectrum/ui/gui.c \
+                           src/spectrum/saveload/saveload.c \
+                           src/spectrum/restore/restore.c \
+                           src/spectrum/fileui/fileui.c
 SPRINTER_RESIDENT_CRT0 := $(SPRINTER_ASM_DIR)/zcc/resident_crt0.asm
 SPRINTER_OVERLAY_LOADER_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_loader_sprinter.asm
 SPRINTER_OVERLAY_ATLAS_TABLE_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_atlas_table_sprinter.asm
@@ -1332,7 +1340,7 @@ $(SPRINTER_OVL_RULES_BIN): $(SPRINTER_OVL_RULES_ENTRY_ASM) $(SPRINTER_OVL_RULES_
 	$(Z80ASM) $(SPRINTER_OVL_RULES_ENTRY_ASM)
 	$(Z80ASM) $(SPRINTER_OVL_RULES_STUB_ASM)
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
-	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-slot-org 0) \
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org RULES) \
 		-o=$(SPRINTER_OVL_RULES_BIN) \
 		$(SPRINTER_ASM_DIR)/zcc/entry_rules_sprinter.o $(SPRINTER_ASM_DIR)/zcc/rules_stub_sprinter.o \
 		$(SPRINTER_GENERATED_DIR)/platform_defs.o
@@ -1366,7 +1374,7 @@ $(SPRINTER_OVL_BOARD_BIN): $(SPRINTER_OVL_BOARD_ENTRY_ASM) src/spectrum/overlay/
 	$(Z80ASM) $(SPRINTER_OVL_BOARD_ENTRY_ASM)
 	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
-	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-slot-org 1) \
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org BOARD) \
 		-o=$(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
 		$(SPRINTER_ASM_DIR)/zcc/entry_board_sprinter.o $(SPRINTER_BUILD_DIR)/board_apply_ovl.o \
 		$(SPRINTER_BUILD_DIR)/board_helpers_sprinter.o \
@@ -1377,19 +1385,102 @@ $(SPRINTER_OVL_BOARD_BIN): $(SPRINTER_OVL_BOARD_ENTRY_ASM) src/spectrum/overlay/
 
 sprinter-overlay-board-check: $(SPRINTER_OVL_BOARD_BIN)
 
-# WIN3 overlay page (tools/make_sprinter_overlay_page.py, plan D7-bis):
-# RULES/BOARD's own bytes, each linked at its own ORG inside #C000-#FFFF and
-# packed at fixed 4 KiB slots. Published to HDR as the fourth asset page and
-# read by asm/sprinter/buffers.asm's bench_init into ovl_win3_page; the
-# loader maps it into WIN3 with a single OUT instead of copying it (see
-# overlay_atlas_table_sprinter.asm for why RULES/BOARD qualify). Two slots
-# stay reserved for GUI_LOG/STATUS.
+# SAVELOAD (SPECTRUM_OVL_SAVELOAD=10u, S6 plan step 3): all three entries.
+# src/spectrum/overlay/saveload_ovl.c is the same source ZX links (one
+# ifdef'd line, its own SAVELOAD_DIR -> spectrum_platform_save_dir()
+# branch); needs platform_defs.asm for the esx_*/fat_date/fat_time/
+# background_drain/save_dir bridge (asm/sprinter/dss_fileio.asm, S6 plan
+# step 1) and the clib/crt0 archives (CONTROL's own comment on
+# SPRINTER_OVL_LIBDIRS explains why).
+SPRINTER_OVL_SAVELOAD_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_saveload_sprinter.asm
+
+$(SPRINTER_OVL_SAVELOAD_BIN): $(SPRINTER_OVL_SAVELOAD_ENTRY_ASM) src/spectrum/overlay/saveload_ovl.c \
+                              $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
+                              $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/saveload_ovl.c \
+		-o $(SPRINTER_BUILD_DIR)/saveload_ovl.o
+	$(Z80ASM) $(SPRINTER_OVL_SAVELOAD_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org SAVELOAD) \
+		-o=$(SPRINTER_OVL_SAVELOAD_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
+		$(SPRINTER_ASM_DIR)/zcc/entry_saveload_sprinter.o $(SPRINTER_BUILD_DIR)/saveload_ovl.o \
+		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_saveload_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+sprinter-overlay-saveload-check: $(SPRINTER_OVL_SAVELOAD_BIN)
+
+# RESTORE (SPECTRUM_OVL_RESTORE=11u, S6 plan step 3): both entries.
+# src/spectrum/overlay/restore_ovl.c is the same source ZX links, byte-for-
+# byte unchanged (a pure b64+CRC codec, no I/O, no platform ifdef, no
+# resident-symbol or platform_core dependency at all) -- overlay_defs_
+# sprinter.asm/platform_defs.asm are linked anyway for consistency with
+# every other overlay bin (defc constants cost zero bytes, S5's own
+# precedent for CONTROL).
+SPRINTER_OVL_RESTORE_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_restore_sprinter.asm
+
+$(SPRINTER_OVL_RESTORE_BIN): $(SPRINTER_OVL_RESTORE_ENTRY_ASM) src/spectrum/overlay/restore_ovl.c \
+                             $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
+                             $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/restore_ovl.c \
+		-o $(SPRINTER_BUILD_DIR)/restore_ovl.o
+	$(Z80ASM) $(SPRINTER_OVL_RESTORE_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org RESTORE) \
+		-o=$(SPRINTER_OVL_RESTORE_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
+		$(SPRINTER_ASM_DIR)/zcc/entry_restore_sprinter.o $(SPRINTER_BUILD_DIR)/restore_ovl.o \
+		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_restore_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+sprinter-overlay-restore-check: $(SPRINTER_OVL_RESTORE_BIN)
+
+# FILEUI (SPECTRUM_OVL_FILEUI=13u, S6 plan step 4): both entries.
+# src/spectrum/overlay/fileui_ovl.c is the same source ZX links (one
+# ifdef'd line, its own fileui_dir -> spectrum_platform_save_dir()
+# branch); needs platform_defs.asm for the esx_* bridge (directory scan)
+# and the clib/crt0 archives (CONTROL's own comment on SPRINTER_OVL_LIBDIRS
+# explains why).
+SPRINTER_OVL_FILEUI_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_fileui_sprinter.asm
+
+$(SPRINTER_OVL_FILEUI_BIN): $(SPRINTER_OVL_FILEUI_ENTRY_ASM) src/spectrum/overlay/fileui_ovl.c \
+                            $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
+                            $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/fileui_ovl.c \
+		-o $(SPRINTER_BUILD_DIR)/fileui_ovl.o
+	$(Z80ASM) $(SPRINTER_OVL_FILEUI_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org FILEUI) \
+		-o=$(SPRINTER_OVL_FILEUI_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
+		$(SPRINTER_ASM_DIR)/zcc/entry_fileui_sprinter.o $(SPRINTER_BUILD_DIR)/fileui_ovl.o \
+		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_fileui_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+sprinter-overlay-fileui-check: $(SPRINTER_OVL_FILEUI_BIN)
+
+# WIN3 overlay page (tools/make_sprinter_overlay_page.py, plan D7-bis, S6
+# plan step 2): RULES/BOARD/SAVELOAD/RESTORE/FILEUI's own bytes, each linked
+# at its own ORG inside #C000-#FFFF and packed per that tool's declarative
+# LAYOUT table (variable-size slots, not a uniform 4 KiB one -- see that
+# file's own header). Published to HDR as the fourth asset page and read by
+# asm/sprinter/buffers.asm's bench_init into ovl_win3_page; the loader maps
+# it into WIN3 with a single OUT instead of copying it.
 SPRINTER_OVL_WIN3_PAGE := $(SPRINTER_BUILD_DIR)/ovl_win3_page.bin
 
 $(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RULES_BIN) \
-                       $(SPRINTER_OVL_BOARD_BIN) | $(SPRINTER_BUILD_DIR)
+                       $(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_SAVELOAD_BIN) \
+                       $(SPRINTER_OVL_RESTORE_BIN) $(SPRINTER_OVL_FILEUI_BIN) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_overlay_page.py \
 		--rules-bin $(SPRINTER_OVL_RULES_BIN) --board-bin $(SPRINTER_OVL_BOARD_BIN) \
+		--saveload-bin $(SPRINTER_OVL_SAVELOAD_BIN) --restore-bin $(SPRINTER_OVL_RESTORE_BIN) \
+		--fileui-bin $(SPRINTER_OVL_FILEUI_BIN) \
 		--output $(SPRINTER_OVL_WIN3_PAGE)
 
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) \
@@ -1466,7 +1557,9 @@ sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-crt0-check \
                 sprinter-platform-defs-check sprinter-overlay-defs-check \
                 sprinter-overlay-control-check sprinter-overlay-rules-check \
-                sprinter-overlay-board-check sprinter-z80-test sprinter-resident-test \
+                sprinter-overlay-board-check sprinter-overlay-saveload-check \
+                sprinter-overlay-restore-check sprinter-overlay-fileui-check \
+                sprinter-z80-test sprinter-resident-test \
                 sprinter-size-report sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \

@@ -68,6 +68,11 @@
 #include "common/chess/rules_compact.h"
 #include "spectrum/ui/gui.h"
 #include "spectrum/ui/info_panel.h"
+#include "spectrum/saveload/saveload.h"
+#include "spectrum/restore/restore.h"
+#include "spectrum/fileui/fileui.h"
+
+#include <string.h>
 
 /* gui.c (S5-finish, plan D8) is linked in unmodified -- both render.h
    above's spectrum_render_* declarations and gui.h's own spectrum_gui_*
@@ -133,6 +138,26 @@ extern void board_cursor_move(void);
    theme_set_squares comment). */
 extern void spectrum_gui_reset_move_log(void);
 extern void theme_set_squares(unsigned char index);
+
+/* S6 (save/load + file browser, port.md section 5): gui_log_sprinter.c's
+   own move-count is the true ply source (that file's own header) -- these
+   two are Sprinter-native additions to it, not part of gui.h's portable
+   contract, same reasoning as spectrum_gui_reset_move_log above. */
+extern uint16_t spectrum_gui_log_ply_get(void);
+extern void spectrum_gui_log_ply_set(uint16_t ply);
+
+/* dss_fileio.asm (asm/sprinter/dss_fileio.asm, S6 plan step 1): resolves
+   the save directory once from DSS AppInfo (saves live next to the EXE).
+   Must run before any esx_fopen/esx_fcreate/esx_opendir path built from
+   spectrum_platform_save_dir()'s result -- called once at boot, below. */
+extern void spectrum_platform_save_dir_init(void);
+extern const char *spectrum_platform_save_dir(void);
+/* S6 round 5: the raw DSS error number (dss_errors.z80's own numbering,
+   e.g. 24 = write protected, 10 = no free space) behind the last esx_*
+   call that failed, pre-formatted as decimal ASCIIZ in asm (dss_fileio.
+   asm's own comment on why: a C-side tens/ones loop alone overran the
+   resident C image's 113-byte headroom by 79 bytes). */
+extern const char *spectrum_platform_last_dss_error_text(void);
 
 /* RTC bridge (video.asm, gen_sprinter_platform_defs.py) -- render_status_
    clock's own boot-time snapshot (above) already declares these as asm
@@ -360,6 +385,222 @@ static void board_select_or_move(void) {
     }
 }
 
+/* --- save/load (S6, port.md section 5) ------------------------------------
+ *
+ * Hot-seat equivalent of src/spectrum/app/app.c's local_save_game/
+ * saveload_apply_snapshot/local_load_game, with everything session-shaped
+ * removed (D8: no app.c, no session/network on Sprinter): no host-only
+ * gate (local_load_game's own `netchesszx_session_is_host()` check), no
+ * host_color round-trip check, no peer RESTORE_TX wire-chunking branch --
+ * a load either applies directly or fails outright, matching every other
+ * ZX/Next platform's own local (offline) fallback path.
+ *
+ * host_color is meaningless without a session (there is no host/peer),
+ * hardcoded to NETCHESSZX_SAVE_HOST_WHITE on save and ignored on load.
+ * game_over/check-state tracking does not exist yet on Sprinter (no
+ * checkmate/stalemate detection wired to board_select_or_move) -- flags
+ * always report ACTIVE, plus CHECK from spectrum_board_check_state() (a
+ * real, if narrow, signal already available cheaply). Timers are zeroed on
+ * save and never read back on load (spectrum_gui_game_timer_start/
+ * move_timer_reset restart them from zero instead) -- ZX's own app.c does
+ * exactly this (local_save_game's own memset(meta.timers, ...)), not a
+ * Sprinter shortcut.
+ */
+static spectrum_board_snapshot_t saveload_snapshot;
+static char saveload_b64_pending[NETCHESSZX_SAVE_WIRE_B64_SIZE];
+
+static unsigned char saveload_flags(void) {
+    unsigned char flags = NETCHESSZX_SAVE_FLAG_ACTIVE;
+
+    if (spectrum_board_check_state() == SPECTRUM_BOARD_CHECK) {
+        flags |= NETCHESSZX_SAVE_FLAG_CHECK;
+    }
+    return flags;
+}
+
+/* S6 round 5 (docs/sprinter-testnotes/S6.md "MAME round 5"): the tester's
+ * next report was the generic "Save failed" text, which does not say
+ * whether saveload_ovl.c's own path build rejected the name, esx_fcreate
+ * couldn't open the file, or esx_fwrite/esx_fclose failed against the
+ * actual media -- round 4's static audit explicitly could not tell those
+ * apart without a live run. saveload_ovl.c already leaves the specific
+ * SPECTRUM_OVL_CTX_SAVELOAD_RESULT code (overlay_context.h) in the shared
+ * context; surfacing it costs nothing extra (spectrum_overlay_context is
+ * already read directly elsewhere in this file) and turns the next
+ * screenshot into an answer instead of another guess.
+ */
+static const char *saveload_result_code_text(unsigned char code) {
+    if (code == SPECTRUM_OVL_SAVELOAD_ERR_NAME) {
+        return "NAME";
+    }
+    if (code == SPECTRUM_OVL_SAVELOAD_ERR_OPEN) {
+        return "OPEN";
+    }
+    if (code == SPECTRUM_OVL_SAVELOAD_ERR_IO) {
+        return "IO";
+    }
+    if (code == SPECTRUM_OVL_SAVELOAD_ERR_DATA) {
+        return "DATA";
+    }
+    return "?";
+}
+
+static void saveload_notify_failed(const char *prefix, unsigned char code) {
+    static char msg[24];
+    char *q = msg;
+    const char *p;
+    const char *reason = saveload_result_code_text(code);
+
+    for (p = prefix; *p; ++p) {
+        *q++ = *p;
+    }
+    *q++ = ':';
+    for (p = reason; *p; ++p) {
+        *q++ = *p;
+    }
+    /* S6 round 5: NAME/OPEN/IO come from an esx_* call that could have hit
+       dfio_dss's RST -- append the raw DSS error number too
+       (dss_errors.z80's own numbering, e.g. 24 = write protected, 10 = no
+       free space) so a code alone doesn't force yet another guessing
+       round. NAME/DATA never reach dfio_dss (local checks only), so the
+       number would be stale there -- skip it. Formatting itself lives in
+       dss_fileio.asm (spectrum_platform_last_dss_error_text's own
+       comment) -- this is a plain char copy, no arithmetic here. */
+    if (code == SPECTRUM_OVL_SAVELOAD_ERR_OPEN ||
+        code == SPECTRUM_OVL_SAVELOAD_ERR_IO) {
+        *q++ = ':';
+        for (p = spectrum_platform_last_dss_error_text(); *p; ++p) {
+            *q++ = *p;
+        }
+    }
+    *q = '\0';
+    spectrum_gui_notify(msg, 1u);
+}
+
+static void local_save_game(const char *name) {
+    netchesszx_save_meta_t meta;
+
+    spectrum_board_snapshot_save(&saveload_snapshot);
+    meta.ply = spectrum_gui_log_ply_get();
+    meta.flags = saveload_flags();
+    meta.host_color = NETCHESSZX_SAVE_HOST_WHITE;
+    meta.view_flags = spectrum_gui_is_board_flipped()
+        ? NETCHESSZX_SAVE_VIEW_FLIPPED
+        : 0u;
+    memset(meta.timers, 0, sizeof(meta.timers));
+    if (!spectrum_restore_build_b64(&saveload_snapshot, &meta,
+                                    saveload_b64_pending)) {
+        spectrum_gui_notify("Save failed:ENCODE", 1u);
+        return;
+    }
+    if (spectrum_saveload_write(name, saveload_b64_pending)) {
+        spectrum_gui_notify_success("Saved");
+        return;
+    }
+    saveload_notify_failed("Save failed",
+        spectrum_overlay_context[SPECTRUM_OVL_CTX_SAVELOAD_RESULT]);
+}
+
+/* Full post-load repaint: same board-area sequence menu_flip_board/
+   menu_reset_game already use (render_board_full/render_coord_labels plus
+   the selection/cursor markers) -- this port's own proven, MAME-tested
+   redraw, not gui.c's spec-based path (see menu_flip_board's own comment
+   for why that one has no live caller here). Also erases whatever the
+   FILEUI panel painted over the board area (S6 plan step 4) -- a full
+   repaint of that same screen region is a correct "close" for either
+   reason, load or plain cancel. */
+static void saveload_full_redraw(void) {
+    render_board_full();
+    render_coord_labels();
+    render_select_marker();
+    render_cursor_marker();
+}
+
+static void local_load_game(const char *name) {
+    netchesszx_save_meta_t meta;
+
+    /* S6 round 5: distinguish the two DoD failure modes instead of one
+       generic message (same reasoning as local_save_game's own
+       saveload_notify_failed) -- a missing/unreadable file (esx_fopen/
+       esx_fread failure, specific code from SPECTRUM_OVL_CTX_SAVELOAD_
+       RESULT) versus a corrupt one (CRC/version/board-shape rejected by
+       restore_unpack_wire, which never sets that context code at all). */
+    if (!spectrum_saveload_read(name, saveload_b64_pending)) {
+        saveload_notify_failed("Load failed",
+            spectrum_overlay_context[SPECTRUM_OVL_CTX_SAVELOAD_RESULT]);
+        return;
+    }
+    if (!spectrum_restore_decode(saveload_b64_pending, &saveload_snapshot,
+                                 &meta)) {
+        spectrum_gui_notify("Load failed:DATA", 1u);
+        return;
+    }
+    spectrum_board_snapshot_restore(&saveload_snapshot);
+    spectrum_gui_set_board_view((unsigned char)
+        (meta.view_flags & NETCHESSZX_SAVE_VIEW_FLIPPED));
+    selected_row = NO_SQUARE;
+    selected_col = NO_SQUARE;
+    saveload_full_redraw();
+    spectrum_gui_reset_move_log();
+    spectrum_gui_log_ply_set(meta.ply);
+    spectrum_gui_game_timer_start();
+    spectrum_gui_move_timer_reset();
+    spectrum_gui_set_turn_label(side_to_move == NETCHESSZX_RULE_WHITE
+                                     ? SPECTRUM_GUI_TURN_WHITE
+                                     : SPECTRUM_GUI_TURN_BLACK);
+    spectrum_gui_notify_success("Loaded");
+}
+
+/* --- file browser (S6 plan step 4) -----------------------------------------
+ *
+ * Hot-seat equivalent of app.c's fileui_open/fileui_process_key: no
+ * NETCHESSZX_NEXT_BANKING sprite-hide branch (Sprinter has no such
+ * concept), no suppress_current_key() (this port's frame loop already
+ * zeroes key_code itself whenever spectrum_gui_handle_menu_key/the fileui-
+ * visible check below consumes a press -- see the frame loop's own
+ * comment).
+ */
+#define FILEUI_CLOSE_KEY 0x8au   /* cancel -- im2_s1.asm's key_poll */
+
+static void fileui_open(void) {
+    spectrum_gui_clear_cursor_coords();
+    spectrum_gui_show_fileui();
+    if (!spectrum_fileui_open_render()) {
+        spectrum_gui_restore_board_area();
+        saveload_full_redraw();
+        spectrum_gui_notify("File browser failed", 1u);
+    }
+}
+
+static void fileui_close(void) {
+    spectrum_gui_restore_board_area();
+    saveload_full_redraw();
+}
+
+static void fileui_process_key(unsigned char key) {
+    unsigned char action;
+
+    if (key == 0u) {
+        return;
+    }
+    if (key == FILEUI_CLOSE_KEY || key == SPECTRUM_GUI_KEY_MENU_FILE ||
+        key == SPECTRUM_GUI_KEY_MENU) {
+        fileui_close();
+        return;
+    }
+    action = spectrum_fileui_send_key(key);
+    if (action == SPECTRUM_FILEUI_ACT_LOAD) {
+        fileui_close();
+        local_load_game(spectrum_fileui_selected_name());
+    } else if (action == SPECTRUM_FILEUI_ACT_SAVE) {
+        local_save_game(spectrum_fileui_selected_name());
+        spectrum_fileui_rerender();
+    } else if (action == SPECTRUM_FILEUI_ACT_ERASE) {
+        spectrum_saveload_erase(spectrum_fileui_selected_name());
+        spectrum_fileui_rerender();
+    }
+}
+
 /* --- menu actions (S5-finish, plan D12) -----------------------------------
  *
  * spectrum_gui_handle_menu_key (gui.c, portable) already owns menu open/
@@ -439,8 +680,9 @@ static void handle_menu_action(unsigned char action) {
         menu_cycle_theme();
     } else if (action == SPECTRUM_GUI_KEY_MENU_FLIP) {
         menu_flip_board();
-    } else if (action == SPECTRUM_GUI_KEY_MENU_FILE ||
-               action == SPECTRUM_GUI_KEY_MENU_DISCC ||
+    } else if (action == SPECTRUM_GUI_KEY_MENU_FILE) {
+        fileui_open();
+    } else if (action == SPECTRUM_GUI_KEY_MENU_DISCC ||
                action == SPECTRUM_GUI_KEY_MENU_ABOUT) {
         menu_not_available();
     }
@@ -454,6 +696,13 @@ void main(void) {
     video_clear_both_buffers();
     resolve_buffers();
     flip_ring_reset();
+
+    /* S6: resolve the save directory once, before the first possible
+       esx_fopen/esx_fcreate/esx_opendir call (any of which could in
+       principle happen as soon as the frame loop starts handling menu
+       keys) -- asm/sprinter/dss_fileio.asm's own comment on why this is a
+       one-time boot call outside the dfio_dss WIN3-remap funnel. */
+    spectrum_platform_save_dir_init();
 
     spectrum_overlay_context[SPECTRUM_OVL_CTX_PTR_LO] =
         (unsigned char)((unsigned int)ovl_test_payload & 0xFFu);
@@ -562,6 +811,22 @@ void main(void) {
                                      : SPECTRUM_GUI_TURN_BLACK);
     spectrum_info_show_game();
 
+    /* S6 round 5 diagnosis (docs/sprinter-testnotes/S6.md "MAME round 5"):
+       SAVE now visibly fails ("Save failed") in MAME, but round 4's static
+       audit could not tell a bad DSS AppInfo-resolved directory apart from
+       a genuine write failure against the real media -- "no amount of
+       static reading can distinguish from here" (that section's own
+       words). Surface the resolved directory once, right here, before any
+       real notice (a bad move, a save attempt) can overwrite the notice
+       line: this is the last one-time boot step, everything above it has
+       already painted, and spectrum_gui_notify_persistent's ticks=0 means
+       it stays on screen until the first later spectrum_gui_notify*
+       call -- normal play does not force one before the tester can look
+       at the very first post-boot screenshot. Truncated to the notice
+       line's own NETCHESSZX_NOTICE_TEXT_SIZE-1 budget (gui.c's strncpy);
+       an over-long path just loses its tail, not a crash. */
+    spectrum_gui_notify_persistent(spectrum_platform_save_dir());
+
     /* First slice of real input handling (S5 substep 3): key_poll()
        (im2_s1.asm) does a non-blocking DSS keyboard poll every frame,
        translates the result into this port's own semantic key codes
@@ -602,7 +867,13 @@ void main(void) {
        falls straight through to the cursor/select handling below exactly
        as before this pass -- zero behaviour change to P13's already-MAME-
        confirmed hot-seat play. See handle_menu_action above for what each
-       tab actually does. */
+       tab actually does.
+
+       S6 plan step 4: spectrum_gui_fileui_visible() is checked before even
+       the menu-key call -- app.c's own central dispatcher (src/spectrum/
+       app/app.c) uses this exact precedence, so that while the file
+       browser is open it owns every keypress outright and neither the
+       menu-tab layer nor the board cursor/select layer ever sees it. */
     for (;;) {
         frame_wait();
         key_poll();
@@ -610,13 +881,18 @@ void main(void) {
             unsigned char key = key_code;
 
             if (key != 0u) {
-                unsigned char handled = spectrum_gui_handle_menu_key(key);
+                if (spectrum_gui_fileui_visible()) {
+                    key_code = 0u;
+                    fileui_process_key(key);
+                } else {
+                    unsigned char handled = spectrum_gui_handle_menu_key(key);
 
-                if (handled != key) {
-                    key_code = 0u;      /* menu consumed/transformed it --
-                                            don't let the cursor also see it */
-                    if (handled != 0u) {
-                        handle_menu_action(handled);
+                    if (handled != key) {
+                        key_code = 0u;      /* menu consumed/transformed it --
+                                                don't let the cursor also see it */
+                        if (handled != 0u) {
+                            handle_menu_action(handled);
+                        }
                     }
                 }
             }

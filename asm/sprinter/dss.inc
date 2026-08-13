@@ -28,8 +28,36 @@ RST_BIOS              EQU #08
 RST_MOUSE             EQU #30    ; CPU restart, not a DSS function
 
 ; DSS functions (C=function, RST RST_DSS; see the file banner above).
+DSS_CREATE_FILE       EQU #0A    ; A=attribute, HL=path -> CF=0,A=handle
+DSS_DELETE_FILE       EQU #0E    ; HL=path
+DSS_OPEN_FILE         EQU #11    ; A=mode, HL=path -> CF=0,A=handle
 DSS_CLOSE_FILE        EQU #12
 DSS_READ_FILE         EQU #13
+DSS_WRITE_FILE        EQU #14    ; A=handle,HL=buf,DE=count -> CF=0 (DE
+                                 ; unreliable on success, port.md section
+                                 ; 3.10 item 4 -- success is CF=0 alone)
+DSS_F_FIRST           EQU #19    ; B=name format (1=DOS "name.ext",0),
+                                 ; A=search attribute, HL=mask, DE=48B buf
+DSS_F_NEXT            EQU #1A    ; DE=same 48B buf; CF=1 = no more entries
+
+; F_First/F_Next's own "A=search attribute" is not a plain equality mask:
+; Estex-DSS's SEARCH.Custom (DSS/FS/FAT.asm) computes C=CPL(A) and rejects
+; any directory entry where (entry_attribut AND C) != 0 -- i.e. every
+; attribute bit SET on the entry must also be set in A, or the entry is
+; skipped outright. A=0 (the ZX esxDOS-style "no filter" convention this
+; port's own dfio_find used, S6 round 6) means only entries whose on-disk
+; attribute is the exact byte 0 pass -- but Write.asm unconditionally sets
+; the ARCHIVE bit on the file's own attribute the first time it's written
+; (`SET 5,(IY+_sFM.FS_REC.ATTRIBUT)`), which Close.asm then flushes to the
+; real directory entry. Every file this port ever creates and writes is
+; therefore permanently invisible to an A=0 scan: it exists, non-empty, on
+; disk, but F_First/F_Next silently skips over it. This is DSS's own
+; established "search for a plain file" mask (dss_equ.inc's
+; FAT_ATTR.NoDIRnoVolID, the exact value SEARCH.File already passes for
+; Create/Open/Delete's own by-name lookups): permits READ_ONLY/HIDDEN/
+; ARCHIVE/SYSTEM, excludes DIRECTORY/VOLUME_ID.
+DSS_FIND_ATTR_FILE    EQU #27
+DSS_OPEN_MODE_READ    EQU 1
 DSS_SYSTIME           EQU #21
 DSS_WAITKEY           EQU #30    ; blocks until a key is available, A=ASCII
 DSS_SCANKEY           EQU #31    ; Z=empty, else A=ASCII (non-blocking)

@@ -262,16 +262,18 @@ theme_set_squares:
 ; for tools/gen_sprinter_platform_defs.py, same as every other primitive.
 rtc_present EQU RTC_PRESENT_ADDR
 
-; Samples DSS SysTime into rtc_valid/rtc_hour/rtc_minute/rtc_second.
+; Samples DSS SysTime into rtc_valid/rtc_hour/rtc_minute/rtc_second and (S6,
+; dss_fileio.asm's FAT-stamp shims) rtc_day/rtc_month/rtc_year.
 ; Gated on rtc_present: DSS SysTime itself never reports a missing clock --
 ; its .NOCMOS path returns compile-time defaults with CF=0 (Estex-DSS
 ; Time.asm:97-107) -- so without the gate a clockless machine would show
 ; the defaults as real time. The CF check is kept as a defensive guard
-; only. SysTime returns H=hour, L=minute, B=second, binary.
+; only. SysTime returns D=day, E=month, IX=year (full, e.g. 2024), H=hour,
+; L=minute, B=second, all binary (Estex-DSS Time.asm:5-11, verified).
 ;
 ; Must be called from an EI context with canonical windows -- it RSTs into
 ; DSS, which must not happen while WIN3 is remapped to VRAM under DI.
-; Clobbers AF, BC, DE, HL.
+; Clobbers AF, BC, DE, HL, IX.
 rtc_sample:
         ld      a,(rtc_present)
         or      a
@@ -285,6 +287,11 @@ rtc_sample:
         ld      (rtc_minute),a
         ld      a,b                     ; second
         ld      (rtc_second),a
+        ld      a,d                     ; day
+        ld      (rtc_day),a
+        ld      a,e                     ; month
+        ld      (rtc_month),a
+        ld      (rtc_year),ix
         ld      a,1
         ld      (rtc_valid),a
         ret
@@ -296,5 +303,8 @@ rtc_valid:  DB 0
 rtc_hour:   DB 0
 rtc_minute: DB 0
 rtc_second: DB 0
+rtc_day:    DB 0
+rtc_month:  DB 0
+rtc_year:   DW 0
 
         ENDIF

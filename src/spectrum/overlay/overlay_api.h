@@ -6,7 +6,7 @@
 #include "spectrum/ui/info_panel.h"
 #include "spectrum/render_status.h"
 
-#if !defined(NETCHESSZX_HOST_TEST) && \
+#if !defined(NETCHESSZX_HOST_TEST) && !defined(NETCHESSZX_SPRINTER) && \
     (!defined(__SDCC) || !defined(NETCHESSZX_SDCC_IY))
 #error "Shatranj Spectrum overlays must be built with the SDCC/IY ABI."
 #endif

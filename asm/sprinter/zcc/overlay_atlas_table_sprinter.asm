@@ -35,15 +35,22 @@
 ; WIN3 for themselves -- simply do not arise for these two. An overlay that
 ; DOES need either must stay mode 0 until those are solved.
 ;
-; WIN3 window layout for mode-1 overlays (tools/make_sprinter_overlay_page.py
-; packs the page image to match, 4 KiB per slot):
-;     #C000  RULES  (id 0)   -- linked size 1628 bytes
-;     #D000  BOARD  (id 1)   -- linked size 2772 bytes
-;     #E000  free            -- reserved for GUI_LOG (id 2)
-;     #F000  free            -- reserved for STATUS (id 7)
-; INPUT_EDIT (id 9) needs a second WIN3 page; ovl_win3_page is a single
-; global today, so that is the point at which it becomes a per-id page
-; table (the mode byte already leaves room for the distinction).
+; WIN3 window layout for mode-1 overlays (S6 plan step 2,
+; tools/make_sprinter_overlay_page.py packs the page image to match --
+; variable-size slots now, not a uniform 4 KiB one; that tool's own LAYOUT
+; table is the source of truth, these EQUs mirror it and
+; test_sprinter_overlay_page.py's test_atlas_table_agrees_with_this_packing
+; pins the two together):
+;     #C000  RULES     (id 0)   2048 bytes -- linked size 1628 bytes
+;     #C800  BOARD     (id 1)   3072 bytes -- linked size 2772 bytes
+;     #D400  SAVELOAD  (id 10)  2560 bytes -- S6, not yet linked (zero)
+;     #DE00  RESTORE   (id 11)  3072 bytes -- S6, not yet linked (zero)
+;     #EA00  FILEUI    (id 13)  5120 bytes -- S6, not yet linked (zero)
+;     #FE00  reserved           512 bytes
+; GUI_LOG (id 2) and STATUS (id 7) stay mode 0 (unported, no WIN3 slot of
+; their own -- both resolved a different way, see this table's own id
+; comments below); a future overlay needing a second WIN3 page is the point
+; at which ovl_win3_page (today a single global) becomes a per-id table.
 ;
 ; Id 14 (CONTROL) stays mode 0: src/spectrum/overlay/control_ovl.c, embedded
 ; at assets-page slot 36 (tools/make_sprinter_assets_page.py's OVERLAY_SLOT),
@@ -61,32 +68,40 @@ ovl_atlas_count EQU 15
 OVL_MODE_COPY EQU 0
 OVL_MODE_WIN3 EQU 1
 
-; WIN3 window base and per-overlay slot size for mode-1 overlays. Must match
-; tools/make_sprinter_overlay_page.py's WIN3_BASE/SLOT_SIZE and the -r link
-; addresses in the Makefile's $(SPRINTER_OVL_RULES_BIN)/$(SPRINTER_OVL_BOARD_BIN)
-; rules.
-OVL_WIN3_BASE EQU 0xC000
-OVL_WIN3_SLOT EQU 0x1000
+; Per-overlay WIN3 link addresses (S6 plan step 2): must match
+; tools/make_sprinter_overlay_page.py's LAYOUT table and the -r link
+; addresses in the Makefile's overlay-bin rules -- that tool's own
+; --print-org NAME is what those rules actually read, these EQUs are the
+; asm-side mirror test_atlas_table_agrees_with_this_packing pins against.
+OVL_WIN3_RULES_ORG    EQU 0xC000
+OVL_WIN3_BOARD_ORG    EQU 0xC800
+OVL_WIN3_SAVELOAD_ORG EQU 0xD400
+OVL_WIN3_RESTORE_ORG  EQU 0xDE00
+OVL_WIN3_FILEUI_ORG   EQU 0xEA00
 
 ovl_atlas_table:
-    defw OVL_WIN3_BASE + 0*OVL_WIN3_SLOT  ; id 0  (RULES)   -- WIN3 #C000
-    defw OVL_WIN3_BASE + 1*OVL_WIN3_SLOT  ; id 1  (BOARD)   -- WIN3 #D000
-    defw 0x0000   ; id 2  (GUI_LOG)     -- not yet ported (needs render_core)
+    defw OVL_WIN3_RULES_ORG       ; id 0  (RULES)
+    defw OVL_WIN3_BOARD_ORG       ; id 1  (BOARD)
+    defw 0x0000   ; id 2  (GUI_LOG)     -- not ported (native resident C)
     defw 0x0000   ; id 3  (NET_CONNECT) -- S7/S8 scope
     defw 0x0000   ; id 4  (MQTT_TX)     -- S7/S8 scope
     defw 0x0000   ; id 5  (DIRECT)      -- S7/S8 scope
     defw 0x0000   ; id 6  (MENU_CONFIG) -- S9 scope
-    defw 0x0000   ; id 7  (STATUS)      -- not yet ported (needs render_core)
+    defw 0x0000   ; id 7  (STATUS)      -- not ported (native resident C)
     defw 0x0000   ; id 8  (SETUP)       -- S9 scope
     defw 0x0000   ; id 9  (INPUT_EDIT)  -- not yet ported (needs render_core)
-    defw 0x0000   ; id 10 (SAVELOAD)    -- S6 scope
-    defw 0x0000   ; id 11 (RESTORE)     -- S6 scope
+    defw OVL_WIN3_SAVELOAD_ORG    ; id 10 (SAVELOAD)    -- S6, not yet linked
+    defw OVL_WIN3_RESTORE_ORG     ; id 11 (RESTORE)     -- S6, not yet linked
     defw 0x0000   ; id 12 (ABOUT)       -- S9 scope
-    defw 0x0000   ; id 13 (FILEUI)      -- S6 scope
+    defw OVL_WIN3_FILEUI_ORG      ; id 13 (FILEUI)      -- S6, not yet linked
     defw 0x2400   ; id 14 (CONTROL)     -- real, assets-page slot 36 (36*256)
 
 ; Dispatch mode, one byte per id, same indexing as ovl_atlas_table but not
-; doubled (indexed by id, not id*2).
+; doubled (indexed by id, not id*2). SAVELOAD/RESTORE/FILEUI are already
+; mode 1 here (S6 plan step 2) even though their slots are still zero-filled
+; placeholders until step 3/4 links real content into them -- consistent
+; with mode 1 requiring no copy step regardless of what is mapped in, and
+; nothing dispatches ids 10/11/13 yet.
 ovl_atlas_mode_table:
     defb OVL_MODE_WIN3   ; id 0  (RULES)
     defb OVL_MODE_WIN3   ; id 1  (BOARD)
@@ -98,8 +113,8 @@ ovl_atlas_mode_table:
     defb OVL_MODE_COPY   ; id 7  (STATUS)      -- placeholder
     defb OVL_MODE_COPY   ; id 8  (SETUP)       -- placeholder
     defb OVL_MODE_COPY   ; id 9  (INPUT_EDIT)  -- placeholder
-    defb OVL_MODE_COPY   ; id 10 (SAVELOAD)    -- placeholder
-    defb OVL_MODE_COPY   ; id 11 (RESTORE)     -- placeholder
+    defb OVL_MODE_WIN3   ; id 10 (SAVELOAD)    -- S6, slot not yet linked
+    defb OVL_MODE_WIN3   ; id 11 (RESTORE)     -- S6, slot not yet linked
     defb OVL_MODE_COPY   ; id 12 (ABOUT)       -- placeholder
-    defb OVL_MODE_COPY   ; id 13 (FILEUI)      -- placeholder
+    defb OVL_MODE_WIN3   ; id 13 (FILEUI)      -- S6, slot not yet linked
     defb OVL_MODE_COPY   ; id 14 (CONTROL)     -- real, unchanged

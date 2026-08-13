@@ -54,7 +54,16 @@ void esx_readdir(void);
 #define FILEUI_DIRENT_MAX 24u
 #define FILEUI_ATTR_DIR 0x10u
 
+#ifdef NETCHESSZX_SPRINTER
+/* Sprinter has no fixed config directory: saves live next to the EXE
+   (spectrum_platform_save_dir(), same S6 decision as saveload_ovl.c's own
+   ifdef). fileui_dir is referenced by value at every call site below, so a
+   macro expanding to the resolved pointer is a drop-in replacement. */
+extern const char *spectrum_platform_save_dir(void);
+#define fileui_dir spectrum_platform_save_dir()
+#else
 static char fileui_dir[] = "/SYS/CONFIG";
+#endif
 static unsigned char fileui_name_stamp[4];
 
 /* FAT stamp (time lo/hi, date lo/hi) of the entry accepted last by
@@ -300,7 +309,24 @@ static void fileui_footer(void)
 uint8_t fileui_render_ovl(uint8_t *ctx) __z88dk_fastcall
 {
     static const char header[] = " SAVED GAMES";
+#ifdef NETCHESSZX_SPRINTER
+    /* ZX/Next print this legend and each data row (fileui_row's own
+       "NAME     DD-MM-YY HH:MM") through a fixed-width font, where equal
+       character counts land in the same pixel column -- this port's own
+       font (afnt640) is proportional, so "NAME     DATE     " and
+       "GAME1    13-08-26 " advance by different amounts of pixels despite
+       being the same length in characters, leaving the legend's "TIME"
+       about 10px left of where the data rows' actual time text starts
+       (tester report, S6 MAME round 7). Measured directly from font.bin's
+       own packed-column-width table (same method as render_core.asm's
+       FILEUI_HEADER_TEXT_X): 3 extra spaces here closes the gap to within
+       a couple of px, same order of error the NAME/DATE columns already
+       have and nobody has flagged. Sprinter-only: ZX/Next's own fixed-
+       width font needs the original spacing. */
+    static const char legend[] = "NAME     DATE        TIME";
+#else
     static const char legend[] = "NAME     DATE     TIME";
+#endif
     unsigned char ent[FILEUI_DIRENT_MAX];
     char name[FILEUI_NAME_MAX + 1u];
     uint8_t sel = ctx[SPECTRUM_OVL_CTX_FILEUI_SEL];

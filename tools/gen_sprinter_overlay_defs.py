@@ -57,6 +57,16 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "side_to_move",
     "castle_rights",
     "ep_square",
+    # FILEUI (S6 plan step 4): fileui_ovl.c (the overlay entry) calls back
+    # into render_core.asm's render trio and reads/writes fileui.c's own
+    # resident state (both linked into the resident C image alongside
+    # main.c -- SPRINTER_RESIDENT_C_SRC) -- the same cross-boundary shape
+    # board.c's side_to_move/castle_rights/ep_square above already use.
+    "spectrum_render_ikkle_at",
+    "spectrum_render_fileui_frame",
+    "spectrum_render_fileui_select",
+    "spectrum_fileui_count",
+    "spectrum_fileui_used_mask",
 ]
 
 GENERATED_BANNER = (
@@ -161,6 +171,21 @@ def _clean_fixture() -> str:
         "_ep_square                      = $4B03 ; addr, public, , "
         "src_spectrum_board_board_c, bss_compiler, "
         "src/spectrum/board/board.c:53\n"
+        "_spectrum_render_ikkle_at       = $4B10 ; addr, public, , "
+        "asm_sprinter_zcc_render_core_asm, code_compiler, "
+        "asm/sprinter/zcc/render_core.asm:1\n"
+        "_spectrum_render_fileui_frame   = $4B20 ; addr, public, , "
+        "asm_sprinter_zcc_render_core_asm, code_compiler, "
+        "asm/sprinter/zcc/render_core.asm:1\n"
+        "_spectrum_render_fileui_select  = $4B30 ; addr, public, , "
+        "asm_sprinter_zcc_render_core_asm, code_compiler, "
+        "asm/sprinter/zcc/render_core.asm:1\n"
+        "_spectrum_fileui_count          = $4B40 ; addr, public, , "
+        "src_spectrum_fileui_fileui_c, bss_compiler, "
+        "src/spectrum/fileui/fileui.c:19\n"
+        "_spectrum_fileui_used_mask      = $4B41 ; addr, public, , "
+        "src_spectrum_fileui_fileui_c, bss_compiler, "
+        "src/spectrum/fileui/fileui.c:20\n"
         "i_15                            = $4259 ; addr, local, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"

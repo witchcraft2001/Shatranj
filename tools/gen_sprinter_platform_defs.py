@@ -172,6 +172,29 @@ PLATFORM_SYMBOLS = [
     "ng_close",
     "ng_lasterr_fetch",
     "ng_shutdown",
+    # dss_fileio.asm -- esx-ABI-over-DSS file I/O gate (S6, port.md section
+    # 3.10 item 4). Called from the SAVELOAD/RESTORE/FILEUI overlay C
+    # sources (src/spectrum/overlay/{saveload,fileui}_ovl.c), which are
+    # linked separately from the resident, so this call surface -- like
+    # net_gate's ng_* one above -- has to be bridged the same way.
+    "esx_handle",
+    "esx_buf",
+    "esx_count",
+    "esx_result",
+    "esx_fopen",
+    "esx_fcreate",
+    "esx_fread",
+    "esx_fwrite",
+    "esx_fclose",
+    "esx_funlink",
+    "esx_opendir",
+    "esx_readdir",
+    "spectrum_net_runtime_fat_date",
+    "spectrum_net_runtime_fat_time",
+    "spectrum_net_background_drain",
+    "spectrum_platform_save_dir",
+    "spectrum_platform_save_dir_init",
+    "spectrum_platform_last_dss_error_text",
     # overlay slot copy (substep 2's overlay_loader_sprinter.asm is a
     # z88dk-z80asm module and must not touch WIN0_PORT itself -- R1)
     "ovl_copy_slot",
@@ -304,6 +327,24 @@ def _clean_fixture() -> str:
         "ng_close: EQU 0x000089D0\n"
         "ng_lasterr_fetch: EQU 0x000089E0\n"
         "ng_shutdown: EQU 0x000089F0\n"
+        "esx_handle: EQU 0x00008B00\n"
+        "esx_buf: EQU 0x00008B01\n"
+        "esx_count: EQU 0x00008B03\n"
+        "esx_result: EQU 0x00008B05\n"
+        "esx_fopen: EQU 0x00008B10\n"
+        "esx_fcreate: EQU 0x00008B20\n"
+        "esx_fread: EQU 0x00008B30\n"
+        "esx_fwrite: EQU 0x00008B40\n"
+        "esx_fclose: EQU 0x00008B50\n"
+        "esx_funlink: EQU 0x00008B60\n"
+        "esx_opendir: EQU 0x00008B70\n"
+        "esx_readdir: EQU 0x00008B80\n"
+        "spectrum_net_runtime_fat_date: EQU 0x00008B90\n"
+        "spectrum_net_runtime_fat_time: EQU 0x00008BA0\n"
+        "spectrum_net_background_drain: EQU 0x00008BB0\n"
+        "spectrum_platform_save_dir: EQU 0x00008BC0\n"
+        "spectrum_platform_save_dir_init: EQU 0x00008BD0\n"
+        "spectrum_platform_last_dss_error_text: EQU 0x00008BE0\n"
         "ovl_copy_slot: EQU 0x00008A00\n"
         "OVL_SLOT_ADDR: EQU 0x0000A800\n"
         "OVL_SLOT_SIZE: EQU 0x00000800\n"

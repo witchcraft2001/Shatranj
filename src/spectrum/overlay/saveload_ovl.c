@@ -13,10 +13,24 @@ void esx_fwrite(void);
 uint8_t esx_fclose(void);
 void esx_funlink(const char *path) __z88dk_fastcall;
 
+#ifdef NETCHESSZX_SPRINTER
+/* Sprinter has no fixed config directory (no esxDOS-style /SYS/): saves
+   live next to the EXE, resolved once at boot via DSS AppInfo
+   (asm/sprinter/dss_fileio.asm's spectrum_platform_save_dir_init). */
+extern const char *spectrum_platform_save_dir(void);
+#endif
+
 #define SAVELOAD_DIR "/SYS/CONFIG/"
 #define SAVELOAD_EXT ".STJ"
 #define SAVELOAD_NAME_MAX 8u
+#ifdef NETCHESSZX_SPRINTER
+/* spectrum_platform_save_dir() can be as long as dss_fileio.asm's own
+   dss_save_dir buffer (68 bytes incl. NUL, DSS AppInfo home dir) -- ZX's
+   fixed "/SYS/CONFIG/" (12 bytes) never needed this much room. */
+#define SAVELOAD_PATH_MAX 84u
+#else
 #define SAVELOAD_PATH_MAX 25u
+#endif
 
 static char saveload_path[SAVELOAD_PATH_MAX];
 
@@ -95,7 +109,11 @@ static void saveload_write_stamp(char *out) __z88dk_fastcall
 
 static uint8_t saveload_build_path(const char *name, uint8_t stamp_slot)
 {
+#ifdef NETCHESSZX_SPRINTER
+    const char *dir = spectrum_platform_save_dir();
+#else
     static const char dir[] = SAVELOAD_DIR;
+#endif
     static const char ext[] = SAVELOAD_EXT;
     uint8_t i;
     uint8_t out = 0u;

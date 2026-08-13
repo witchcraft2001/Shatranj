@@ -16,7 +16,16 @@
  * add_chat are not implemented here -- nothing in this port calls them yet
  * (no takeback UI, no chat input/network); gui.h still declares them, but a
  * C link only requires a definition for a symbol something actually calls.
- */
+ *
+ * spectrum_gui_log_ply_get/_set (S6, port.md section 5/S6): save/load needs
+ * the true half-move count for netchesszx_save_meta_t.ply, and gui_log_ply
+ * already IS that count (incremented once per spectrum_gui_add_move call,
+ * i.e. once per applied move) -- a second, main.c-local counter would just
+ * be the same number kept twice, with the two free to drift. The setter
+ * exists for load: it does not touch gui_log_row or repaint anything (the
+ * caller resets the move log separately, src/sprinter/main.c's own local_
+ * load_game), it only seeds the counter so the NEXT move played after a
+ * load numbers itself correctly. */
 
 #include "spectrum/ui/render.h"
 #include "spectrum/ui/layout.h"
@@ -83,4 +92,14 @@ void spectrum_gui_add_move(const char *ply, const char *move)
     out[i] = '\0';
 
     spectrum_render_move_at(row_base);
+}
+
+uint16_t spectrum_gui_log_ply_get(void)
+{
+    return gui_log_ply;
+}
+
+void spectrum_gui_log_ply_set(uint16_t ply)
+{
+    gui_log_ply = ply;
 }

@@ -94,6 +94,14 @@ svmod_safe:
         INCLUDE "libman.asm"
         INCLUDE "net_gate.asm"
 
+; esx-ABI-over-DSS file I/O gate (S6, port.md section 3.10 item 4): the
+; SAVELOAD/RESTORE/FILEUI overlays run mode-1 (WIN3 mapped to their own
+; page), so this needs to be WIN2-resident the same way net_gate.asm is.
+; References ovl_win3_page (buffers.asm, above) and WIN3_PORT (dss.inc,
+; above); its own reentry trap reuses svmod_safe/im2_uninstall, both
+; already in scope by this point.
+        INCLUDE "dss_fileio.asm"
+
 ; Copies OVL_SLOT_SIZE bytes from the asset page (bench_asset_page) into
 ; OVL_SLOT_ADDR via win0_map_di/LDIR/win0_restore (R1) -- the one primitive
 ; overlay_loader_sprinter.asm (a z88dk-z80asm module, substep 2) needs to
