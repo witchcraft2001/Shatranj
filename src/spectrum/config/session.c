@@ -15,11 +15,13 @@ uint8_t netchesszx_piece_set_index = NETCHESSZX_PIECE_SET_STD;
 uint8_t netchesszx_board_light_attr = 0x38u;
 uint8_t netchesszx_board_dark_attr = 0x07u;
 uint16_t netchesszx_mqtt_session_id = 0u;
-#if defined(NETCHESSZX_FIXED_LOW_RAM)
+#if defined(NETCHESSZX_FIXED_LOW_RAM) && !defined(NETCHESSZX_SPRINTER)
 __at(NETCHESSZX_LOWRAM_HINTED_ROWS_ADDR) uint8_t netchesszx_hinted_rows[8];
-#else
+#elif !defined(NETCHESSZX_FIXED_LOW_RAM)
 uint8_t netchesszx_hinted_rows[8];
 #endif
+/* Sprinter: netchesszx_hinted_rows is a raw-pointer macro (session.h), no
+   storage declaration here -- see that header's own comment. */
 void netchesszx_session_configure(uint8_t role,
                                   uint8_t transport,
                                   uint8_t host_color)
@@ -54,8 +56,15 @@ const char *netchesszx_session_start_text(void)
                : "GAME START WHITE=GUEST";
 }
 
+#ifndef NETCHESSZX_DIRECT_ONLY
+/* DIRECT-only builds (Sprinter) resolve host/port from the NETHOST/NETPORT
+   env vars at connect time (net_gate.asm's ng_env_nethost/ng_env_netport,
+   S7 step 1) and never reference these globals -- MQTT host/code/port are
+   unreachable on a transport without an MQTT backend, and the interactive
+   DIRECT host/port entry these back (SETUP overlay) is S9 scope. */
 const char netchesszx_mqtt_host[] = NETCHESSZX_MQTT_HOST;
 char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 const uint16_t netchesszx_mqtt_port = NETCHESSZX_MQTT_PORT;
 char netchesszx_direct_host[NETCHESSZX_DIRECT_HOST_MAX + 1u] = "";
 uint16_t netchesszx_direct_port = NETCHESSZX_PORT;
+#endif

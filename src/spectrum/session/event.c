@@ -23,12 +23,14 @@ uint8_t netchesszx_session_peer_ready(void)
     return netchesszx_session_peer_ready_state;
 }
 
+#ifndef NETCHESSZX_DIRECT_ONLY
 uint8_t netchesszx_session_mqtt_can_accept_game_start(void)
 {
     return (uint8_t)(netchesszx_session_peer_ready_state &&
                      netchesszx_host_color_ready &&
                      netchesszx_mqtt_session_id != 0u);
 }
+#endif
 
 uint8_t netchesszx_session_event_ignores_retained(netchesszx_session_event_t event,
                                                    uint8_t retained)
@@ -43,7 +45,7 @@ uint8_t netchesszx_session_event_ignores_retained(netchesszx_session_event_t eve
          e == (uint8_t)NETCHESSZX_SESSION_EVENT_MQTT_TEXT));
 }
 
-
+#ifndef NETCHESSZX_DIRECT_ONLY
 uint8_t netchesszx_session_mqtt_host_flags(const char *payload,
                                            uint8_t game_active,
                                            uint8_t retained,
@@ -94,6 +96,7 @@ uint8_t netchesszx_session_mqtt_host_flags(const char *payload,
     }
     return flags;
 }
+#endif
 
 netchesszx_session_event_t netchesszx_session_classify_event(
     const char *payload,
@@ -120,6 +123,11 @@ netchesszx_session_event_t netchesszx_session_classify_event(
         }
     }
 
+#ifdef NETCHESSZX_DIRECT_ONLY
+    (void)retained;
+    (void)is_host;
+    return NETCHESSZX_SESSION_EVENT_UNKNOWN;
+#else
     if (!is_mqtt) {
         return NETCHESSZX_SESSION_EVENT_UNKNOWN;
     }
@@ -174,4 +182,5 @@ netchesszx_session_event_t netchesszx_session_classify_event(
         return NETCHESSZX_SESSION_EVENT_MQTT_TEXT;
     }
     return NETCHESSZX_SESSION_EVENT_UNKNOWN;
+#endif
 }

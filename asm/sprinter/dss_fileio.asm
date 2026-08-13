@@ -438,15 +438,15 @@ dfio_mask_buf: DS DFIO_MASK_BUF_SIZE,0
 dfio_find_buf: DS 48,0
 
 ; ---------------------------------------------------------------------------
-; FAT date/time shims (saveload_ovl.c's saveload_write_stamp) and the
-; net-drain no-op (S7 scope; called between esx_* I/O steps so a future
-; networked build can service traffic while blocked on disk -- nothing to
-; drain yet).
+; FAT date/time shims (saveload_ovl.c's saveload_write_stamp). This file
+; used to also host spectrum_net_background_drain as an S6-era no-op
+; ("called between esx_* I/O steps so a future networked build can
+; service traffic while blocked on disk"); S7 superseded it with a real
+; implementation (unet_link.c's nc_pump, WIN1) -- SAVELOAD/FILEUI overlays
+; now resolve that name via gen_sprinter_overlay_defs.py's resident_c.map
+; bridge instead of this sjasmplus one, the same way they already reach
+; netchess_after_prefix.
 ; ---------------------------------------------------------------------------
-
-; void spectrum_net_background_drain(void)
-spectrum_net_background_drain:
-        ret
 
 ; uint16_t spectrum_net_runtime_fat_date(void). Standard FAT date packing
 ; (bits15-9 year-1980, bits8-5 month, bits4-0 day) from rtc_sample's cached

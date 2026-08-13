@@ -80,7 +80,20 @@ static uint8_t notice_success;
 static uint16_t last_ply_seen;
 static uint8_t move_line_count;
 static uint8_t chat_line_count;
+#if defined(NETCHESSZX_SPRINTER)
+/* Fixed-address, not C static storage: on Sprinter this flag is read and
+   written across an independent-link boundary. S7 step 5 has this file and
+   render_core.asm in the WIN3 cold page while main.c (which seeds the flag
+   at boot) is the WIN1 resident, and the two are separate zcc builds --
+   the resident links FIRST, so nothing in it can resolve a symbol defined
+   here. A fixed low-RAM cell both sides address by the same generated
+   constant sidesteps the link order entirely. Same idiom, and the same
+   underlying build-order gap, as config/session.h's own comment. */
+#define spectrum_gui_board_flipped \
+    (*(uint8_t *)(NETCHESSZX_LOWRAM_RENDER_SHARED_ADDR + 0))
+#else
 uint8_t spectrum_gui_board_flipped;
+#endif
 static uint8_t board_pieces_visible;
 static uint8_t board_coords_dirty;
 static uint8_t connected_state;

@@ -85,7 +85,17 @@ extern uint8_t netchesszx_piece_set_index;
 extern uint8_t netchesszx_board_light_attr;
 extern uint8_t netchesszx_board_dark_attr;
 #if defined(NETCHESSZX_FIXED_LOW_RAM)
+#if defined(NETCHESSZX_SPRINTER)
+/* sccz80's __at extern still allocates storage per translation unit (unlike
+   SDCC's, which the ZX/Next branch below relies on), so a second Sprinter
+   TU including this header would collide with config/session.c's own
+   definition. Same raw-pointer-macro idiom board.c's chess_board and
+   overlay_context.h's spectrum_overlay_context already use for fixed Sprinter
+   addresses -- no storage declaration needed on either side. */
+#define netchesszx_hinted_rows ((uint8_t *)NETCHESSZX_LOWRAM_HINTED_ROWS_ADDR)
+#else
 extern __at(NETCHESSZX_LOWRAM_HINTED_ROWS_ADDR) uint8_t netchesszx_hinted_rows[8];
+#endif
 #else
 extern uint8_t netchesszx_hinted_rows[8];
 #endif

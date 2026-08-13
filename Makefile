@@ -903,7 +903,9 @@ endif
 
 .PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image \
         sprinter-hw-zip sprinter-layout-check sprinter-z80-test sprinter-resident-test \
+        sprinter-host-test \
         sprinter-gates sprinter-section-gate sprinter-crt0-check sprinter-platform-defs-check \
+        sprinter-netframe-defs-check sprinter-cold-page-check \
         sprinter-overlay-defs-check sprinter-overlay-control-check \
         sprinter-overlay-rules-check sprinter-overlay-board-check \
         sprinter-overlay-saveload-check sprinter-overlay-restore-check \
@@ -927,6 +929,39 @@ SPRINTER_PLATFORM_PRIMITIVES_SYM := $(SPRINTER_BUILD_DIR)/platform_primitives.sy
 SPRINTER_RESIDENT_C_BIN := $(SPRINTER_BUILD_DIR)/resident_c.bin
 SPRINTER_RESIDENT_BIN := $(SPRINTER_BUILD_DIR)/resident.bin
 SPRINTER_DLLS := extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
+
+# Fourth splice blob (S7, port.md section 3.7): net_frame.c's own
+# independent zcc build, placed at fixed_layout.json's NET_FRAME_C anchor.
+# See tools/make_sprinter_resident.py's docstring for how this differs from
+# the pre-S7 three-blob shape above.
+SPRINTER_NET_CORE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/net_core_crt0.asm
+SPRINTER_NET_FRAME_C_SRC := src/sprinter/transport/net_frame.c
+SPRINTER_NET_FRAME_C_BIN := $(SPRINTER_BUILD_DIR)/net_frame_c.bin
+SPRINTER_NET_FRAME_C_MAP := $(SPRINTER_BUILD_DIR)/net_frame_c.map
+
+# WIN3 cold-code page: everything that is NOT in the hot render cycle,
+# linked at #C000 with its own crt0 and shipped as a whole asset page
+# rather than as part of the WIN1 resident C image. Not a splice blob like
+# net_frame_c above: it is mapped into WIN3 on demand by the stubs
+# gen_sprinter_cold_thunks.py generates, so it never occupies resident
+# address space at all. See render_core.asm's own header for why WIN3 is
+# safe for rendering code, and cold_page_crt0.asm's for the entry table.
+#
+# S7 step 4 seeded it with the painters (render_core*.asm). S7 step 5 made
+# the boundary bidirectional and moved whole C modules in: gui.c (4846
+# bytes of clocks/timers/notices/menu/panel state, one thunk per frame) and
+# the network join UI. The budget rule is heat, not size -- per-frame pixel
+# work stays out (render_shim.asm), everything reached a handful of times
+# per second or per user action belongs here.
+SPRINTER_COLD_PAGE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/cold_page_crt0.asm
+SPRINTER_COLD_PAGE_SRC := $(SPRINTER_ASM_DIR)/zcc/render_core.asm \
+                          $(SPRINTER_ASM_DIR)/zcc/render_core_cold.asm \
+                          src/spectrum/ui/gui.c \
+                          src/sprinter/net_ui_sprinter.c
+SPRINTER_COLD_PAGE_ORG := 0xC000
+SPRINTER_COLD_IMAGE_BIN := $(SPRINTER_BUILD_DIR)/cold_page_image.bin
+SPRINTER_COLD_IMAGE_MAP := $(SPRINTER_BUILD_DIR)/cold_page_image.map
+SPRINTER_COLD_WIN3_PAGE := $(SPRINTER_BUILD_DIR)/cold_win3_page.bin
 
 SPRINTER_LAYOUT_JSON := src/sprinter/fixed_layout.json
 SPRINTER_GENERATED_DIR := $(SPRINTER_BUILD_DIR)/generated
@@ -992,6 +1027,8 @@ sprinter-deps-check: tools/check_sprinter_deps.py
 sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py \
                      tests/tools/test_sprinter_assets_page.py tools/make_sprinter_assets_page.py \
                      tests/tools/test_sprinter_overlay_page.py tools/make_sprinter_overlay_page.py \
+                     tests/tools/test_sprinter_cold_page.py tools/make_sprinter_cold_page.py \
+                     tools/gen_sprinter_cold_thunks.py tools/gen_sprinter_cold_defs.py \
                      tests/tools/test_rasterize_sprinter_pieces.py tools/rasterize_sprinter_pieces.py \
                      tests/tools/test_sprinter_piece_tiles.py tools/build_sprinter_piece_tiles.py \
                      tests/tools/test_prepare_sprinter_logo.py tools/prepare_sprinter_logo.py \
@@ -1003,6 +1040,7 @@ sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_assets_page.py
 	$(PYTHON) tests/tools/test_sprinter_overlay_page.py
+	$(PYTHON) tests/tools/test_sprinter_cold_page.py
 	$(PYTHON) tests/tools/test_rasterize_sprinter_pieces.py
 	$(PYTHON) tests/tools/test_sprinter_piece_tiles.py
 	$(PYTHON) tests/tools/test_prepare_sprinter_logo.py
@@ -1225,6 +1263,114 @@ $(SPRINTER_PLATFORM_DEFS_ASM): tools/gen_sprinter_platform_defs.py $(SPRINTER_PL
 	$(PYTHON) tools/gen_sprinter_platform_defs.py --sym $(SPRINTER_PLATFORM_PRIMITIVES_SYM) \
 		--out $(SPRINTER_PLATFORM_DEFS_ASM)
 
+# net_frame.c (S7, port.md section 3.7): the fourth splice blob, built
+# independently of the resident C image with its own crt0 (net_core_crt0.
+# asm) at a fixed ORG (fixed_layout.json's NET_FRAME_C_ADDR) -- same
+# three-independent-builds-agreeing-only-on-fixed_layout.json shape as
+# trampoline/platform_primitives/resident_c above. Also builds unmodified
+# under gcc for tests/sprinter/host/test_net_frame.c (S7 step 2); this
+# rule is the zcc/target side only.
+#
+# Step 3's nc_pump() (compiled in only under -DNETCHESSZX_SPRINTER) calls
+# net_gate.asm's ng_c_recv_poll/ng_buf_rx/ng_v_call_* -- real WIN2
+# addresses this independent link session has no other way to see, so
+# SPRINTER_PLATFORM_DEFS_ASM is linked in here too (defc's only, zero
+# bytes contributed), the same generated bridge resident_c.bin already
+# uses for the same call surface.
+SPRINTER_NET_FRAME_C_DEPS := $(SPRINTER_NET_FRAME_C_SRC) $(SPRINTER_NET_CORE_CRT0) \
+                             $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_INC)
+
+$(SPRINTER_NET_FRAME_C_BIN): $(SPRINTER_NET_FRAME_C_DEPS) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
+		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM -DNETCHESSZX_DIRECT_ONLY \
+		-pragma-define:CRT_ORG_CODE=$$($(PYTHON) tools/gen_sprinter_layout.py \
+			--layout $(SPRINTER_LAYOUT_JSON) --print-symbol NET_FRAME_C_ADDR) \
+		-crt0=$(patsubst %.asm,%,$(SPRINTER_NET_CORE_CRT0)) -m \
+		-o $(SPRINTER_NET_FRAME_C_BIN) \
+		$(SPRINTER_NET_FRAME_C_SRC) $(SPRINTER_PLATFORM_DEFS_ASM)
+
+# Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment
+# above (macOS ships GNU make 3.81, no grouped-target support).
+$(SPRINTER_NET_FRAME_C_MAP): $(SPRINTER_NET_FRAME_C_BIN)
+
+SPRINTER_NETFRAME_DEFS_ASM := $(SPRINTER_GENERATED_DIR)/netframe_defs.asm
+
+$(SPRINTER_NETFRAME_DEFS_ASM): tools/gen_sprinter_netframe_defs.py $(SPRINTER_NET_FRAME_C_MAP) \
+                               | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_netframe_defs.py --map $(SPRINTER_NET_FRAME_C_MAP) \
+		--out $(SPRINTER_NETFRAME_DEFS_ASM)
+
+sprinter-netframe-defs-check: tools/gen_sprinter_netframe_defs.py
+	$(PYTHON) tools/gen_sprinter_netframe_defs.py --self-test
+
+# WIN3 cold-code page. Same "independent zcc build at a fixed ORG, padded
+# to a whole 16 KiB asset page" shape as before, but since S7 step 5 the
+# dependency arrow points the OTHER way: this page is built AFTER
+# resident_c.bin, not before it.
+#
+# What made that possible: the WIN1 thunks no longer read this build's
+# .map. They call $C000+3*i into the generated entry table below, which the
+# crt0 pins to the top of the image, so both halves come from one ordered
+# allowlist in tools/gen_sprinter_cold_thunks.py and neither build has to
+# see the other's output. That freed the order, and the freed order is what
+# lets cold-page code CALL BACK into the resident through
+# tools/gen_sprinter_cold_defs.py's defc bridge -- without which the page
+# could only ever hold leaf code (gui.c calls text.c, the session config
+# and the frame/key shims, all resident).
+SPRINTER_COLD_THUNKS_ASM := $(SPRINTER_GENERATED_DIR)/cold_thunks.asm
+SPRINTER_COLD_ENTRY_TABLE := $(SPRINTER_GENERATED_DIR)/cold_entry_table.inc
+SPRINTER_COLD_DEFS_ASM := $(SPRINTER_GENERATED_DIR)/cold_defs.asm
+
+# Both halves of the boundary, from the same allowlist and neither from a
+# .map -- that is the whole point (see above).
+$(SPRINTER_COLD_THUNKS_ASM): tools/gen_sprinter_cold_thunks.py \
+                             | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_cold_thunks.py --mode thunks \
+		--out $(SPRINTER_COLD_THUNKS_ASM)
+
+$(SPRINTER_COLD_ENTRY_TABLE): tools/gen_sprinter_cold_thunks.py \
+                              | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_cold_thunks.py --mode entry-table \
+		--out $(SPRINTER_COLD_ENTRY_TABLE)
+
+$(SPRINTER_COLD_DEFS_ASM): tools/gen_sprinter_cold_defs.py $(SPRINTER_RESIDENT_C_MAP) \
+                           | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_cold_defs.py --map $(SPRINTER_RESIDENT_C_MAP) \
+		--out $(SPRINTER_COLD_DEFS_ASM)
+
+# The verify step is part of this recipe, not a separate target: it reads
+# the .map this very link just produced and fails the build if the entry
+# table did not land where the already-linked WIN1 stubs call.
+$(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_COLD_PAGE_CRT0) \
+                            $(SPRINTER_COLD_ENTRY_TABLE) $(SPRINTER_COLD_DEFS_ASM) \
+                            $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_INC) \
+                            | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
+		-Ca-I$(SPRINTER_GENERATED_DIR) \
+		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM -DNETCHESSZX_DIRECT_ONLY \
+		-pragma-define:CRT_ORG_CODE=$(SPRINTER_COLD_PAGE_ORG) \
+		-crt0=$(patsubst %.asm,%,$(SPRINTER_COLD_PAGE_CRT0)) -m \
+		-o $(SPRINTER_COLD_IMAGE_BIN) \
+		$(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_PLATFORM_DEFS_ASM) \
+		$(SPRINTER_COLD_DEFS_ASM)
+	$(PYTHON) tools/gen_sprinter_cold_thunks.py --mode verify \
+		--map $(SPRINTER_COLD_IMAGE_MAP)
+
+# Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment
+# above (macOS ships GNU make 3.81, no grouped-target support).
+$(SPRINTER_COLD_IMAGE_MAP): $(SPRINTER_COLD_IMAGE_BIN)
+
+$(SPRINTER_COLD_WIN3_PAGE): tools/make_sprinter_cold_page.py $(SPRINTER_COLD_IMAGE_BIN) \
+                            | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/make_sprinter_cold_page.py --image $(SPRINTER_COLD_IMAGE_BIN) \
+		--output $(SPRINTER_COLD_WIN3_PAGE)
+
+sprinter-cold-page-check: tools/gen_sprinter_cold_thunks.py tools/gen_sprinter_cold_defs.py \
+                          tools/make_sprinter_cold_page.py
+	$(PYTHON) tools/gen_sprinter_cold_thunks.py --self-test
+	$(PYTHON) tools/gen_sprinter_cold_defs.py --self-test
+	$(PYTHON) tools/make_sprinter_cold_page.py --self-test
+
 # game_protocol.c/mqtt_session_protocol.c (plan D7): portable common/
 # protocol source, no platform #ifdef of its own. Linked into the resident
 # once here rather than duplicated per-overlay -- control_ovl.c (CONTROL,
@@ -1239,30 +1385,46 @@ SPRINTER_RESIDENT_C_SRC := src/sprinter/main.c \
                            src/common/protocol/mqtt_session_protocol.c \
                            src/spectrum/board/board.c \
                            src/common/chess/move_coords.c \
-                           src/spectrum/ui/gui.c \
                            src/spectrum/saveload/saveload.c \
                            src/spectrum/restore/restore.c \
-                           src/spectrum/fileui/fileui.c
+                           src/spectrum/fileui/fileui.c \
+                           src/spectrum/config/session.c \
+                           src/spectrum/transport/keepalive_protocol.c \
+                           src/sprinter/session_classify_sprinter.c \
+                           src/spectrum/session/event.c \
+                           src/spectrum/session/ping.c \
+                           src/spectrum/session/direct.c \
+                           src/spectrum/session/outgoing.c \
+                           src/spectrum/session/poll.c \
+                           src/sprinter/transport/unet_link.c \
+                           src/spectrum/platform/text.c \
+                           src/common/protocol/direct_session_protocol.c
 SPRINTER_RESIDENT_CRT0 := $(SPRINTER_ASM_DIR)/zcc/resident_crt0.asm
 SPRINTER_OVERLAY_LOADER_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_loader_sprinter.asm
 SPRINTER_OVERLAY_ATLAS_TABLE_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_atlas_table_sprinter.asm
-SPRINTER_RENDER_CORE_ASM := $(SPRINTER_ASM_DIR)/zcc/render_core.asm
+# render_core.asm itself is NOT here any more (S7 step 4): it lives in the
+# WIN3 cold page above. What the resident links instead is the three
+# per-frame bridges too small to be worth a thunk (render_shim.asm) and the
+# generated stubs for everything else (cold_thunks.asm).
+SPRINTER_RENDER_SHIM_ASM := $(SPRINTER_ASM_DIR)/zcc/render_shim.asm
 SPRINTER_RESIDENT_C_MAP := $(SPRINTER_BUILD_DIR)/resident_c.map
 
 # C_IMAGE_ENTRY_ADDR read from the JSON at recipe time (not hand-duplicated)
 # so trampoline.asm's JP target and zcc's CRT_ORG_CODE can never drift apart.
 $(SPRINTER_RESIDENT_C_BIN): $(SPRINTER_RESIDENT_C_SRC) $(SPRINTER_RESIDENT_CRT0) \
                             $(SPRINTER_OVERLAY_LOADER_ASM) $(SPRINTER_OVERLAY_ATLAS_TABLE_ASM) \
-                            $(SPRINTER_RENDER_CORE_ASM) \
-                            $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                            $(SPRINTER_RENDER_SHIM_ASM) $(SPRINTER_COLD_THUNKS_ASM) \
+                            $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_NETFRAME_DEFS_ASM) \
+                            $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
-		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM \
+		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM -DNETCHESSZX_DIRECT_ONLY \
 		-pragma-define:CRT_ORG_CODE=$$($(PYTHON) tools/gen_sprinter_layout.py \
 			--layout $(SPRINTER_LAYOUT_JSON) --print-symbol C_IMAGE_ENTRY_ADDR) \
 		-crt0=$(patsubst %.asm,%,$(SPRINTER_RESIDENT_CRT0)) -m \
 		-o $(SPRINTER_RESIDENT_C_BIN) \
-		$(SPRINTER_RESIDENT_C_SRC) $(SPRINTER_OVERLAY_LOADER_ASM) $(SPRINTER_RENDER_CORE_ASM) \
-		$(SPRINTER_PLATFORM_DEFS_ASM)
+		$(SPRINTER_RESIDENT_C_SRC) $(SPRINTER_OVERLAY_LOADER_ASM) \
+		$(SPRINTER_RENDER_SHIM_ASM) $(SPRINTER_COLD_THUNKS_ASM) \
+		$(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_NETFRAME_DEFS_ASM)
 
 # Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment
 # above (macOS ships GNU make 3.81, no grouped-target support).
@@ -1484,20 +1646,23 @@ $(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RU
 		--output $(SPRINTER_OVL_WIN3_PAGE)
 
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) \
-                          $(SPRINTER_PLATFORM_PRIMITIVES_BIN) tools/make_sprinter_resident.py \
+                          $(SPRINTER_PLATFORM_PRIMITIVES_BIN) $(SPRINTER_NET_FRAME_C_BIN) \
+                          tools/make_sprinter_resident.py \
                           $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_resident.py --layout $(SPRINTER_LAYOUT_JSON) \
 		--trampoline $(SPRINTER_TRAMPOLINE_BIN) --resident-c $(SPRINTER_RESIDENT_C_BIN) \
-		--platform-primitives $(SPRINTER_PLATFORM_PRIMITIVES_BIN) --output $(SPRINTER_RESIDENT_BIN)
+		--platform-primitives $(SPRINTER_PLATFORM_PRIMITIVES_BIN) \
+		--net-frame-c $(SPRINTER_NET_FRAME_C_BIN) --output $(SPRINTER_RESIDENT_BIN)
 
 $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
                  $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) $(SPRINTER_OVL_WIN3_PAGE) \
+                 $(SPRINTER_COLD_WIN3_PAGE) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
 		--resident $(SPRINTER_RESIDENT_BIN) --assets $(SPRINTER_ASSETS_PAGE) \
 		--assets $(SPRINTER_PIECE_PAGE1) --assets $(SPRINTER_PIECE_PAGE2) \
-		--assets $(SPRINTER_OVL_WIN3_PAGE) \
+		--assets $(SPRINTER_OVL_WIN3_PAGE) --assets $(SPRINTER_COLD_WIN3_PAGE) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -1512,6 +1677,21 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
                    $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC)
 	tools/run_sprinter_z80_tests.sh
+
+# net_frame.c (S7 step 2) builds and behaves identically under gcc: no
+# target-only header, so this is a real behavioural proof of the line-
+# framing core, not just a compile check (mirrors GAME_PROTOCOL_TEST's
+# shape for src/common/protocol/*.c).
+SPRINTER_NET_FRAME_HOST_TEST := $(SPRINTER_BUILD_DIR)/netchesszx_sprinter_net_frame_test.exe
+SPRINTER_NET_FRAME_HOST_TEST_SRC := src/sprinter/transport/net_frame.c \
+                                    tests/sprinter/host/test_net_frame.c
+
+$(SPRINTER_NET_FRAME_HOST_TEST): $(SPRINTER_NET_FRAME_HOST_TEST_SRC) \
+                                  src/sprinter/transport/net_frame.h | $(SPRINTER_BUILD_DIR)
+	$(CC) $(CFLAGS) $(SPRINTER_NET_FRAME_HOST_TEST_SRC) -o $@
+
+sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST)
+	./$(SPRINTER_NET_FRAME_HOST_TEST)
 
 SPRINTER_SIZE_REPORT_JSON := $(SPRINTER_BUILD_DIR)/size_report.json
 SPRINTER_SIZE_REPORT_MD := $(SPRINTER_BUILD_DIR)/size_report.md
@@ -1555,11 +1735,13 @@ sprinter-about: tools/make_sprinter_about.py $(SPRINTER_ABOUT_PNG)
 
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-crt0-check \
-                sprinter-platform-defs-check sprinter-overlay-defs-check \
+                sprinter-platform-defs-check sprinter-netframe-defs-check \
+                sprinter-cold-page-check \
+                sprinter-overlay-defs-check \
                 sprinter-overlay-control-check sprinter-overlay-rules-check \
                 sprinter-overlay-board-check sprinter-overlay-saveload-check \
                 sprinter-overlay-restore-check sprinter-overlay-fileui-check \
-                sprinter-z80-test sprinter-resident-test \
+                sprinter-z80-test sprinter-resident-test sprinter-host-test \
                 sprinter-size-report sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \

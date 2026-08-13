@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Splice the Sprinter resident from three independently-assembled blobs.
+"""Splice the Sprinter resident from three (or four) independently-
+assembled blobs.
 
 Plan D1 (port.md section 3.10/S5): trampoline.asm (sjasmplus) and
 platform_primitives.asm (sjasmplus) are each their own --raw job, and the
@@ -13,6 +14,15 @@ tools/make_sprinter_exe.py expects: zero-filled outside the three blobs
 (HDR is the loader's to write, per the existing resident-image contract),
 each blob placed at its anchor, and a hard failure -- not silent truncation
 or overlap -- if any blob doesn't fit before the next anchor.
+
+S7 (port.md section 3.7) adds an optional fourth blob: net_frame.c's own
+independent zcc build (asm/sprinter/zcc/net_core_crt0.asm), placed at the
+NET_FRAME_C region platform_primitives.asm already reserves (zero-filled)
+right before OVL_SLOT. Placing it after platform_primitives.bin in the
+same overlap-checked `place()` works without any special-casing: the
+target bytes are already zero (platform_primitives.asm's own DS reservation
+for that region), so writing real code there is not flagged as an overlap.
+Omitting --net-frame-c keeps the three-blob shape for ad-hoc/probe builds.
 """
 
 from __future__ import annotations
@@ -30,7 +40,7 @@ class SpliceError(Exception):
 
 
 def splice(layout: dict, trampoline: bytes, resident_c: bytes,
-           platform_primitives: bytes) -> bytes:
+           platform_primitives: bytes, net_frame_c: bytes = b"") -> bytes:
     resident_base = layout["resident_base"]
     win2_base = layout["win2_base"]
     win2_end = layout["win2_end"]
@@ -61,6 +71,12 @@ def splice(layout: dict, trampoline: bytes, resident_c: bytes,
     place("resident_c.bin (C image)", resident_c, c_entry_addr, win1_end)
     place("platform_primitives.bin", platform_primitives, win2_base, win2_end)
 
+    if net_frame_c:
+        net_frame_region = gsl._region(layout, "NET_FRAME_C")
+        net_frame_addr = net_frame_region["addr"]
+        net_frame_ceiling = net_frame_addr + net_frame_region["size"]
+        place("net_frame_c.bin", net_frame_c, net_frame_addr, net_frame_ceiling)
+
     if len(platform_primitives) != win2_end - win2_base:
         raise SpliceError(
             f"platform_primitives.bin is {len(platform_primitives)} bytes, "
@@ -80,6 +96,10 @@ def main() -> int:
     parser.add_argument("--trampoline", type=Path, required=True)
     parser.add_argument("--resident-c", type=Path, required=True)
     parser.add_argument("--platform-primitives", type=Path, required=True)
+    parser.add_argument("--net-frame-c", type=Path,
+                        help="S7: optional fourth blob (net_frame.c's own "
+                             "zcc build), spliced into the NET_FRAME_C "
+                             "region; omit for the pre-S7 three-blob shape")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -97,6 +117,7 @@ def main() -> int:
             args.trampoline.read_bytes(),
             args.resident_c.read_bytes(),
             args.platform_primitives.read_bytes(),
+            args.net_frame_c.read_bytes() if args.net_frame_c else b"",
         )
     except SpliceError as exc:
         print(f"[ERR] make_sprinter_resident: {exc}", file=sys.stderr)

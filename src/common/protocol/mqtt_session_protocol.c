@@ -24,6 +24,13 @@ const char *netchess_mqtt_session_parse_u16_token(const char *p, uint16_t *out)
 }
 #endif
 
+/*
+ * H/J/O/F session-establishment parsing is MQTT-transport-only: DIRECT
+ * (Sprinter S7) never sends these verbs, and NETCHESSZX_DIRECT_ONLY builds
+ * are byte-constrained, so this half of the file is excluded there. ZX/Next
+ * never define the macro, so their object code is unchanged.
+ */
+#ifndef NETCHESSZX_DIRECT_ONLY
 uint8_t netchess_mqtt_session_color_value(char color, uint8_t *out)
 {
     if (color == 'W') {
@@ -104,3 +111,4 @@ uint8_t netchess_mqtt_session_parse_side(const char *payload,
     *has_session_id = 1u;
     return 1u;
 }
+#endif /* NETCHESSZX_DIRECT_ONLY */

@@ -62,7 +62,14 @@
  * testnotes/S5.md for the full checkpoint history.
  */
 
+#include "spectrum/config/session.h"
 #include "spectrum/session/event.h"
+#include "spectrum/session/poll.h"
+#include "spectrum/session/direct.h"
+#include "spectrum/session/outgoing.h"
+#include "spectrum/transport/link.h"
+#include "spectrum/platform/text.h"
+#include "common/protocol/game_protocol.h"
 #include "spectrum/board/board.h"
 #include "spectrum/overlay/overlay_context.h"
 #include "common/chess/rules_compact.h"
@@ -173,14 +180,26 @@ extern unsigned char rtc_minute;
 extern unsigned char rtc_second;
 static unsigned char rtc_tick_counter;
 
-/* Board cursor / selection state, defined in render_core.asm (see the
+/* Board cursor / selection state, shared with render_core.asm (see the
    comment on selected_row there): the renderer owns the cells because the
    asm cursor mover and the frame painters both read them, this file owns
-   the selection *policy*, exactly as ZX splits app.c from screen.asm. */
-extern unsigned char cursor_row;
-extern unsigned char cursor_col;
-extern unsigned char selected_row;
-extern unsigned char selected_col;
+   the selection *policy*, exactly as ZX splits app.c from screen.asm.
+
+   Fixed low-RAM cells, not linker symbols: render_core.asm now lives in
+   its own WIN3 code page (S7 step 4, the byte-budget ladder -- that file's
+   own header), which is neither visible to this build's linker nor mapped
+   in while WIN1 code runs. LOWRAM_RENDER_SHARED (src/sprinter/fixed_layout
+   .json, whose desc pins the offsets) is the always-mapped WIN2 cell block
+   both sides address by the same generated constant instead. Consequence:
+   no static initialiser -- render_state_reset() below seeds them at boot. */
+#define cursor_row \
+    (*(unsigned char *)(NETCHESSZX_LOWRAM_RENDER_SHARED_ADDR + 1))
+#define cursor_col \
+    (*(unsigned char *)(NETCHESSZX_LOWRAM_RENDER_SHARED_ADDR + 2))
+#define selected_row \
+    (*(unsigned char *)(NETCHESSZX_LOWRAM_RENDER_SHARED_ADDR + 3))
+#define selected_col \
+    (*(unsigned char *)(NETCHESSZX_LOWRAM_RENDER_SHARED_ADDR + 4))
 extern unsigned char key_code;
 
 #define NO_SQUARE 0xFFu
@@ -251,6 +270,14 @@ static unsigned char square_index(unsigned char row, unsigned char col) {
     return (unsigned char)((row << 3) + col);
 }
 
+/* Networked play (S7 step 5). Zero while the port is in its original
+   hot-seat mode, which is still the boot state and still exactly the
+   behaviour every earlier checkpoint tested -- everything below is
+   additive and gated on this one flag. See the "DIRECT session" section
+   further down for the whole of it. */
+static unsigned char net_active;
+static void net_send_local_move(const char *move);
+
 static unsigned char piece_is_side_to_move(char piece) {
     if (piece == '.') {
         return 0u;
@@ -290,6 +317,17 @@ static void board_select_or_move(void) {
     key_code = 0u;              /* read-and-clear, like board_cursor_move */
 
     piece = spectrum_board_cell(cursor_row, cursor_col);
+
+    /* Hot-seat plays both sides at one keyboard; a DIRECT session does not.
+       This is the only place the two modes differ before the move is made,
+       and it is a refusal rather than a filter on purpose: the tester needs
+       to be told why the press did nothing (invisible modal state is a bug
+       this port has already shipped once). */
+    if (net_active && !netchesszx_session_has_local_turn(
+            (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
+        spectrum_gui_notify("Not your turn", 0u);
+        return;
+    }
 
     if (selected_row == NO_SQUARE) {
         if (!piece_is_side_to_move(piece)) {
@@ -382,6 +420,10 @@ static void board_select_or_move(void) {
            ply counter tracks white/black from call order alone, so no ply
            string is needed here (see that file's own header). */
         spectrum_gui_add_move("", move);
+
+        if (net_active) {
+            net_send_local_move(move);
+        }
     }
 }
 
@@ -601,6 +643,242 @@ static void fileui_process_key(unsigned char key) {
     }
 }
 
+/* --- DIRECT session (S7 step 5, port.md section 3.7) ------------------------
+ *
+ * JOIN role only: the host side needs the SETUP screen (colour choice,
+ * listen) which is S9 scope, and port.md's own S7 definition-of-done is a
+ * Sprinter(join) <-> Qt(host) game. Host/port come from the NETHOST/NETPORT
+ * environment variables (net_gate.asm's ng_env_*), with no interactive
+ * entry this milestone.
+ *
+ * DELIBERATE DEVIATION from ZX/Next's shape: app.c runs a separate
+ * game_message_loop() for the whole networked game, because on ZX the
+ * hot-seat and networked paths are genuinely different loops. This port
+ * has one frame loop that is already MAME-proven for key handling, cursor,
+ * clocks, notices and the flip, so the session poll is folded INTO it
+ * (net_poll_once below, called once per frame when net_active) instead of
+ * being duplicated. Anything the session does to the screen goes through
+ * the same gui.c/render path hot-seat play already uses, so there is no
+ * second rendering path to keep in sync -- and no way for the two loops to
+ * drift apart, which is what a duplicated 300-line loop would eventually
+ * do. What is NOT ported from game_message_loop, and is honestly missing
+ * rather than stubbed: the pending-outgoing retry ladder, the control
+ * cancel timers, takeback, and RESTORE chunking (S8 scope).
+ *
+ * Ping/keepalive is entirely the session layer's (poll.c answers PING with
+ * ACK PING and drives the miss counter); nothing here re-implements it.
+ */
+#define NET_HELLO_REANNOUNCE_TICKS 80u
+
+/* net_gate.asm (WIN2). Only the teardown half is needed here -- bringing
+   the backend up is net_ui_sprinter.c's job (it owns the screen while it
+   blocks), and this file never sees the DLL. */
+extern void ng_close(void);
+
+/* src/sprinter/net_ui_sprinter.c, in the WIN3 cold page: the whole modal
+   join screen (preflight, connect, retry/cancel) behind one call. */
+extern unsigned char spectrum_net_join_ui(void);
+
+static netchesszx_session_ping_t net_ping;
+static unsigned char net_hello_wait;
+static unsigned char net_peer_known;
+
+static void net_status_idle(void) {
+    spectrum_gui_set_connected(0u);
+    spectrum_gui_set_status("HOT SEAT");
+}
+
+/* Every exit from a session lands here: the link is already gone (or is
+   being given up on), so this only has to make the local state honest
+   again. ng_close is idempotent (unet.inc), so calling it after a link the
+   peer already dropped is fine. */
+static void net_drop(const char *why) {
+    net_active = 0u;
+    net_peer_known = 0u;
+    netchesszx_session_peer_reset();
+    ng_close();
+    net_status_idle();
+    spectrum_gui_notify(why, 1u);
+}
+
+/* "MOVE <ply> <coords>" -- byte-for-byte app.c's own send_move_wire
+   (src/spectrum/app/app.c), built with the same two append helpers rather
+   than game_protocol_format.c's netchess_proto_format_move: that TU is not
+   linked on any Spectrum-family target, and pulling it in for one caller
+   would cost more than the six lines below. The ply is gui_log_sprinter.
+   c's own counter (the number the move list shows) plus one -- the move
+   being sent has already been appended to the log by the caller, so the
+   counter is already the ply of THIS move. */
+static void net_send_local_move(const char *move) {
+    char payload[24];
+    char *p = spectrum_append_text(payload, NETCHESS_PROTO_MOVE_PREFIX);
+
+    p = spectrum_append_u16(p, spectrum_gui_log_ply_get());
+    *p++ = ' ';
+    (void)spectrum_append_text(p, move);
+    if (!spectrum_link_send_text(payload)) {
+        net_drop("Link down");
+    }
+}
+
+/* A remote MOVE has already been validated by RULES and applied by BOARD;
+   this repaints exactly the two squares it touched, the same pair a local
+   move repaints. Coordinates come back out of the move string rather than
+   being threaded through, so promotion suffixes ("e7e8q") cost nothing. */
+static void net_repaint_move(const char *move) {
+    unsigned char from = square_index((unsigned char)('8' - move[1]),
+                                      (unsigned char)(move[0] - 'a'));
+    unsigned char to = square_index((unsigned char)('8' - move[3]),
+                                    (unsigned char)(move[2] - 'a'));
+
+    render_square_marked(from);
+    render_square_marked(to);
+}
+
+static void net_apply_remote_move(const char *payload) {
+    char ply[6];
+    char move[6];
+    char notation[8];
+
+    if (!netchess_proto_parse_move(payload, ply, sizeof(ply),
+                                   move, sizeof(move),
+                                   notation, sizeof(notation))) {
+        return;                 /* malformed line: not a move, not an event */
+    }
+    /* The peer is not trusted to have checked its own move: this port runs
+       the same RULES overlay against it that a local move goes through,
+       and NACKs rather than corrupting the board. That is the contract
+       (docs/session-core-contract.md), not extra caution. */
+    if (!spectrum_board_is_legal_move(move) ||
+        !spectrum_board_apply_trusted_move(move)) {
+        (void)netchesszx_session_send_nack_move(ply);
+        spectrum_gui_notify("Peer sent an illegal move", 1u);
+        return;
+    }
+    selection_clear();
+    net_repaint_move(move);
+    spectrum_gui_move_timer_reset();
+    spectrum_gui_set_turn_label(side_to_move == NETCHESSZX_RULE_WHITE
+                                     ? SPECTRUM_GUI_TURN_WHITE
+                                     : SPECTRUM_GUI_TURN_BLACK);
+    spectrum_gui_notify_persistent(notation[0] != '\0' ? notation : move);
+    spectrum_gui_add_move(ply, move);
+    if (!netchesszx_session_send_ack_move(ply)) {
+        net_drop("Link down");
+    }
+}
+
+/* The peer's HELLO is what settles which colour this side plays, so the
+   board view can only be oriented once it arrives -- until then the board
+   is drawn white-at-the-bottom, which is also what a JOIN playing white
+   will keep. */
+static void net_apply_hello(const char *payload) {
+    if (!netchesszx_session_direct_apply_hello(payload)) {
+        return;
+    }
+    net_peer_known = 1u;
+    netchesszx_session_peer_mark_ready();
+    spectrum_link_direct_peer_mark_valid();
+    spectrum_gui_set_board_view((unsigned char)(!netchesszx_local_is_white()));
+    render_board_full();
+    render_coord_labels();
+    render_select_marker();
+    render_cursor_marker();
+    spectrum_gui_set_turn_label(side_to_move == NETCHESSZX_RULE_WHITE
+                                     ? SPECTRUM_GUI_TURN_WHITE
+                                     : SPECTRUM_GUI_TURN_BLACK);
+    spectrum_gui_set_status(netchesszx_local_side_name());
+    spectrum_gui_notify_success("Opponent ready");
+}
+
+static void net_handle_event(unsigned char event, const char *payload) {
+    if (event == NETCHESSZX_SESSION_EVENT_DIRECT_HELLO) {
+        net_apply_hello(payload);
+        return;
+    }
+    /* Before the peer has identified itself there is no agreed colour, so
+       acting on game traffic would be acting on a guess. ZX's own loop
+       makes the same cut (its `!netchesszx_session_peer_ready_state`
+       continue). */
+    if (!net_peer_known) {
+        return;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MOVE) {
+        net_apply_remote_move(payload);
+    } else if (event == NETCHESSZX_SESSION_EVENT_ACK_MOVE) {
+        spectrum_gui_notify_success("Move acknowledged");
+    } else if (event == NETCHESSZX_SESSION_EVENT_NACK_MOVE) {
+        /* The board has already advanced locally, so this is a real
+           desync, not a recoverable rejection -- say so plainly rather
+           than pretending a retry would help (the retry ladder is S8). */
+        spectrum_gui_notify("Move rejected by opponent", 1u);
+    } else if (event == NETCHESSZX_SESSION_EVENT_CHAT) {
+        char text[SPECTRUM_LINK_PAYLOAD_MAX];
+
+        if (netchess_proto_parse_chat(payload, text, (unsigned char)sizeof(text))) {
+            spectrum_gui_notify_persistent(text);
+        }
+    } else if (event == NETCHESSZX_SESSION_EVENT_RESET) {
+        spectrum_board_reset();
+        selection_clear();
+        render_board_full();
+        render_cursor_marker();
+        spectrum_gui_reset_move_log();
+        spectrum_gui_game_timer_start();
+        spectrum_gui_set_turn_label(SPECTRUM_GUI_TURN_WHITE);
+        spectrum_gui_notify_persistent("New game");
+        if (!netchesszx_session_send_ack_reset()) {
+            net_drop("Link down");
+        }
+    } else if (event == NETCHESSZX_SESSION_EVENT_RESIGN) {
+        spectrum_gui_notify_persistent("Opponent resigned");
+        (void)netchesszx_session_send_ack_resign();
+    } else if (event == NETCHESSZX_SESSION_EVENT_DRAW) {
+        /* Offered, not agreed: accepting needs the CONTROL confirm UI
+           (S8). Showing it is still strictly better than swallowing it. */
+        spectrum_gui_notify("Opponent offers a draw", 0u);
+    } else if (event == NETCHESSZX_SESSION_EVENT_BYE) {
+        net_drop("Opponent left");
+    } else if (event == NETCHESSZX_SESSION_EVENT_GAME_START) {
+        (void)netchesszx_session_direct_apply_start_side(payload);
+        (void)netchesszx_session_send_ack_game_start();
+    }
+}
+
+/* One frame's worth of session work, called from the frame loop. Cheap
+   when idle: netchesszx_session_poll's empty path is two non-blocking uNet
+   polls and at most two frame waits (unet_link.c's own pacing comment). */
+static void net_poll_once(void) {
+    char *payload = spectrum_link_payload_scratch();
+    netchesszx_session_poll_result_t poll;
+    unsigned char status;
+
+    /* Re-announce until the peer answers: on DIRECT either side may finish
+       connecting first, and a HELLO sent before the other end was listening
+       is simply lost. */
+    if (!net_peer_known) {
+        if (net_hello_wait != 0u) {
+            --net_hello_wait;
+        } else {
+            net_hello_wait = NET_HELLO_REANNOUNCE_TICKS;
+            if (!netchesszx_session_direct_send_hello()) {
+                net_drop("Link down");
+                return;
+            }
+        }
+    }
+
+    status = netchesszx_session_poll(&net_ping, payload,
+                                     SPECTRUM_LINK_PAYLOAD_MAX, &poll);
+    if (status == NETCHESSZX_SESSION_POLL_DISCONNECTED) {
+        net_drop("Link down");
+        return;
+    }
+    if (status == NETCHESSZX_SESSION_POLL_EVENT) {
+        net_handle_event((unsigned char)poll.event, payload);
+    }
+}
+
 /* --- menu actions (S5-finish, plan D12) -----------------------------------
  *
  * spectrum_gui_handle_menu_key (gui.c, portable) already owns menu open/
@@ -673,6 +951,50 @@ static void menu_not_available(void) {
     spectrum_gui_notify("Not available", 0u);
 }
 
+/* S7 step 5: the tab ZX/Next label DISCONNECT is this port's NETWORK tab
+   (there is nothing to disconnect from until there is something to
+   connect to, and one tab has to do both jobs until SETUP arrives in S9).
+   It toggles: with no session it opens the modal join screen, with a live
+   one it hangs up. The modal owns the whole screen while it runs, so the
+   board area is repainted on the way back either way -- the same "close"
+   fileui_close already does, for the same reason. */
+static void menu_network(void) {
+    unsigned char joined;
+
+    if (net_active) {
+        (void)spectrum_link_send_text(NETCHESS_PROTO_BYE);
+        net_drop("Disconnected");
+        return;
+    }
+
+    spectrum_gui_clear_cursor_coords();
+    joined = spectrum_net_join_ui();
+    spectrum_gui_restore_board_area();
+    saveload_full_redraw();
+
+    if (!joined) {
+        spectrum_gui_notify("Not connected", 1u);
+        return;
+    }
+
+    /* Role is fixed JOIN until SETUP is ported (S9): host_color is a
+       provisional guess that the peer's HELLO overwrites -- see
+       net_apply_hello. */
+    netchesszx_session_configure(NETCHESSZX_SESSION_ROLE_JOIN,
+                                 NETCHESSZX_TRANSPORT_DIRECT,
+                                 NETCHESSZX_COLOR_WHITE);
+    spectrum_link_start_uart();
+    netchesszx_session_ping_reset(&net_ping);
+    netchesszx_session_peer_reset();
+    net_peer_known = 0u;
+    net_hello_wait = 0u;
+    net_active = 1u;
+
+    spectrum_gui_set_connected(2u);     /* gui.c: 2 = DIRECT, 1 = MQTT */
+    spectrum_gui_set_status("WAITING");
+    spectrum_gui_notify_persistent("Waiting for opponent");
+}
+
 static void handle_menu_action(unsigned char action) {
     if (action == SPECTRUM_GUI_KEY_MENU_REST) {
         menu_reset_game();
@@ -682,8 +1004,9 @@ static void handle_menu_action(unsigned char action) {
         menu_flip_board();
     } else if (action == SPECTRUM_GUI_KEY_MENU_FILE) {
         fileui_open();
-    } else if (action == SPECTRUM_GUI_KEY_MENU_DISCC ||
-               action == SPECTRUM_GUI_KEY_MENU_ABOUT) {
+    } else if (action == SPECTRUM_GUI_KEY_MENU_DISCC) {
+        menu_network();
+    } else if (action == SPECTRUM_GUI_KEY_MENU_ABOUT) {
         menu_not_available();
     }
 }
@@ -692,6 +1015,24 @@ void main(void) {
     unsigned char pass;
 
     bench_init();
+
+    /* LOWRAM_RENDER_SHARED is a fixed address block, so nothing zero-fills
+       or pre-initialises it the way C storage would (fixed_layout.json's
+       own note, which also pins these offsets). Seed every cell here,
+       before the first painter or key handler can read one: +0 is gui.c's
+       spectrum_gui_board_flipped (0 = white at the bottom, its former BSS
+       value), +1/+2 the board cursor (e4, the same arbitrary visually
+       centred square render_core.asm's data_user section used to hold as
+       defb 4,4) and +3/+4 the selection (NO_SQUARE, its former defb $FF).
+       Deliberately ahead of video_init(): bench_init() has just published
+       the WIN3 code page these cells are shared with, and the very next
+       call already runs out of it. */
+    *(unsigned char *)(NETCHESSZX_LOWRAM_RENDER_SHARED_ADDR + 0) = 0u;
+    cursor_row = 4u;
+    cursor_col = 4u;
+    selected_row = NO_SQUARE;
+    selected_col = NO_SQUARE;
+
     video_init();
     video_clear_both_buffers();
     resolve_buffers();
@@ -920,5 +1261,13 @@ void main(void) {
            countdown both live inside gui.c's own tick -- this is the
            first thing in this port's frame loop that calls it. */
         spectrum_gui_tick();
+
+        /* S7 step 5: the DIRECT session, when there is one. Deliberately
+           last in the frame, after every local effect has been applied and
+           painted -- an incoming move should never race a local one that
+           was made in the same frame. Costs nothing in hot-seat mode. */
+        if (net_active) {
+            net_poll_once();
+        }
     }
 }

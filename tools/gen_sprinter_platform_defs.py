@@ -55,6 +55,11 @@ PLATFORM_SYMBOLS = [
     "piece_page1",
     "piece_page2",
     "ovl_win3_page",
+    # S7 step 4 (byte-budget ladder): the fifth asset page, holding the
+    # whole of render_core.asm/render_core_cold.asm. Read by the trampoline
+    # tools/gen_sprinter_cold_thunks.py generates into the WIN1 resident,
+    # which maps it into WIN3 for the duration of one painter call.
+    "cold_win3_page",
     "front_base",
     "back_base",
     # gfx_core.asm's tile_* parameter cells: gfx_draw_tile/gfx_blit_rows take
@@ -172,6 +177,41 @@ PLATFORM_SYMBOLS = [
     "ng_close",
     "ng_lasterr_fetch",
     "ng_shutdown",
+    # S7 (port.md section 3.7): src/sprinter/transport/unet_link.c's link.h
+    # winders need the peer IP for last_ip/sync_time-adjacent diagnostics,
+    # NETHOST/NETPORT env config for connect_host/preflight_run, and enough
+    # of net_gate's own diagnostic state (ng_buf_rx for the framing core to
+    # read received bytes from, ng_buf_lasterr/ng_up_reason/ng_backend for
+    # NERR_*/ng_up_reason -> text mapping) to report something meaningful
+    # on failure instead of a bare status code.
+    "ng_getinfo_ip",
+    "ng_env_nethost",
+    "ng_env_netport",
+    # ng_env_* return one of these two pointers when DSS did not have the
+    # variable, so a pointer compare tells the join panel whether it is
+    # showing a real NETHOST/NETPORT or a compiled-in default -- see the
+    # ng_env_nethost banner in net_gate.asm.
+    "ng_default_host",
+    "ng_default_port",
+    "ng_buf_ip",
+    "ng_buf_rx",
+    "ng_buf_lasterr",
+    "ng_up_reason",
+    "ng_backend",
+    "ng_v_last_nerr",
+    "ng_v_last_cf",
+    # C-callable wrappers for ng_connect/ng_send/ng_recv (register-ABI
+    # functions unet_link.c cannot call directly) plus their parameter/
+    # result cells -- see net_gate.asm's own "C-callable wrappers" banner.
+    "ng_c_connect",
+    "ng_c_send",
+    "ng_c_recv_poll",
+    "ng_c_send_ptr",
+    "ng_c_send_len",
+    "ng_v_call_status",
+    "ng_v_call_len",
+    "ng_v_call_flags",
+    "ng_v_call_cf",
     # dss_fileio.asm -- esx-ABI-over-DSS file I/O gate (S6, port.md section
     # 3.10 item 4). Called from the SAVELOAD/RESTORE/FILEUI overlay C
     # sources (src/spectrum/overlay/{saveload,fileui}_ovl.c), which are
@@ -191,7 +231,12 @@ PLATFORM_SYMBOLS = [
     "esx_readdir",
     "spectrum_net_runtime_fat_date",
     "spectrum_net_runtime_fat_time",
-    "spectrum_net_background_drain",
+    # spectrum_net_background_drain moved to OVERLAY_RESIDENT_SYMBOLS in
+    # gen_sprinter_overlay_defs.py (S7): dss_fileio.asm's S6-era no-op
+    # placeholder is gone, superseded by unet_link.c's real WIN1
+    # implementation (nc_pump) -- SAVELOAD/FILEUI overlays now resolve
+    # the SAME name against resident_c.map instead of this sjasmplus
+    # bridge, the same way they already reach netchess_after_prefix.
     "spectrum_platform_save_dir",
     "spectrum_platform_save_dir_init",
     "spectrum_platform_last_dss_error_text",
@@ -207,6 +252,13 @@ PLATFORM_SYMBOLS = [
     # port number itself is bridged (rather than spelled #E2 in the z88dk-
     # z80asm loader) so dss.inc stays the one place that names it.
     "WIN3_PORT",
+    # S7 step 4 (byte-budget ladder): render_core_cold.asm (WIN2 net_frame_c
+    # blob) reads gui.c's spectrum_gui_board_flipped, a fixed lowram address
+    # on Sprinter now (gui.c's own comment on the same build-order gap
+    # config/session.h documents). platform_primitives.asm INCLUDEs
+    # fixed_layout.inc, so this EQU is already in its own .sym -- no new
+    # sjasmplus-side plumbing needed, just adding it to this allowlist.
+    "LOWRAM_RENDER_SHARED_ADDR",
 ]
 
 GENERATED_BANNER = (
@@ -271,6 +323,7 @@ def _clean_fixture() -> str:
         "piece_page1: EQU 0x00008226\n"
         "piece_page2: EQU 0x00008227\n"
         "ovl_win3_page: EQU 0x00008228\n"
+        "cold_win3_page: EQU 0x00008229\n"
         "tile_dest_base: EQU 0x00004920\n"
         "tile_x_byte: EQU 0x00004922\n"
         "tile_x_hi: EQU 0x00004923\n"
@@ -327,6 +380,27 @@ def _clean_fixture() -> str:
         "ng_close: EQU 0x000089D0\n"
         "ng_lasterr_fetch: EQU 0x000089E0\n"
         "ng_shutdown: EQU 0x000089F0\n"
+        "ng_getinfo_ip: EQU 0x000089F8\n"
+        "ng_env_nethost: EQU 0x00008C00\n"
+        "ng_env_netport: EQU 0x00008C08\n"
+        "ng_default_host: EQU 0x00008C10\n"
+        "ng_default_port: EQU 0x00008C1A\n"
+        "ng_buf_ip: EQU 0x00008C40\n"
+        "ng_buf_rx: EQU 0x00008C50\n"
+        "ng_buf_lasterr: EQU 0x00008D00\n"
+        "ng_up_reason: EQU 0x00008D40\n"
+        "ng_backend: EQU 0x00008D41\n"
+        "ng_v_last_nerr: EQU 0x00008D42\n"
+        "ng_v_last_cf: EQU 0x00008D43\n"
+        "ng_c_connect: EQU 0x00008E00\n"
+        "ng_c_send: EQU 0x00008E10\n"
+        "ng_c_recv_poll: EQU 0x00008E20\n"
+        "ng_c_send_ptr: EQU 0x00008F94\n"
+        "ng_c_send_len: EQU 0x00008F96\n"
+        "ng_v_call_status: EQU 0x00008F97\n"
+        "ng_v_call_len: EQU 0x00008F98\n"
+        "ng_v_call_flags: EQU 0x00008F9A\n"
+        "ng_v_call_cf: EQU 0x00008F9C\n"
         "esx_handle: EQU 0x00008B00\n"
         "esx_buf: EQU 0x00008B01\n"
         "esx_count: EQU 0x00008B03\n"
@@ -341,7 +415,6 @@ def _clean_fixture() -> str:
         "esx_readdir: EQU 0x00008B80\n"
         "spectrum_net_runtime_fat_date: EQU 0x00008B90\n"
         "spectrum_net_runtime_fat_time: EQU 0x00008BA0\n"
-        "spectrum_net_background_drain: EQU 0x00008BB0\n"
         "spectrum_platform_save_dir: EQU 0x00008BC0\n"
         "spectrum_platform_save_dir_init: EQU 0x00008BD0\n"
         "spectrum_platform_last_dss_error_text: EQU 0x00008BE0\n"
@@ -349,6 +422,7 @@ def _clean_fixture() -> str:
         "OVL_SLOT_ADDR: EQU 0x0000A800\n"
         "OVL_SLOT_SIZE: EQU 0x00000800\n"
         "WIN3_PORT: EQU 0x000000E2\n"
+        "LOWRAM_RENDER_SHARED_ADDR: EQU 0x0000B400\n"
         "theme_set_squares: EQU 0x00004680\n"
     )
 

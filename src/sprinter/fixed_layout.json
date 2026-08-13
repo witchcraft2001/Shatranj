@@ -29,6 +29,13 @@
             "desc": "Fixed entry point of the z88dk-built resident C image (plan D1): trampoline.asm's last instruction is an unconditional JP here. resident_crt0.asm is built with -pragma-define:CRT_ORG_CODE matching this address. The C image occupies C_IMAGE_ENTRY..WIN1_END (budget ~15.5 KiB) and must not overrun into PSP_LANDING at win2_base -- enforced by the splicer's overlap gate, not by this JSON."
         },
         {
+            "name": "NET_FRAME_C",
+            "addr": "0x9AC0",
+            "size": "0xD40",
+            "owner": "asm/sprinter/zcc/net_core_crt0.asm + src/sprinter/transport/net_frame.c",
+            "desc": "S7 (port.md section 3.7): fourth independently zcc-built WIN2 C-blob (nc_ prefix), spliced by make_sprinter_resident.py into the code gap platform_primitives.asm reserves right before OVL_SLOT (its own ASSERT/DS pair pins this boundary at build time). Holds the portable DIRECT wire-framing core: RX ring, line splitter, 3-slot queue, and nc_pump's ng_recv polling glue. The gap's START is not a round number -- it is wherever platform_primitives.asm's own content happens to end, which grows as that file does (0x9997 at S7 step 1, 0x9A99 by step 4, 0x9AB6 once buffers.asm gained cold_win3_page); find it empirically from the sjasmplus 'truncated to length: -N' message and move this addr, never OVL_SLOT. End stays flush with OVL_SLOT's start (0xA800), no gap. Roughly 2.5 KiB of this is currently free: S7 step 4's first draft filled it with unet_link.c/ping.c/text.c/direct_session_protocol.c, which was reverted in favour of moving render_core.asm to its own WIN3 page instead (see LOWRAM_RENDER_SHARED and tools/make_sprinter_cold_page.py) -- strictly better, since that freed WIN1 without spending this much scarcer gap."
+        },
+        {
             "name": "OVL_SLOT",
             "addr": "0xA800",
             "size": "0x800",
@@ -146,6 +153,20 @@
             "size": "0xA0",
             "owner": "src/spectrum/overlay/mqtt_connect_ovl.c",
             "desc": "NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_*: scratch shared only by the currently loaded overlay. No NETCHESSZX_LOWRAM_UART_RING equivalent here -- that ZX region reclaims the printer buffer for the serial-transport RX ring (asm/uart/), which Sprinter's uNet DLL transport does not use; add it if/when a Sprinter transport actually needs a fixed RX ring."
+        },
+        {
+            "name": "LOWRAM_RENDER_SHARED",
+            "addr": "0xB400",
+            "size": "0x08",
+            "owner": "src/spectrum/ui/gui.c (Sprinter branch, gui.h), src/sprinter/main.c, asm/sprinter/zcc/render_core.asm",
+            "desc": "S7 step 4: the handful of one-byte cells that the WIN1 resident C and the WIN3-resident render_core.asm both touch. Offsets, in order: +0 gui.c's spectrum_gui_board_flipped, +1 cursor_row, +2 cursor_col, +3 selected_row, +4 selected_col (5 used, 3 spare). render_core.asm lives in its own WIN3 code page (asm/sprinter/zcc/cold_page_crt0.asm, tools/make_sprinter_cold_page.py) built BEFORE resident_c.bin and mapped in on demand, so neither build can see the other's .map and neither window is addressable from the other while the callee runs -- a fixed low-RAM address, known before either build compiles and always mapped in WIN2, sidesteps both problems at once (same idiom netchesszx_hinted_rows already uses for the sccz80-vs-SDCC __at gap, session.h's own comment on that field). Note these cells have NO static initialiser as a consequence: main.c's boot path seeds cursor_row/cursor_col (e4) and selected_row/selected_col (NO_SQUARE) explicitly. ZX/Next are unaffected (this region and the pointer-macro forms are all NETCHESSZX_SPRINTER-only)."
+        },
+        {
+            "name": "LOWRAM_NET",
+            "addr": "0xB408",
+            "size": "0x4F8",
+            "owner": "src/sprinter/transport/unet_link.c, src/sprinter/transport/net_frame.c",
+            "desc": "S7: DIRECT transport state -- RX byte ring, 3x48 line queue, payload_scratch (separate from the queue, link.h's own ownership contract), NETHOST/last-IP text, session/ping state cells. Fills the LOWRAM_OVERLAY_SCRATCH..CANARY gap left after S5-finish plan D9's size pass, the same way LOWRAM_MOVE_LOG fills the OVL_SLOT..CANARY gap D2 left. End is flush with CANARY's start (0xB900), no gap. Starts 8 bytes later than before S7 step 4 -- LOWRAM_SESSION_CFG now owns the front of this gap."
         },
         {
             "name": "CANARY",

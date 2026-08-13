@@ -6,6 +6,75 @@
 #include "spectrum/transport/link.h"
 #include "spectrum/transport/keepalive_protocol.h"
 
+#ifdef NETCHESSZX_DIRECT_ONLY
+/* DIRECT-only session poll: is_mqtt is always false on this transport, so
+   every MQTT-only branch of the shared implementation below (retained-flag
+   handling, presence publish on ping loss, the peer_ready_state gate) is
+   dead code here -- and worse, would fail to LINK, since unet_link.c
+   (this platform's link.h) never implements the mqtt_* half of the
+   contract (no MQTT backend exists to implement it against). This is the
+   same reduction as the #else branch with is_mqtt fixed to 0 and every
+   resulting dead branch removed; see event.c's own DIRECT_ONLY branch for
+   the matching half of this cut (classify_event's MQTT switch). */
+uint8_t netchesszx_session_poll(netchesszx_session_ping_t *ping,
+                                char *payload,
+                                uint8_t payload_cap,
+                                netchesszx_session_poll_result_t *out)
+{
+    int16_t link;
+    uint8_t ping_ev;
+
+    out->event = NETCHESSZX_SESSION_EVENT_UNKNOWN;
+    out->retained = 0u;
+    if (payload_cap != 0u) {
+        payload[0] = '\0';
+        payload[(uint8_t)(payload_cap - 1u)] = '\0';
+        if (payload_cap > NETCHESSZX_SAVE_RESTORE_FRAME_MAX) {
+            payload[NETCHESSZX_SAVE_RESTORE_FRAME_MAX] = (char)0xff;
+        }
+    }
+
+    link = spectrum_link_read_payload(payload, payload_cap);
+    if (link == -2) {
+        return NETCHESSZX_SESSION_POLL_DISCONNECTED;
+    }
+    if (link == SPECTRUM_LINK_READ_TIMEOUT) {
+        ping_ev = netchesszx_session_ping_timeout(
+            ping, 0u, (uint8_t)(!netchesszx_session_is_host()));
+        if (ping_ev != NETCHESSZX_SESSION_PING_NONE) {
+            if (ping_ev == NETCHESSZX_SESSION_PING_LOST) {
+                return NETCHESSZX_SESSION_POLL_DISCONNECTED;
+            }
+            if (!netchesszx_session_send_ping()) {
+                return NETCHESSZX_SESSION_POLL_DISCONNECTED;
+            }
+            netchesszx_session_ping_sent(ping, 0u);
+        }
+        return NETCHESSZX_SESSION_POLL_NONE;
+    }
+    if (link < 0) {
+        return NETCHESSZX_SESSION_POLL_NONE;
+    }
+
+    netchesszx_session_ping_rx_data(ping);
+    spectrum_link_background_drain();
+    out->event = netchesszx_session_classify_event(payload, 0u, 0u,
+                                                   netchesszx_session_is_host());
+    if (out->event == NETCHESSZX_SESSION_EVENT_PING) {
+        netchesszx_session_ping_rx_direct_peer_ping(ping);
+        /* DIRECT: dropped ACK send = peer counts one miss and re-pings. */
+        (void)netchesszx_session_send_ack_ping();
+        out->event = NETCHESSZX_SESSION_EVENT_UNKNOWN;
+        return NETCHESSZX_SESSION_POLL_NONE;
+    }
+    if (out->event == NETCHESSZX_SESSION_EVENT_ACK_PING) {
+        (void)netchesszx_session_ping_ack(ping, 0u);
+        out->event = NETCHESSZX_SESSION_EVENT_UNKNOWN;
+        return NETCHESSZX_SESSION_POLL_NONE;
+    }
+    return NETCHESSZX_SESSION_POLL_EVENT;
+}
+#else
 uint8_t netchesszx_session_poll(netchesszx_session_ping_t *ping,
                                 char *payload,
                                 uint8_t payload_cap,
@@ -135,3 +204,4 @@ uint8_t netchesszx_session_poll(netchesszx_session_ping_t *ping,
     }
     return NETCHESSZX_SESSION_POLL_EVENT;
 }
+#endif

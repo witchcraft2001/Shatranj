@@ -47,11 +47,16 @@ NG_BACKEND_RTL  EQU 2
 
 NG_HOST_CAPACITY    EQU 129
 NG_PORT_CAPACITY    EQU 16
-NG_TX_CAPACITY      EQU 32
-NG_RX_CAPACITY      EQU 256
+NG_TX_CAPACITY      EQU 64
+; 255, not 256: nc_pump's C-side byte count (ng_v_call_len, fed straight
+; into nc_feed()'s uint8_t len parameter) must never need a 9th bit.
+NG_RX_CAPACITY      EQU 255
 NG_LASTERR_CAPACITY EQU 64
 NG_INFO_CAPACITY    EQU 32
 NG_ENV_CAPACITY     EQU 64
+NG_IP_CAPACITY      EQU 16
+NG_ENV_HOST_CAPACITY EQU 24
+NG_ENV_PORT_CAPACITY EQU 6
 
 NG_TRAP_REENTRY EQU 1
 
@@ -260,7 +265,34 @@ ng_validate_info_tag:
 ; Out: A=0 and CF=0 on success; CF=1 and ng_up_reason set otherwise
 ; (LIBMAN.l_reason/l_dss_error/l_load_stage/l_init_status carry the detail
 ; when ng_up_reason is NG_UP_ERR_LOAD).
+;
+; IDEMPOTENT, AND IT HAS TO BE. libman is built here with LIBMAN_MAX_LIBS 1
+; (platform_primitives.asm), so lib_table holds exactly one entry; a second
+; l_load with that entry still occupied walks the table, finds nothing free
+; and returns CF=1 (libman_core13.asm's ll5b loop -> llerr_after_path).
+; Nothing ever frees the entry between sessions -- ng_shutdown is the R11
+; exit path only, deliberately, because the DLL stays resident for the life
+; of the program. So the join screen's second visit used to fail with
+; "DLL LOAD FAILED" while the library was in fact loaded and healthy, which
+; is exactly what MAME showed on 2026-08-13 (join, disconnect, join).
+;
+; The three states are told apart by the two bytes that already exist, so
+; this costs no new state: nothing loaded (cold, do everything); loaded and
+; ng_up_reason==0 (fully up -- return success without touching l_load or
+; NETINIT, since re-initialising a live adapter would cost seconds and drop
+; the link the caller is about to reuse); loaded but ng_up_reason!=0 (a
+; previous attempt died after the load, so resume at the call sequence --
+; the retry path in net_ui_sprinter.c depends on this branch).
 ng_up:
+        ld      a,(ng_loaded)
+        or      a
+        jr      z,.cold
+        ld      a,(ng_up_reason)
+        or      a
+        jr      nz,.warm
+        ret                             ; already up: A=0, CF=0 from `or a`
+
+.cold:
         call    ng_select_backend
         jr      nc,.env_ok
         ld      a,NG_UP_ERR_ENV
@@ -278,6 +310,7 @@ ng_up:
         ld      a,1
         ld      (ng_loaded),a
 
+.warm:                                  ; DLL already in WIN1 (see the banner)
         ld      hl,(ng_handle)
         ld      de,ng_buf_info
         call    LIBMAN.l_info
@@ -447,6 +480,68 @@ ng_recv:
         ld      b,UNET_FN_RECV
         jp      ng_call
 
+; ---------------------------------------------------------------------------
+; C-callable wrappers (S7): the C image cannot set up HL/DE/B/IX/IY the way
+; ng_connect/ng_send/ng_recv expect (register-based ABI -- this file's own
+; funnel discipline, see the file banner). ng_c_send takes its argument
+; through fixed module-level cells instead (the same "parameter cells"
+; pattern gfx_draw_tile/gfx_blit_rows already use for their own non-
+; standard-register call surface, gen_sprinter_platform_defs.py's comment
+; on tile_dest_base etc.): src/sprinter/transport/unet_link.c (WIN1)
+; writes ng_c_send_ptr/len, calls the wrapper with a plain zero-argument C
+; call, then reads ng_v_call_status/len/flags/cf. ng_c_connect needs no
+; such cell -- S7's DIRECT join is env-config-only (port.md section 3.7:
+; "Host/port - env NETHOST/NETPORT", no interactive host entry this
+; milestone), so it resolves NETHOST/NETPORT itself via ng_env_nethost/
+; ng_env_netport. ng_up/ng_close/ng_shutdown/ng_lasterr_fetch/
+; ng_getinfo_ip need no wrapper either -- they already take zero pointer
+; arguments, and their outcome is ng_v_last_nerr/ng_v_last_cf (set by
+; every ng_call dispatch) or (for ng_up specifically) ng_up_reason.
+; ---------------------------------------------------------------------------
+
+ng_c_connect:
+        call    ng_env_nethost
+        push    hl
+        call    ng_env_netport
+        ex      de,hl                   ; DE = port pointer
+        pop     hl                      ; HL = host pointer
+        call    ng_connect
+        jr      ng_c_store_result
+
+ng_c_send:
+        ld      hl,(ng_c_send_ptr)
+        ld      a,(ng_c_send_len)
+        ld      b,a
+        call    ng_send
+        jr      ng_c_store_result
+
+; Self-contained non-blocking poll (IY=0 set here -- unlike raw ng_recv,
+; the C caller never has to preload IY itself).
+ng_c_recv_poll:
+        ld      iy,0
+        call    ng_recv
+        jr      ng_c_store_result
+
+; Shared tail: stash A/DE/IX/CF from whichever wrapper above just ran.
+; Plain `ld (nn),rr` never touches flags on Z80, so CF from the call
+; above is still valid at the `jr nc` test below. On the two argument-
+; validation failure paths inside ng_connect/ng_send (oversized host/
+; port/length, returned directly without reaching ng_call), DE/IX are
+; whatever they were before the call -- ng_v_call_cf=1 is the signal to
+; ignore ng_v_call_len/flags, not just diagnose ng_v_call_status.
+ng_c_store_result:
+        ld      (ng_v_call_status),a
+        ld      (ng_v_call_len),de
+        ld      (ng_v_call_flags),ix
+        jr      nc,.no_fail
+        ld      a,1
+        ld      (ng_v_call_cf),a
+        ret
+.no_fail:
+        xor     a
+        ld      (ng_v_call_cf),a
+        ret
+
 ; ng_close -> A=status, CF=1 on dispatcher failure. Idempotent (unet.inc).
 ng_close:
         xor     a                       ; channel 0
@@ -461,6 +556,71 @@ ng_lasterr_fetch:
         ld      ix,NG_LASTERR_CAPACITY
         ld      b,UNET_FN_LASTERR
         jp      ng_call
+
+; ng_getinfo_ip: fetches the station IPv4 (dotted quad) into ng_buf_ip
+; (NUL-terminated, empty if unset -- unet.inc UNET_FN_GETINFO contract).
+; Out: A=status, CF=1 on dispatcher failure.
+ng_getinfo_ip:
+        ld      a,UNET_IF_IP
+        ld      de,ng_buf_ip
+        ld      ix,NG_IP_CAPACITY
+        ld      b,UNET_FN_GETINFO
+        jp      ng_call
+
+; ---------------------------------------------------------------------------
+; NETHOST/NETPORT env config (echo_s3.asm's DSS_ENV_GET pattern, S7).
+; ---------------------------------------------------------------------------
+
+; Try DSS ENVIRON: HL=name (ASCIIZ), DE=dest. Out: CF=0 and dest filled
+; (NUL-terminated) if found, CF=1 (dest untouched) otherwise. Clobbers AF.
+; DSS ENVIRON has no destination-capacity argument (weatherc.asm's
+; documented, accepted risk) -- ng_buf_env_host/ng_buf_env_port are sized
+; for realistic hostnames/IPs and ports, not hardened against an
+; arbitrarily long value.
+ng_env_try:
+        ld      b,DSS_ENV_GET
+        ld      c,DSS_ENVIRON
+        rst     RST_DSS
+        ret     c
+        or      a
+        jr      z,.not_found
+        or      a
+        ret
+.not_found:
+        scf
+        ret
+
+; Resolves NETHOST, falling back to 127.0.0.1.
+; Out: HL=ng_buf_env_host if DSS had the variable, HL=ng_default_host if it
+; did not. Clobbers AF, DE.
+;
+; The fallback deliberately returns the default STRING rather than copying
+; it into the buffer, so the returned pointer itself says where the value
+; came from: net_ui_sprinter.c compares it against ng_default_host and
+; prints "(DEFAULT)". Without that, a missing NETHOST and a NETHOST
+; deliberately set to 127.0.0.1 are the same line on screen -- the exact
+; ambiguity that cost a MAME round on 2026-08-13. Every consumer only ever
+; reads through this entry point (ng_c_connect included, and ng_connect
+; copies into ng_buf_host before use), so nothing depends on the buffer
+; holding the default.
+ng_env_nethost:
+        ld      hl,ng_env_name_nethost
+        ld      de,ng_buf_env_host
+        call    ng_env_try
+        ld      hl,ng_default_host
+        ret     c
+        ld      hl,ng_buf_env_host
+        ret
+
+; Resolves NETPORT, falling back to 7777. Same contract as ng_env_nethost.
+ng_env_netport:
+        ld      hl,ng_env_name_netport
+        ld      de,ng_buf_env_port
+        call    ng_env_try
+        ld      hl,ng_default_port
+        ret     c
+        ld      hl,ng_buf_env_port
+        ret
 
 ; Best-effort CLOSE -> NETDONE -> l_free (R11 exit discipline). A no-op if
 ; ng_up never got far enough to load a library. Must run under EI (ng_call
@@ -506,6 +666,11 @@ ng_dll_name_rtl: DB "UNETRTL.DLL",0
 ng_info_tag_esp: DB "UNETESP",0
 ng_info_tag_rtl: DB "UNETRTL",0
 
+ng_env_name_nethost: DB "NETHOST",0
+ng_env_name_netport: DB "NETPORT",0
+ng_default_host:     DB "127.0.0.1",0
+ng_default_port:     DB "7777",0
+
 ng_buf_host:    DS NG_HOST_CAPACITY,0
 ng_buf_port:    DS NG_PORT_CAPACITY,0
 ng_buf_tx:      DS NG_TX_CAPACITY,0
@@ -513,5 +678,16 @@ ng_buf_rx:      DS NG_RX_CAPACITY,0
 ng_buf_lasterr: DS NG_LASTERR_CAPACITY,0
 ng_buf_info:    DS NG_INFO_CAPACITY,0
 ng_buf_env:     DS NG_ENV_CAPACITY,0
+ng_buf_ip:      DS NG_IP_CAPACITY,0
+ng_buf_env_host: DS NG_ENV_HOST_CAPACITY,0
+ng_buf_env_port: DS NG_ENV_PORT_CAPACITY,0
+
+; ng_c_send wrapper parameter cells / ng_c_* result cells (S7 C bridge).
+ng_c_send_ptr:   DW 0
+ng_c_send_len:   DB 0
+ng_v_call_status: DB 0
+ng_v_call_len:   DW 0
+ng_v_call_flags: DW 0
+ng_v_call_cf:    DB 0
 
         ENDIF

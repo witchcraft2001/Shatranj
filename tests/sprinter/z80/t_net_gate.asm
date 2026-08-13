@@ -171,6 +171,56 @@ start:
         ld      a,17
         call    t_expect_z
 
+; --- ng_up is idempotent. With LIBMAN_MAX_LIBS 1 a second l_load can only
+; fail ("no free table entry"), and nothing frees that entry between
+; sessions, so a second join used to report DLL LOAD FAILED with the DLL
+; loaded and healthy. lib_table[0] is still cleared by scenario 4, which is
+; what makes these three cheap: ANY path that reaches l_load or l_info from
+; here fails, so the outcome alone says which branch ran.
+;
+; 5a: fully up (loaded, reason 0) -> immediate success, no DLL touched. ---
+        ld      a,1
+        ld      (ng_loaded),a
+        xor     a
+        ld      (ng_up_reason),a
+        call    ng_up
+        ld      a,18
+        call    t_expect_nc
+        ld      a,(ng_up_reason)
+        or      a
+        ld      a,19
+        call    t_expect_z
+
+; 5b: loaded but a previous bring-up died past the load -> resume at the
+; call sequence (l_info, which fails here) instead of re-loading. The
+; distinguishing evidence is the reason code: NG_UP_ERR_CALL, not
+; NG_UP_ERR_LOAD. ---------------------------------------------------------
+        ld      a,1
+        ld      (ng_loaded),a
+        ld      a,NG_UP_ERR_NETINIT
+        ld      (ng_up_reason),a
+        call    ng_up
+        ld      a,20
+        call    t_expect_c
+        ld      a,(ng_up_reason)
+        cp      NG_UP_ERR_CALL
+        ld      a,21
+        call    t_expect_z
+
+; 5c: nothing loaded -> the guard must not short-circuit the loader. The
+; DSS stub answers neither APPINFO nor OPEN, so l_load fails, and that
+; failure is the proof it was reached at all. ----------------------------
+        xor     a
+        ld      (ng_loaded),a
+        ld      (ng_up_reason),a
+        call    ng_up
+        ld      a,22
+        call    t_expect_c
+        ld      a,(ng_up_reason)
+        cp      NG_UP_ERR_LOAD
+        ld      a,23
+        call    t_expect_z
+
         call    t_end
         halt
 

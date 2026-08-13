@@ -57,16 +57,27 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "side_to_move",
     "castle_rights",
     "ep_square",
-    # FILEUI (S6 plan step 4): fileui_ovl.c (the overlay entry) calls back
-    # into render_core.asm's render trio and reads/writes fileui.c's own
-    # resident state (both linked into the resident C image alongside
-    # main.c -- SPRINTER_RESIDENT_C_SRC) -- the same cross-boundary shape
-    # board.c's side_to_move/castle_rights/ep_square above already use.
-    "spectrum_render_ikkle_at",
-    "spectrum_render_fileui_frame",
-    "spectrum_render_fileui_select",
+    # FILEUI (S6 plan step 4): fileui_ovl.c (the overlay entry) reads/
+    # writes fileui.c's own resident state (linked into the resident C
+    # image alongside main.c -- SPRINTER_RESIDENT_C_SRC) -- the same
+    # cross-boundary shape board.c's side_to_move/castle_rights/ep_square
+    # above already use. Its render trio comes through here too: since S7
+    # step 4 those three live in the WIN3 cold page, but what a caller
+    # links against is the eight-byte WIN1 stub gen_sprinter_cold_thunks.py
+    # generates, which IS in resident_c.map -- and calling through it is
+    # what lets a WIN3-resident overlay reach WIN3-resident painters at all
+    # (the stub saves the overlay's own page and restores it before
+    # returning, so only one WIN3 page is ever mapped at a time).
     "spectrum_fileui_count",
     "spectrum_fileui_used_mask",
+    "spectrum_render_fileui_frame",
+    "spectrum_render_ikkle_at",
+    "spectrum_render_fileui_select",
+    # S7: SAVELOAD/FILEUI call this between esx_* I/O steps so a live
+    # DIRECT session keeps servicing traffic while blocked on disk I/O
+    # (was dss_fileio.asm's S6-era no-op; now unet_link.c's real
+    # implementation, WIN1 -- nc_pump underneath).
+    "spectrum_net_background_drain",
 ]
 
 GENERATED_BANNER = (
@@ -171,21 +182,24 @@ def _clean_fixture() -> str:
         "_ep_square                      = $4B03 ; addr, public, , "
         "src_spectrum_board_board_c, bss_compiler, "
         "src/spectrum/board/board.c:53\n"
-        "_spectrum_render_ikkle_at       = $4B10 ; addr, public, , "
-        "asm_sprinter_zcc_render_core_asm, code_compiler, "
-        "asm/sprinter/zcc/render_core.asm:1\n"
-        "_spectrum_render_fileui_frame   = $4B20 ; addr, public, , "
-        "asm_sprinter_zcc_render_core_asm, code_compiler, "
-        "asm/sprinter/zcc/render_core.asm:1\n"
-        "_spectrum_render_fileui_select  = $4B30 ; addr, public, , "
-        "asm_sprinter_zcc_render_core_asm, code_compiler, "
-        "asm/sprinter/zcc/render_core.asm:1\n"
         "_spectrum_fileui_count          = $4B40 ; addr, public, , "
         "src_spectrum_fileui_fileui_c, bss_compiler, "
         "src/spectrum/fileui/fileui.c:19\n"
         "_spectrum_fileui_used_mask      = $4B41 ; addr, public, , "
         "src_spectrum_fileui_fileui_c, bss_compiler, "
         "src/spectrum/fileui/fileui.c:20\n"
+        "_spectrum_render_fileui_frame   = $4B60 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_render_ikkle_at       = $4B68 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_render_fileui_select  = $4B70 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_net_background_drain  = $4B50 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_background_drain::0::0:6\n"
         "i_15                            = $4259 ; addr, local, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"

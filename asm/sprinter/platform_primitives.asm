@@ -128,8 +128,19 @@ ovl_copy_slot:
         scf
         ret
 
-        DS      OVL_SLOT_ADDR - $, 0
-        ASSERT  $ = OVL_SLOT_ADDR
+; NET_FRAME_C reserves the tail of the WIN2 code gap for the net_frame.c
+; C-blob (S7, port.md section 3.7): a fourth, independently zcc-built image
+; spliced in here by make_sprinter_resident.py, the same "several blobs
+; agree only on fixed_layout.json anchors" shape trampoline/resident_c/
+; platform_primitives already use. This ASSERT is that agreement's build-
+; time enforcement on THIS side: if net_gate.asm/dss_fileio.asm ever grow
+; enough to reach NET_FRAME_C_ADDR, sjasmplus fails here (negative DS)
+; instead of the splicer silently overlapping two blobs later.
+        ASSERT  $ <= NET_FRAME_C_ADDR
+        DS      NET_FRAME_C_ADDR - $, 0
+        DS      NET_FRAME_C_SIZE, 0     ; net_frame.c splice target (S7)
+
+        ASSERT  $ = OVL_SLOT_ADDR       ; NET_FRAME_C_SIZE is flush against it
         DS      OVL_SLOT_SIZE, 0        ; overlay_loader_sprinter.asm's slot
 
         DS      CANARY_ADDR - $, 0

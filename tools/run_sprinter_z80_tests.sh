@@ -53,6 +53,14 @@ python3 "$repo_root/tools/gen_sprinter_version.py" \
   --version-file "$repo_root/VERSION" \
   --inc-out "$generated_dir/sprinter_version.inc" >/dev/null
 
+# The WIN3 cold-page trampoline, in sjasmplus dialect, for t_cold_thunk.asm.
+# Emitted from the same string the real z88dk-z80asm stubs come from, so the
+# test runs the instructions that actually ship (see that generator's own
+# render_thunks_sjasmplus docstring).
+python3 "$repo_root/tools/gen_sprinter_cold_thunks.py" \
+  --mode thunks-sjasmplus \
+  --out "$generated_dir/cold_thunks_test.inc" >/dev/null
+
 byte_at() { dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }
 
 fail=0
