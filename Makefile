@@ -500,7 +500,7 @@ overlay-cap-report: tools/check_overlay_caps.py docs/overlay_capabilities.json t
 overlay-entry-abi-check: tools/check_overlay_entry_abi.py
 	$(PYTHON) tools/check_overlay_entry_abi.py --root .
 
-transport-contract-check: tools/check_transport_contract.py src/spectrum/transport/link.h src/spectrum/transport/net.c
+transport-contract-check: tools/check_transport_contract.py src/spectrum/transport/link.h src/spectrum/transport/net.c src/sprinter/transport/unet_link.c
 	$(PYTHON) tools/check_transport_contract.py --root .
 
 mqtt-client-id-check: tools/check_mqtt_client_id.py src/pc/client/main_window.cpp src/spectrum/config/session.h asm/overlay/mqtt_connect/entry_mqtt_connect.asm

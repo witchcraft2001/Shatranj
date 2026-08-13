@@ -63,7 +63,56 @@ def main() -> None:
     if "spectrum_link_payload_scratch()" not in chat_body:
         fail("send_local_chat() must use link scratch storage")
 
+    check_sprinter(root)
+
     print("[OK] transport contract: active-backend buffers stay isolated")
+
+
+def check_sprinter(root: Path) -> None:
+    """The same ownership contract as above, in Sprinter's own shape.
+
+    Sprinter has no second backend to borrow storage from (uNet/DIRECT is
+    the only one), so the "payload_scratch never aliases the active path"
+    rule cannot be expressed as "use the inactive backend's buffer" the way
+    net.c expresses it. Here it means: the scratch handed to callers and the
+    buffer send_text() stages a line into must be two different arrays --
+    main.c's net_poll_once() passes the scratch straight to
+    netchesszx_session_poll() as the RX destination, and that call answers
+    PING and ACKs moves while the caller still holds the payload.
+    """
+    link = (root / "src/sprinter/transport/unet_link.c").read_text(encoding="utf-8")
+
+    scratch_body = fn_body(link, "spectrum_net_payload_scratch")
+    if "net_payload_scratch" not in scratch_body:
+        fail("Sprinter payload_scratch() must return net_payload_scratch")
+    if "net_tx_line" in scratch_body:
+        fail("Sprinter payload_scratch() must not hand out the TX staging buffer")
+
+    send_body = fn_body(link, "spectrum_net_send_text")
+    if "net_payload_scratch" in send_body:
+        fail("Sprinter send_text() must not stage into the caller-facing scratch")
+    if "net_tx_line" not in send_body:
+        fail("Sprinter send_text() must stage into its own TX buffer")
+
+    drain_body = fn_body(link, "spectrum_net_background_drain")
+    if "nc_line_pop" in drain_body:
+        fail("Sprinter background_drain() must not consume the RX queue")
+
+    read_body = fn_body(link, "spectrum_net_read_payload")
+    # Tick compatibility with ZX's direct_ovl.c pacing, which ping.c's
+    # unmodified 75/3/2 constants are calibrated against: an empty poll
+    # costs exactly two frame waits, and the queue is checked before any
+    # of them so a queue with data costs none.
+    if read_body.count("frame_wait()") != 2:
+        fail("Sprinter read_payload() must wait exactly two frames when idle")
+    if read_body.find("nc_queue_count()") > read_body.find("nc_pump()"):
+        fail("Sprinter read_payload() must check the queue before pumping")
+    if read_body.find("nc_line_pop") < read_body.rfind("frame_wait()"):
+        fail("Sprinter read_payload() must pop after the pacing waits")
+
+    activity_body = fn_body(link, "spectrum_net_link_activity")
+    if "net_link_activity = 0u" not in activity_body:
+        fail("Sprinter link_activity() must be consume-on-read")
 
 
 if __name__ == "__main__":

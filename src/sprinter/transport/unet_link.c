@@ -55,6 +55,20 @@ extern void frame_wait(void);
 
 static uint8_t net_link_activity;
 static char net_payload_scratch[SPECTRUM_LINK_PAYLOAD_MAX];
+/* TX staging, deliberately NOT net_payload_scratch. link.h's ownership
+ * contract: "send_text(), send_ping(), and background_drain() ... must not
+ * destroy a queued RX payload before read_payload() copies it" -- and
+ * main.c's net_poll_once() hands net_payload_scratch straight to
+ * netchesszx_session_poll() as the RX destination. With one shared buffer
+ * every ACK/NACK/ACK PING answer would overwrite the very line being
+ * processed; that it does not misbehave today is luck of ordering (each
+ * caller happens to copy what it needs into locals before replying), and
+ * S8's retry ladder and RESTORE chunking are exactly the code that would
+ * end that luck. 48 bytes of WIN1 BSS is the whole price. ZX pays the same
+ * one differently: there send_text stages in the UART buffer and
+ * payload_scratch() borrows the INACTIVE backend's storage (net.c), which
+ * is the same rule expressed in the shape that platform allows. */
+static char net_tx_line[SPECTRUM_LINK_PAYLOAD_MAX];
 /* Set by direct_peer_mark_valid(); consumed by the session/ping layer
  * once step 4 wires it in (not yet -- link.h has no getter for this, only
  * the setter, matching ZX's own shape of a plain state flag the session
@@ -139,13 +153,13 @@ uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
 
     len = 0u;
     while (text[len] != '\0' && len < (SPECTRUM_LINK_PAYLOAD_MAX - 2u)) {
-        net_payload_scratch[len] = text[len];
+        net_tx_line[len] = text[len];
         ++len;
     }
-    net_payload_scratch[len] = '\n';
+    net_tx_line[len] = '\n';
     ++len;
 
-    ng_c_send_ptr = net_payload_scratch;
+    ng_c_send_ptr = net_tx_line;
     ng_c_send_len = len;
 
     for (retry = 0u; retry < NC_SEND_BUSY_RETRY_MAX; ++retry) {

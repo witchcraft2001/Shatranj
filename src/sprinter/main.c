@@ -774,6 +774,13 @@ static void net_apply_remote_move(const char *payload) {
    will keep. */
 static void net_apply_hello(const char *payload) {
     if (!netchesszx_session_direct_apply_hello(payload)) {
+        /* Saying nothing here is what made the 2026-08-13 round
+           unreadable: a refused HELLO left the screen looking exactly like
+           a peer that had never answered, so a colour disagreement and a
+           dead RX path were the same picture. Now they are not -- silence
+           still means nothing arrived, and this notice means something
+           did and we turned it down. */
+        spectrum_gui_notify("Bad HELLO from opponent", 1u);
         return;
     }
     net_peer_known = 1u;
@@ -983,6 +990,20 @@ static void menu_network(void) {
     netchesszx_session_configure(NETCHESSZX_SESSION_ROLE_JOIN,
                                  NETCHESSZX_TRANSPORT_DIRECT,
                                  NETCHESSZX_COLOR_WHITE);
+    /* ...and THIS is what makes it a guess rather than a decision.
+       netchesszx_session_configure() always sets host_color_ready, which
+       for a JOIN means "the colours are already settled" -- and
+       netchesszx_session_direct_apply_hello() then REJECTS any HELLO whose
+       WHITE= owner disagrees with the guess. A rejected HELLO is silent:
+       net_peer_known stays clear, every later event is dropped by the
+       peer-known gate, the board never moves and every local press answers
+       "Not your turn". That is exactly what MAME showed on 2026-08-13
+       against a Qt host dealing the guest white. app.c does the same two
+       steps in the same order (session_setup_start: configure, then clear
+       for JOIN; and again on session reset for a non-host DIRECT session),
+       which is what this port had copied everything from except this
+       line. */
+    netchesszx_host_color_ready = 0u;
     spectrum_link_start_uart();
     netchesszx_session_ping_reset(&net_ping);
     netchesszx_session_peer_reset();
