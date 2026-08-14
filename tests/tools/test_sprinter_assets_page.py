@@ -110,7 +110,8 @@ class SprinterAssetsPageTests(unittest.TestCase):
         # Slots 34-35: the deliberate gap before the overlay.
         gap = page[34 * msap.SLOT_SIZE:msap.OVERLAY_SLOT * msap.SLOT_SIZE]
         self.assertEqual(gap, bytes(len(gap)))
-        # Slots 44-63: unused tail after the overlay.
+        # Unused tail after the overlay (slots 42-63: S8 step 7's own gap
+        # plus the omitted UI assets region).
         tail_start = (msap.OVERLAY_SLOT + msap.OVERLAY_SLOTS) * msap.SLOT_SIZE
         tail = page[tail_start:]
         self.assertEqual(tail, bytes(len(tail)))
@@ -198,8 +199,16 @@ class SprinterAssetsPageTests(unittest.TestCase):
             msap.build_assets_page(font, ui_bin=None),
         )
 
-    def test_ui_assets_start_immediately_after_the_overlay(self) -> None:
-        self.assertEqual(msap.UI_ASSETS_SLOT, msap.OVERLAY_SLOT + msap.OVERLAY_SLOTS)
+    def test_ui_assets_slot_is_pinned_regardless_of_overlay_size(self) -> None:
+        # UI_ASSETS_SLOT=44 is a FIXED contract (tools/build_sprinter_ui_
+        # assets.py's own docstring: logo/marker/cursor-frame slot numbers
+        # are hardcoded EQUs in asm/sprinter/zcc/render_core*.asm) -- it
+        # must not silently follow OVERLAY_SLOT + OVERLAY_SLOTS around when
+        # the overlay slot is resized (S8 step 7 shrunk it, opening a
+        # zero-padded gap at slots 42-43 instead of closing up on UI
+        # assets, exactly like the existing 34-35 gap before the overlay).
+        self.assertEqual(msap.UI_ASSETS_SLOT, 44)
+        self.assertLessEqual(msap.OVERLAY_SLOT + msap.OVERLAY_SLOTS, msap.UI_ASSETS_SLOT)
 
     def test_ui_assets_fill_the_page_to_its_end(self) -> None:
         self.assertEqual(msap.UI_ASSETS_SLOT + msap.UI_ASSETS_SLOTS, 64)

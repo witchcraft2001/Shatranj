@@ -12,10 +12,11 @@
  * NETCHESSZX_MOVE_* constants) gui.h's own declared contract already
  * assumes, and painting through the same render_core.asm entry points
  * (spectrum_render_move_at/spectrum_render_moves) gui.c's own (unused, ZX-
- * side) callers would use. spectrum_gui_remove_last_move/spectrum_gui_
- * add_chat are not implemented here -- nothing in this port calls them yet
- * (no takeback UI, no chat input/network); gui.h still declares them, but a
- * C link only requires a definition for a symbol something actually calls.
+ * side) callers would use. spectrum_gui_add_chat is still not implemented
+ * here -- nothing in this port calls it yet (no chat input/network); gui.h
+ * still declares it, but a C link only requires a definition for a symbol
+ * something actually calls. spectrum_gui_remove_last_move IS implemented
+ * (S8 step 5, takeback) -- see its own comment below.
  *
  * spectrum_gui_log_ply_get/_set (S6, port.md section 5/S6): save/load needs
  * the true half-move count for netchesszx_save_meta_t.ply, and gui_log_ply
@@ -92,6 +93,40 @@ void spectrum_gui_add_move(const char *ply, const char *move)
     out[i] = '\0';
 
     spectrum_render_move_at(row_base);
+}
+
+/* S8 step 5 (takeback): undo exactly the last spectrum_gui_add_move call.
+   The ply argument is ignored -- gui_log_ply's own parity already knows
+   which half of which row the last add touched, matching add_move's own
+   internal logic exactly in reverse. Not perfectly reversible across a
+   scroll event: the panel is a fixed-size ring, and a takeback of the
+   move that triggered add_move's memmove cannot bring back the row that
+   scrolled out. Accepted as a display-only edge case -- the real game
+   state (spectrum_board_undo_restore, board.c) is always restored
+   correctly by the caller regardless; only the move-list panel can be one
+   row stale in that rare case. */
+void spectrum_gui_remove_last_move(uint16_t ply)
+{
+    (void)ply;
+
+    if (gui_log_ply == 0u) {
+        return;
+    }
+    if ((gui_log_ply & 1u) == 0u) {
+        /* undo a black half-move: same row stays, just clear that half */
+        char *row_base = move_row_at((uint8_t)(gui_log_row - 1u));
+
+        row_base[NETCHESSZX_MOVE_BLACK_OFFSET] = '\0';
+        spectrum_render_move_at(row_base);
+    } else {
+        /* undo a white half-move: the row it claimed goes away */
+        if (gui_log_row != 0u) {
+            --gui_log_row;
+        }
+        memset(move_row_at(gui_log_row), 0, NETCHESSZX_MOVE_SLOT_SIZE);
+        spectrum_render_moves(move_lines);
+    }
+    --gui_log_ply;
 }
 
 uint16_t spectrum_gui_log_ply_get(void)

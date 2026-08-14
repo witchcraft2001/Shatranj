@@ -98,7 +98,10 @@ class SprinterResidentTests(unittest.TestCase):
         # ovl_s3.asm copies a packed overlay in at runtime (WIN0-under-DI
         # LDIR from the asset page); the static image carries no overlay
         # bytes of its own.
-        self.assertEqual(self._slice("OVL_SLOT"), bytes(0x800))
+        self.assertEqual(
+            self._slice("OVL_SLOT"),
+            bytes(_region(self.layout, "OVL_SLOT")["size"]),
+        )
 
     def test_canary_slot_is_zero_until_crt0_runs(self) -> None:
         self.assertEqual(self._slice("CANARY"), b"\x00\x00")

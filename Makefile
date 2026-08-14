@@ -935,7 +935,73 @@ SPRINTER_DLLS := extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
 # See tools/make_sprinter_resident.py's docstring for how this differs from
 # the pre-S7 three-blob shape above.
 SPRINTER_NET_CORE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/net_core_crt0.asm
-SPRINTER_NET_FRAME_C_SRC := src/sprinter/transport/net_frame.c
+# S8 step 4/5 relief (WIN1 ran out of room twice: 57 bytes free after the
+# DRAW/RESET CONTROL FSM, then a 699-byte overrun after takeback):
+# game_protocol.c, keepalive_protocol.c and direct_session_protocol.c are
+# all portable, mostly leaf parsers/formatters with no globals of their
+# own. Moving them here costs nothing at runtime despite being a "window"
+# move -- unlike the WIN3 cold page (which needs a save/restore/OUT
+# trampoline per call), WIN2 is ALWAYS mapped, so a WIN1 caller reaching a
+# WIN2 function via tools/gen_sprinter_netframe_defs.py's defc bridge is a
+# plain CALL to a fixed address, identical in cost to calling resident
+# code. game_protocol.c is NOT duplicated here and in
+# SPRINTER_RESIDENT_C_SRC (unlike keepalive/direct_session_protocol's
+# first move in step 4) -- it is large enough (~1.2 KiB) and has few
+# enough distinct WIN1 call sites (src/sprinter/main.c,
+# src/common/protocol/game_protocol_extra.c) that bridging its dozen-odd
+# entry points/string constants once outright was simpler than a second
+# shim.
+# S8 step 6 relief (WIN1 overran the 16000-byte budget by 1448 bytes after
+# RESTORE chunking): src/sprinter/transport/unet_link.c only ever calls
+# ng_* (net_gate.asm, WIN2 asm, fixed address via platform_defs.asm --
+# already linked into this build), nc_* (net_frame.c, this same build) and
+# game_protocol.c (this same build, since step 5) -- nothing WIN1-only, so
+# it moves here cleanly the same way game_protocol.c did. restore.c/
+# saveload.c stay resident, deliberately -- both are thin wrappers whose
+# entire body is a call to spectrum_overlay_exec_cached
+# (overlay_loader_sprinter.asm), which is linked INTO resident_c.bin and
+# has no fixed address this build (built BEFORE resident_c.bin) could
+# reference; moving them would need that dispatcher on a fixed address
+# too, a bigger change than this step's budget crisis called for.
+# session/{ping,direct,outgoing}.c were ALSO tried here (their only WIN1-
+# only dependency was unet_link.c's spectrum_link_* surface, now moved),
+# but direct.c/outgoing.c pulled in platform/text.c and the whole of
+# config/session.c behind them, and the combined total overran this
+# blob's own ~4 KiB ceiling (the WIN2 gap between platform_primitives.asm
+# and the fixed OVL_SLOT_ADDR is hard-bounded regardless of how far
+# NET_FRAME_C.addr is pushed back) -- reverted; those three stay resident.
+# mqtt_session_protocol.c (177 bytes, its NETCHESSZX_DIRECT_ONLY-guarded
+# parse_host/join/side functions compiled out -- only
+# netchess_mqtt_session_parse_u16_token is live today, main.c's own
+# net_parse_u16). Bridged the same way; tools/gen_sprinter_overlay_defs.py
+# needs NO change despite CONTROL overlay also calling this symbol -- that
+# tool reads resident_c.map, and the defc netframe_defs.asm places there
+# (PUBLIC _netchess_mqtt_session_parse_u16_token pointing into this WIN2
+# blob) already resolves transitively for it, exactly as it already does
+# for netchess_after_prefix/NETCHESS_PROTO_* since step 5's move.
+# mqtt_min.c (the MQTT packet codec ZX/Next already link unmodified,
+# src/spectrum/transport/net.c's own consumer) is DELIBERATELY NOT here
+# yet, despite the S8 plan naming this step as where it joins this blob.
+# Measured cost under this build's compiler (z88dk +pps/sccz80, not ZX's
+# SDCC/IY -- the two are not comparable): 1697 bytes whole-file-linked,
+# against this blob's ~4.5 KiB ceiling with only ~700 bytes free after
+# the nc_mqtt_* reassembler below already used its share. Nothing calls
+# mqtt_min.c yet either way (net_frame.c's nc_mqtt_* is a reassembler
+# only; a real caller needs step 8's unet_link.c MQTT half of link.h), so
+# paying that cost now would buy nothing this step actually needs and
+# would force restarting the OVL_SLOT-shrink byte hunt mid-step for a
+# dead-weight link. Deferred to step 8, whose own fresh budget accounting
+# (after its other additions are known) is the right place to find that
+# relief -- tests/sprinter/host/test_net_frame.c still links mqtt_min.c
+# on the host build below (zero byte cost there) for a real round-trip
+# proof of the reassembler feeding this exact codec, so step 7's own test
+# coverage is not narrowed by the deferral, only this target link is.
+SPRINTER_NET_FRAME_C_SRC := src/sprinter/transport/net_frame.c \
+                           src/common/protocol/game_protocol.c \
+                           src/common/protocol/mqtt_session_protocol.c \
+                           src/spectrum/transport/keepalive_protocol.c \
+                           src/common/protocol/direct_session_protocol.c \
+                           src/sprinter/transport/unet_link.c
 SPRINTER_NET_FRAME_C_BIN := $(SPRINTER_BUILD_DIR)/net_frame_c.bin
 SPRINTER_NET_FRAME_C_MAP := $(SPRINTER_BUILD_DIR)/net_frame_c.map
 
@@ -954,10 +1020,19 @@ SPRINTER_NET_FRAME_C_MAP := $(SPRINTER_BUILD_DIR)/net_frame_c.map
 # work stays out (render_shim.asm), everything reached a handful of times
 # per second or per user action belongs here.
 SPRINTER_COLD_PAGE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/cold_page_crt0.asm
+# S8 relief pass: src/sprinter/session_sprinter.c is the DIRECT-session/
+# board-interaction/menu-action driver that used to be main.c's own body
+# (board_select_or_move through handle_menu_action) -- moved here verbatim
+# once WIN1 ran out of room for step 8's MQTT work, matching gui.c's own
+# earlier move onto this same page. See that file's own header for the
+# full rationale and tools/gen_sprinter_cold_defs.py's COLD_RESIDENT_
+# SYMBOLS / tools/gen_sprinter_cold_thunks.py's COLD_THUNK_SYMBOLS for the
+# two halves of the bridge it needed.
 SPRINTER_COLD_PAGE_SRC := $(SPRINTER_ASM_DIR)/zcc/render_core.asm \
                           $(SPRINTER_ASM_DIR)/zcc/render_core_cold.asm \
                           src/spectrum/ui/gui.c \
-                          src/sprinter/net_ui_sprinter.c
+                          src/sprinter/net_ui_sprinter.c \
+                          src/sprinter/session_sprinter.c
 SPRINTER_COLD_PAGE_ORG := 0xC000
 SPRINTER_COLD_IMAGE_BIN := $(SPRINTER_BUILD_DIR)/cold_page_image.bin
 SPRINTER_COLD_IMAGE_MAP := $(SPRINTER_BUILD_DIR)/cold_page_image.map
@@ -1343,7 +1418,8 @@ $(SPRINTER_COLD_DEFS_ASM): tools/gen_sprinter_cold_defs.py $(SPRINTER_RESIDENT_C
 # table did not land where the already-linked WIN1 stubs call.
 $(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_COLD_PAGE_CRT0) \
                             $(SPRINTER_COLD_ENTRY_TABLE) $(SPRINTER_COLD_DEFS_ASM) \
-                            $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_INC) \
+                            $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_NETFRAME_DEFS_ASM) \
+                            $(SPRINTER_LAYOUT_INC) \
                             | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
 		-Ca-I$(SPRINTER_GENERATED_DIR) \
@@ -1352,7 +1428,7 @@ $(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_COLD_PAGE_CRT0)
 		-crt0=$(patsubst %.asm,%,$(SPRINTER_COLD_PAGE_CRT0)) -m \
 		-o $(SPRINTER_COLD_IMAGE_BIN) \
 		$(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_PLATFORM_DEFS_ASM) \
-		$(SPRINTER_COLD_DEFS_ASM)
+		$(SPRINTER_NETFRAME_DEFS_ASM) $(SPRINTER_COLD_DEFS_ASM)
 	$(PYTHON) tools/gen_sprinter_cold_thunks.py --mode verify \
 		--map $(SPRINTER_COLD_IMAGE_MAP)
 
@@ -1381,24 +1457,28 @@ sprinter-cold-page-check: tools/gen_sprinter_cold_thunks.py tools/gen_sprinter_c
 # overlay C sources EXTERN this resident copy instead of re-linking it.
 SPRINTER_RESIDENT_C_SRC := src/sprinter/main.c \
                            src/sprinter/gui_log_sprinter.c \
-                           src/common/protocol/game_protocol.c \
-                           src/common/protocol/mqtt_session_protocol.c \
+                           src/common/protocol/game_protocol_extra.c \
                            src/spectrum/board/board.c \
                            src/common/chess/move_coords.c \
                            src/spectrum/saveload/saveload.c \
                            src/spectrum/restore/restore.c \
                            src/spectrum/fileui/fileui.c \
                            src/spectrum/config/session.c \
-                           src/spectrum/transport/keepalive_protocol.c \
                            src/sprinter/session_classify_sprinter.c \
                            src/spectrum/session/event.c \
                            src/spectrum/session/ping.c \
                            src/spectrum/session/direct.c \
                            src/spectrum/session/outgoing.c \
                            src/spectrum/session/poll.c \
-                           src/sprinter/transport/unet_link.c \
-                           src/spectrum/platform/text.c \
-                           src/common/protocol/direct_session_protocol.c
+                           src/spectrum/platform/text.c
+# game_protocol.c/keepalive_protocol.c/direct_session_protocol.c/
+# unet_link.c moved to SPRINTER_NET_FRAME_C_SRC above (S8 steps 4/5/6
+# relief) -- every resident caller (main.c, game_protocol_extra.c,
+# session/{event,poll,ping,direct,outgoing}.c) reaches their entry points
+# through the usual netframe_defs.asm bridge, not a direct C link.
+# session/{ping,direct,outgoing}.c/platform/text.c/config/session.c stay
+# resident -- see SPRINTER_NET_FRAME_C_SRC's own comment on why moving
+# them too overran that blob's ~4 KiB ceiling.
 SPRINTER_RESIDENT_CRT0 := $(SPRINTER_ASM_DIR)/zcc/resident_crt0.asm
 SPRINTER_OVERLAY_LOADER_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_loader_sprinter.asm
 SPRINTER_OVERLAY_ATLAS_TABLE_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_atlas_table_sprinter.asm
@@ -1681,13 +1761,20 @@ sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
 # net_frame.c (S7 step 2) builds and behaves identically under gcc: no
 # target-only header, so this is a real behavioural proof of the line-
 # framing core, not just a compile check (mirrors GAME_PROTOCOL_TEST's
-# shape for src/common/protocol/*.c).
+# shape for src/common/protocol/*.c). mqtt_min.c (S8 step 7) joins it HERE
+# ONLY -- not the Sprinter target build above, see that source list's own
+# comment on why -- so the host round trip (net_frame.c's nc_mqtt_*
+# reassembler handing complete packets to spectrum_mqtt_type()/
+# spectrum_mqtt_parse_publish()) still gets proven against the real codec,
+# at zero byte cost, ahead of step 8 actually linking it on-target.
 SPRINTER_NET_FRAME_HOST_TEST := $(SPRINTER_BUILD_DIR)/netchesszx_sprinter_net_frame_test.exe
 SPRINTER_NET_FRAME_HOST_TEST_SRC := src/sprinter/transport/net_frame.c \
+                                    src/spectrum/transport/mqtt_min.c \
                                     tests/sprinter/host/test_net_frame.c
 
 $(SPRINTER_NET_FRAME_HOST_TEST): $(SPRINTER_NET_FRAME_HOST_TEST_SRC) \
-                                  src/sprinter/transport/net_frame.h | $(SPRINTER_BUILD_DIR)
+                                  src/sprinter/transport/net_frame.h \
+                                  src/spectrum/transport/mqtt_min.h | $(SPRINTER_BUILD_DIR)
 	$(CC) $(CFLAGS) $(SPRINTER_NET_FRAME_HOST_TEST_SRC) -o $@
 
 sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST)

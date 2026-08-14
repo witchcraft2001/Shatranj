@@ -136,6 +136,14 @@ ovl_copy_slot:
 ; time enforcement on THIS side: if net_gate.asm/dss_fileio.asm ever grow
 ; enough to reach NET_FRAME_C_ADDR, sjasmplus fails here (negative DS)
 ; instead of the splicer silently overlapping two blobs later.
+;
+; net_gate_gap_end is a plain label, not a boundary anything reads at
+; runtime -- it exists so NET_FRAME_C_ADDR - net_gate_gap_end (readable
+; straight off the .sym file) answers "how many free bytes are left in
+; this code gap" without re-deriving it from a raw-binary trailing-zero
+; scan, which the IM2 table's own fill byte makes unreliable past this
+; point anyway.
+net_gate_gap_end:
         ASSERT  $ <= NET_FRAME_C_ADDR
         DS      NET_FRAME_C_ADDR - $, 0
         DS      NET_FRAME_C_SIZE, 0     ; net_frame.c splice target (S7)

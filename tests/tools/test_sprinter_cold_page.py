@@ -232,6 +232,27 @@ class ColdPageSourceAgreementTest(unittest.TestCase):
                     names.add(match.group(1))
         return names
 
+    # src/sprinter/session_sprinter.c (S8 relief pass): its entries share
+    # no common prefix the way gui.c's/net_ui_sprinter.c's spectrum_gui_/
+    # spectrum_net_ names do, so they are named explicitly here instead --
+    # same "trust the compiler+linker, not a regex" reasoning as the
+    # prefix check below (that file's own header has the full byte-budget
+    # history of why each one is public rather than static).
+    SESSION_SPRINTER_C_SIDE = frozenset({
+        "board_select_or_move",
+        "handle_menu_action",
+        "net_control_key",
+        "net_drop",
+        "net_op_busy",
+        "net_poll_once",
+        "net_retry_tick",
+        "net_set_turn_label_from_side",
+        "pending_local_clear",
+        "selection_clear",
+        "square_index",
+        "takeback_snapshot_save",
+    })
+
     def test_allowlist_names_no_absent_asm_entry(self):
         # Only the asm half can be checked from source (the C half's
         # publics are settled by the compiler); a name that is neither an
@@ -241,7 +262,7 @@ class ColdPageSourceAgreementTest(unittest.TestCase):
             # src/spectrum/ui/gui.c and src/sprinter/net_ui_sprinter.c
             name for name in thunks.COLD_THUNK_SYMBOLS
             if name.startswith(("spectrum_gui_", "spectrum_net_"))
-        }
+        } | (set(thunks.COLD_THUNK_SYMBOLS) & self.SESSION_SPRINTER_C_SIDE)
         missing = sorted(set(thunks.COLD_THUNK_SYMBOLS) - asm - c_side)
         self.assertEqual(missing, [],
                          "COLD_THUNK_SYMBOLS names an entry no cold-page "

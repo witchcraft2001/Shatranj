@@ -94,6 +94,82 @@ uint8_t nc_queue_count(void);
  * with scripted byte sequences instead of a real backend.
  */
 void nc_pump(void);
+
+/* Same shape as nc_pump() above, but feeds nc_mqtt_feed() instead of
+ * nc_feed() and caps each ng_c_recv_poll() request to the MQTT stream's
+ * actual free room (net_gate.asm's ng_c_recv_max cell) rather than the
+ * DLL's full 255-byte ceiling -- unlike ZX's UART ring, a Sprinter
+ * ng_recv() poll cannot be asked to leave unread bytes for next time, so
+ * asking for more than nc_mqtt_feed() has room to keep would lose them
+ * outright (S8 step 7, port.md section 3.7). See nc_mqtt_feed()'s own
+ * comment for the second line of defense this pairs with. */
+void nc_mqtt_pump(void);
 #endif
+
+/*
+ * MQTT byte-stream reassembler (S8 step 7, port.md section 3.7): a second,
+ * independent state machine alongside nc_feed()/nc_line_pop()'s DIRECT
+ * line splitter above -- MQTT is a length-prefixed byte stream, not
+ * line-oriented, so it cannot reuse '\n'-splitting at all. Shape mirrors
+ * src/spectrum/transport/net.c's mqtt_take_stream_packet()/
+ * mqtt_consume_stream_packet() (the proven ZX/Next reassembler): a fixed
+ * accumulator is fed raw bytes; nc_mqtt_take() resyncs past any leading
+ * garbage (bytes that cannot start a real MQTT fixed header), decodes the
+ * 1- or 2-byte varint remaining-length, and either says "not enough yet"
+ * (0), "malformed or oversize -- the whole accumulator was discarded" (-1),
+ * or copies one complete packet out to the packet scratch buffer and
+ * returns its length. Same #ifdef'd fixed-vs-local storage split as
+ * nc_pump()'s ng_* externs: on Sprinter the accumulator and packet scratch
+ * are the fixed low-RAM cells fixed_layout.json reserved in S8 step 1
+ * (LOWRAM_MQTT_STREAM/LOWRAM_MQTT_PACKET) so unet_link.c (WIN1) and the
+ * future MQTT bring-up code (WIN3 cold page, S8 step 8) can reach a
+ * reassembled packet without a window swap -- same reasoning as
+ * LOWRAM_RENDER_SHARED; under the host test build they are ordinary
+ * static arrays, since nothing outside this TU needs to see them there.
+ */
+#define NC_MQTT_STREAM_MAX 223u
+
+/* Clears the accumulator AND the fatal latch nc_mark_closed()/
+ * nc_mark_lost() set (shared with the DIRECT path -- nc_pump_sink() below
+ * marks it fatal regardless of which sink is active) -- the MQTT-path
+ * counterpart to nc_init(), for a session that never touches the DIRECT
+ * line splitter at all. Call once before any other nc_mqtt_* call. */
+void nc_mqtt_reset(void);
+
+/* Appends up to `len` bytes to the accumulator, silently dropping
+ * whatever does not fit (NC_MQTT_STREAM_MAX - current length) -- the last
+ * line of defense against overrun; nc_mqtt_pump() (Sprinter target only)
+ * is the first line, capping how many bytes ng_c_recv_poll() is even
+ * asked for. A host-test caller driving this directly has no such
+ * upstream cap, so this bound must hold on its own. */
+void nc_mqtt_feed(const uint8_t *data, uint8_t len);
+
+/* Resyncs past leading garbage, decodes the fixed-header remaining-length
+ * varint, and returns: 0 if the accumulator does not yet hold a complete
+ * packet (keep feeding); -1 if the header was malformed (a 2-byte varint
+ * continuation byte with its own top bit set, or too large a value) or
+ * the decoded packet would exceed SPECTRUM_MQTT_PACKET_MAX -- either way
+ * the WHOLE accumulator is discarded, matching mqtt_take_stream_packet()'s
+ * "resync from nothing" recovery rather than trying to salvage a
+ * corrupt length; otherwise the packet's total length (header + payload),
+ * with that many bytes now sitting in the packet scratch buffer, valid
+ * until the next nc_mqtt_take() call. Idempotent: calling it again before
+ * nc_mqtt_consume() re-copies and re-returns the same packet, it does not
+ * remove it from the accumulator. */
+int16_t nc_mqtt_take(void);
+
+/* Pointer to the packet scratch buffer nc_mqtt_take() last copied a
+ * complete packet into -- valid only after a positive nc_mqtt_take()
+ * return, for exactly that many bytes. Exists for callers/tests that need
+ * to read the reassembled bytes themselves (spectrum_mqtt_type()/
+ * spectrum_mqtt_parse_publish() take a pointer, not this accessor). */
+const uint8_t *nc_mqtt_packet(void);
+
+/* Removes the `total` bytes of the most recent successful nc_mqtt_take()
+ * from the front of the accumulator, sliding any trailing bytes (an
+ * already-arrived start of the next packet) down to offset 0. Caller's
+ * responsibility to pass the exact value nc_mqtt_take() returned --
+ * unlike nc_line_pop(), there is no queue bookkeeping to catch a mismatch. */
+void nc_mqtt_consume(uint8_t total);
 
 #endif /* SHATRANJ_SPRINTER_TRANSPORT_NET_FRAME_H */

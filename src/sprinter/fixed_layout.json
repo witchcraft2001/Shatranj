@@ -30,17 +30,17 @@
         },
         {
             "name": "NET_FRAME_C",
-            "addr": "0x9AC0",
-            "size": "0xD40",
+            "addr": "0x9840",
+            "size": "0x12C0",
             "owner": "asm/sprinter/zcc/net_core_crt0.asm + src/sprinter/transport/net_frame.c",
-            "desc": "S7 (port.md section 3.7): fourth independently zcc-built WIN2 C-blob (nc_ prefix), spliced by make_sprinter_resident.py into the code gap platform_primitives.asm reserves right before OVL_SLOT (its own ASSERT/DS pair pins this boundary at build time). Holds the portable DIRECT wire-framing core: RX ring, line splitter, 3-slot queue, and nc_pump's ng_recv polling glue. The gap's START is not a round number -- it is wherever platform_primitives.asm's own content happens to end, which grows as that file does (0x9997 at S7 step 1, 0x9A99 by step 4, 0x9AB6 once buffers.asm gained cold_win3_page); find it empirically from the sjasmplus 'truncated to length: -N' message and move this addr, never OVL_SLOT. End stays flush with OVL_SLOT's start (0xA800), no gap. Roughly 2.5 KiB of this is currently free: S7 step 4's first draft filled it with unet_link.c/ping.c/text.c/direct_session_protocol.c, which was reverted in favour of moving render_core.asm to its own WIN3 page instead (see LOWRAM_RENDER_SHARED and tools/make_sprinter_cold_page.py) -- strictly better, since that freed WIN1 without spending this much scarcer gap."
+            "desc": "S7 (port.md section 3.7): fourth independently zcc-built WIN2 C-blob (nc_ prefix), spliced by make_sprinter_resident.py into the code gap platform_primitives.asm reserves right before OVL_SLOT (its own ASSERT/DS pair pins this boundary at build time). Holds the portable DIRECT wire-framing core: RX ring, line splitter, 3-slot queue, and nc_pump's ng_recv polling glue -- plus, since S8 steps 4/5, game_protocol.c/keepalive_protocol.c/direct_session_protocol.c, relocated here for WIN1 budget relief (Makefile's own comment on SPRINTER_NET_FRAME_C_SRC), and since S8 step 7, net_frame.c's own nc_mqtt_* stream reassembler (mqtt_min.c itself is deliberately NOT linked into this blob yet -- Makefile's own comment on SPRINTER_NET_FRAME_C_SRC has the byte-cost measurement and the reasoning for deferring it to step 8). The gap's START is not a round number -- it is wherever platform_primitives.asm's own content happens to end, which grows as that file does (0x9997 at S7 step 1, 0x9A99 by step 4, 0x9AB6 once buffers.asm gained cold_win3_page, 0x980F once S8 step 1 moved net_gate.asm's ng_buf_* out to LOWRAM_NET_GATE); find it empirically from the sjasmplus 'truncated to length: -N' message and move this addr, never OVL_SLOT. End stays flush with OVL_SLOT's start (now 0xAB00, see that region), no gap. S8 step 6 moved addr down by 0x280 (640 bytes, leaving 49 bytes of margin over platform_primitives.asm's own 0x980F end) and grew size by the same amount, trading WIN2 asm-pool headroom (S8 step 1's relief left ~689 bytes there, unused by anything else) for net_frame_c blob budget -- WIN1's RESTORE chunking (S8 step 6) needed more relief than restore.c/saveload.c alone could buy without it. S8 step 7 grew size twice more from the OTHER end -- see OVL_SLOT's own note -- since the asm-pool-headroom lever above was already spent (only 49 bytes left): +0x200 (512 bytes) first, then +0x100 (256 bytes) more once the nc_mqtt_* reassembler alone (mqtt_min.c deferred) still overran the first grow by 89 bytes."
         },
         {
             "name": "OVL_SLOT",
-            "addr": "0xA800",
-            "size": "0x800",
+            "addr": "0xAB00",
+            "size": "0x500",
             "owner": "asm/sprinter/overlay_loader_sprinter.asm (successor to ovl_s3.asm)",
-            "desc": "Overlay dispatch slot, 2 KiB, top of the WIN2 half (plan D2, moved here from the S3 probe's 0x7800 -- WIN1 addr -- specifically so the z88dk C image gets a contiguous, uninterrupted WIN1 run up to WIN1_END; a WIN2 slot is also never displaced by LIBMAN.l_call's DLL load, which only maps into WIN1). Empty in the static image; the loader copies a packed overlay here at runtime from the asset page via win0_map_di/LDIR/win0_restore under DI (R1)."
+            "desc": "Overlay dispatch slot, top of the WIN2 half (plan D2, moved here from the S3 probe's 0x7800 -- WIN1 addr -- specifically so the z88dk C image gets a contiguous, uninterrupted WIN1 run up to WIN1_END; a WIN2 slot is also never displaced by LIBMAN.l_call's DLL load, which only maps into WIN1). Empty in the static image; the loader copies a packed overlay here at runtime from the asset page via win0_map_di/LDIR/win0_restore under DI (R1). S8 step 7: shrunk from 0x800 (2048) to 0x500 (1280) in two passes -- CONTROL, the only mode-0 overlay ever placed here, is 1082 bytes (198 bytes of margin left after both) -- ceding the freed 768 bytes to NET_FRAME_C, whose own ~4 KiB ceiling had no room for the nc_mqtt_* reassembler otherwise (mqtt_min.c itself stays off this build, see NET_FRAME_C's own note). addr moved from 0xA800 to 0xAA00 then 0xAB00 (end stays flush with LOWRAM_MOVE_LOG's 0xB000, no gap). tools/make_sprinter_assets_page.py's OVERLAY_SLOTS constant is the other half of this size and must be changed in lockstep (port.md's own warning on these two independently-hardcoded constants) -- OVERLAY_SLOTS=5 (was 8) keeps its OVERLAY_SIZE=1280 equal to this region's size exactly. 198 bytes is a tighter margin than step 7's first pass left (454) -- CONTROL has not grown across steps 4-6 and nothing in the remaining S8 plan touches it, but a future change there should re-check tools/gen_sprinter_size_report.py's overlay section before assuming room is still free."
         },
         {
             "name": "PSP_LANDING",
@@ -162,11 +162,32 @@
             "desc": "S7 step 4: the handful of one-byte cells that the WIN1 resident C and the WIN3-resident render_core.asm both touch. Offsets, in order: +0 gui.c's spectrum_gui_board_flipped, +1 cursor_row, +2 cursor_col, +3 selected_row, +4 selected_col (5 used, 3 spare). render_core.asm lives in its own WIN3 code page (asm/sprinter/zcc/cold_page_crt0.asm, tools/make_sprinter_cold_page.py) built BEFORE resident_c.bin and mapped in on demand, so neither build can see the other's .map and neither window is addressable from the other while the callee runs -- a fixed low-RAM address, known before either build compiles and always mapped in WIN2, sidesteps both problems at once (same idiom netchesszx_hinted_rows already uses for the sccz80-vs-SDCC __at gap, session.h's own comment on that field). Note these cells have NO static initialiser as a consequence: main.c's boot path seeds cursor_row/cursor_col (e4) and selected_row/selected_col (NO_SQUARE) explicitly. ZX/Next are unaffected (this region and the pointer-macro forms are all NETCHESSZX_SPRINTER-only)."
         },
         {
-            "name": "LOWRAM_NET",
+            "name": "LOWRAM_NET_GATE",
             "addr": "0xB408",
-            "size": "0x4F8",
-            "owner": "src/sprinter/transport/unet_link.c, src/sprinter/transport/net_frame.c",
-            "desc": "S7: DIRECT transport state -- RX byte ring, 3x48 line queue, payload_scratch (separate from the queue, link.h's own ownership contract), NETHOST/last-IP text, session/ping state cells. Fills the LOWRAM_OVERLAY_SCRATCH..CANARY gap left after S5-finish plan D9's size pass, the same way LOWRAM_MOVE_LOG fills the OVL_SLOT..CANARY gap D2 left. End is flush with CANARY's start (0xB900), no gap. Starts 8 bytes later than before S7 step 4 -- LOWRAM_SESSION_CFG now owns the front of this gap."
+            "size": "0x2FE",
+            "owner": "asm/sprinter/net_gate.asm",
+            "desc": "S8 step 1: the ten ng_buf_* staging buffers (net_gate.asm's own EQUs, host/port/tx/rx/lasterr/info/env/ip/env_host/env_port -- 766 bytes total, tx now NG_TX_CAPACITY=160 to fit an MQTT packet), relocated out of the WIN2 asm code gap right before NET_FRAME_C (S7 left only 19 bytes free there; check_sprinter_net_sections.py already requires ng_* to live in [#8000,#C000), and this address qualifies). Replaces the old LOWRAM_NET reservation, whose description (S7: 'RX byte ring, 3x48 line queue, payload_scratch...') was never actually implemented here -- net_frame.c's nc_* state lives in its own WIN2 C-blob BSS instead, and unet_link.c's state is resident WIN1 BSS; this region had zero real readers before S8 step 1 repurposed it. Fills the LOWRAM_OVERLAY_SCRATCH..CANARY gap left after S5-finish plan D9's size pass, the same way LOWRAM_MOVE_LOG fills the OVL_SLOT..CANARY gap D2 left."
+        },
+        {
+            "name": "LOWRAM_MQTT_STREAM",
+            "addr": "0xB706",
+            "size": "0xE0",
+            "owner": "src/sprinter/transport/net_frame.c (S8 step 7)",
+            "desc": "S8 step 1 reservation, unused until step 7: the MQTT byte-stream accumulator (nc_mqtt_stream[223], mirroring ZX's net.c mqtt_stream[223] -- S8's reassembler adapts mqtt_take_stream_packet's varint-remaining-length/resync/compaction shape). Fixed low-RAM rather than net_frame_c's own BSS because unet_link.c (WIN1) and the future MQTT bring-up code (WIN3 cold page) both need to reach it without a window swap, same reasoning as LOWRAM_RENDER_SHARED."
+        },
+        {
+            "name": "LOWRAM_MQTT_PACKET",
+            "addr": "0xB7E6",
+            "size": "0xA0",
+            "owner": "src/sprinter/transport/net_frame.c (S8 step 7)",
+            "desc": "S8 step 1 reservation, unused until step 7: one reassembled MQTT packet (160 bytes = SPECTRUM_MQTT_PACKET_MAX, mqtt_min.h), handed to spectrum_mqtt_parse_publish/spectrum_mqtt_type. Separate from LOWRAM_MQTT_STREAM for the same reason link.h's payload_scratch is separate from net_frame's line queue: a packet being parsed by the caller must not be a buffer the reassembler is still writing into."
+        },
+        {
+            "name": "LOWRAM_NET_SPARE",
+            "addr": "0xB886",
+            "size": "0x7A",
+            "owner": "unassigned (S8 step 6 will take restore_b64_pending here)",
+            "desc": "S8 step 1: remainder of the old LOWRAM_NET span after LOWRAM_NET_GATE/LOWRAM_MQTT_STREAM/LOWRAM_MQTT_PACKET are carved out. End is flush with CANARY's start (0xB900), no gap -- same invariant the old single LOWRAM_NET region held."
         },
         {
             "name": "CANARY",

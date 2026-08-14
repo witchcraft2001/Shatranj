@@ -212,6 +212,10 @@ PLATFORM_SYMBOLS = [
     "ng_v_call_len",
     "ng_v_call_flags",
     "ng_v_call_cf",
+    # S8 step 7: ng_recv's per-poll request ceiling, lowered by net_frame.c's
+    # nc_mqtt_pump() to the MQTT stream accumulator's free room before each
+    # poll -- see net_gate.asm's own comment on the cell.
+    "ng_c_recv_max",
     # dss_fileio.asm -- esx-ABI-over-DSS file I/O gate (S6, port.md section
     # 3.10 item 4). Called from the SAVELOAD/RESTORE/FILEUI overlay C
     # sources (src/spectrum/overlay/{saveload,fileui}_ovl.c), which are
@@ -401,6 +405,7 @@ def _clean_fixture() -> str:
         "ng_v_call_len: EQU 0x00008F98\n"
         "ng_v_call_flags: EQU 0x00008F9A\n"
         "ng_v_call_cf: EQU 0x00008F9C\n"
+        "ng_c_recv_max: EQU 0x00008F9D\n"
         "esx_handle: EQU 0x00008B00\n"
         "esx_buf: EQU 0x00008B01\n"
         "esx_count: EQU 0x00008B03\n"

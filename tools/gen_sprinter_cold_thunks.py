@@ -168,6 +168,44 @@ COLD_THUNK_SYMBOLS = [
     # The whole modal DIRECT-join screen behind one entry: main.c's NETWORK
     # tab calls it and gets back "connected" or "not".
     "spectrum_net_join_ui",
+    # --- src/sprinter/session_sprinter.c (S8 relief pass) ------------------
+    # The DIRECT-session/board-interaction/menu-action driver, moved here
+    # verbatim off WIN1 (that file's own header has the full rationale).
+    # These are the entry points main.c's frame loop and one boot-time call
+    # still reach directly -- everything else this file defines is called
+    # only from inside itself and needs no stub. fileui_process_key is NOT
+    # here -- the second relief cut (main.c's own save/load section) moved
+    # it, and everything it calls, back to WIN1 outright.
+    "net_set_turn_label_from_side",
+    "board_select_or_move",
+    "net_retry_tick",
+    "net_control_key",
+    "net_poll_once",
+    "handle_menu_action",
+    # --- S8 relief pass, second cut -----------------------------------------
+    # main.c's own save/load/file-browser/simple-menu-action code (moved
+    # BACK to WIN1 once the whole-driver move above overran the cold page's
+    # fixed 16 KiB ceiling by 1806 bytes -- see main.c's own comment ahead
+    # of pending_local_ply for which subset and why) still needs these
+    # three session_sprinter.c entries: the shared one-operation-pending
+    # guard, the shared link-teardown path, and the shared "clear the board
+    # highlight" helper -- each already has several OTHER callers that stay
+    # on the cold page, so moving them too was not worth it for three call
+    # sites total.
+    "net_op_busy",
+    "net_drop",
+    "selection_clear",
+    # --- S8 relief pass, third cut ------------------------------------------
+    # The second cut alone still left the cold page 441 bytes over its
+    # fixed ceiling once actually built; apply_takeback_snapshot and five
+    # more functions (main.c, ahead of its own takeback_undo declaration)
+    # moved back too. These three are their shared cold-page helpers --
+    # each still has other callers here (board_select_or_move, net_apply_
+    # reset, net_apply_remote_move, net_handle_event, ...) so they stayed
+    # put instead of moving a third time.
+    "pending_local_clear",
+    "takeback_snapshot_save",
+    "square_index",
 ]
 
 GENERATED_BANNER = (

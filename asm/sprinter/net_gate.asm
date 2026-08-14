@@ -47,7 +47,10 @@ NG_BACKEND_RTL  EQU 2
 
 NG_HOST_CAPACITY    EQU 129
 NG_PORT_CAPACITY    EQU 16
-NG_TX_CAPACITY      EQU 64
+; S8 step 1: 64 -> 160 (SPECTRUM_MQTT_PACKET_MAX, mqtt_min.h) so a full MQTT
+; packet fits ng_send's single staging copy; the S8 plan's own ASSERT below
+; keeps this tied to that constant instead of being a second guess at it.
+NG_TX_CAPACITY      EQU 160
 ; 255, not 256: nc_pump's C-side byte count (ng_v_call_len, fed straight
 ; into nc_feed()'s uint8_t len parameter) must never need a 9th bit.
 NG_RX_CAPACITY      EQU 255
@@ -57,6 +60,12 @@ NG_ENV_CAPACITY     EQU 64
 NG_IP_CAPACITY      EQU 16
 NG_ENV_HOST_CAPACITY EQU 24
 NG_ENV_PORT_CAPACITY EQU 6
+
+; SPECTRUM_MQTT_PACKET_MAX (src/spectrum/transport/mqtt_min.h) as a plain
+; number, not an INCLUDE -- that header is C-only. Kept next to the ASSERT
+; it exists for, not buried at the bottom of the file with the buffers.
+SPECTRUM_MQTT_PACKET_MAX_ASM EQU 160
+        ASSERT  NG_TX_CAPACITY >= SPECTRUM_MQTT_PACKET_MAX_ASM
 
 NG_TRAP_REENTRY EQU 1
 
@@ -470,13 +479,16 @@ ng_send:
 ; ng_recv: IY=timeout_ms (caller-preloaded; IY=0 polls without blocking).
 ; Received bytes land in ng_buf_rx (not returned by pointer -- the caller
 ; reads ng_buf_rx directly, same staging-buffer discipline as everywhere
-; else in this file).
+; else in this file). Requests ng_c_recv_max bytes, not a hardcoded
+; NG_RX_CAPACITY -- see that cell's own comment (S8 step 7) for why the
+; request ceiling has to be adjustable at all, and ng_c_recv_poll for the
+; only C-reachable caller that ever lowers it.
 ; Out: A=status, DE=bytes received, IX=flags (RXF_* bits), CF=1 on
 ; dispatcher failure.
 ng_recv:
         xor     a                       ; channel 0
         ld      de,ng_buf_rx
-        ld      ix,NG_RX_CAPACITY
+        ld      ix,(ng_c_recv_max)
         ld      b,UNET_FN_RECV
         jp      ng_call
 
@@ -671,16 +683,32 @@ ng_env_name_netport: DB "NETPORT",0
 ng_default_host:     DB "127.0.0.1",0
 ng_default_port:     DB "7777",0
 
-ng_buf_host:    DS NG_HOST_CAPACITY,0
-ng_buf_port:    DS NG_PORT_CAPACITY,0
-ng_buf_tx:      DS NG_TX_CAPACITY,0
-ng_buf_rx:      DS NG_RX_CAPACITY,0
-ng_buf_lasterr: DS NG_LASTERR_CAPACITY,0
-ng_buf_info:    DS NG_INFO_CAPACITY,0
-ng_buf_env:     DS NG_ENV_CAPACITY,0
-ng_buf_ip:      DS NG_IP_CAPACITY,0
-ng_buf_env_host: DS NG_ENV_HOST_CAPACITY,0
-ng_buf_env_port: DS NG_ENV_PORT_CAPACITY,0
+; S8 step 1: these ten buffers used to be DS reservations right here,
+; which put their 766 bytes on the wrong side of a very tight ledger --
+; platform_primitives.asm's own WIN2 code region had only 19 bytes free
+; before NET_FRAME_C_ADDR after S7 round 3 (port.md). They carry no state
+; across a frame boundary that anything outside net_gate.asm reads, so
+; there is no reason they need to be part of the assembled blob at all:
+; LOWRAM_NET_GATE (fixed_layout.json) is always-mapped WIN2 low RAM,
+; reachable exactly the same way from every ng_* routine. Moving them here
+; is a pure relocation -- every EQU below is spaced by the SAME capacity
+; constants as before, in the SAME order, so ng_buf_tx (now 160 bytes,
+; NG_TX_CAPACITY) is still immediately followed by ng_buf_rx, etc.
+; ASSERT pins the total against the region's own budget so a future buffer
+; growing here fails the build loudly instead of silently overrunning into
+; LOWRAM_MQTT_STREAM.
+ng_buf_host:     EQU LOWRAM_NET_GATE_ADDR
+ng_buf_port:     EQU ng_buf_host + NG_HOST_CAPACITY
+ng_buf_tx:       EQU ng_buf_port + NG_PORT_CAPACITY
+ng_buf_rx:       EQU ng_buf_tx + NG_TX_CAPACITY
+ng_buf_lasterr:  EQU ng_buf_rx + NG_RX_CAPACITY
+ng_buf_info:     EQU ng_buf_lasterr + NG_LASTERR_CAPACITY
+ng_buf_env:      EQU ng_buf_info + NG_INFO_CAPACITY
+ng_buf_ip:       EQU ng_buf_env + NG_ENV_CAPACITY
+ng_buf_env_host: EQU ng_buf_ip + NG_IP_CAPACITY
+ng_buf_env_port: EQU ng_buf_env_host + NG_ENV_HOST_CAPACITY
+NG_GATE_BUFFERS_END EQU ng_buf_env_port + NG_ENV_PORT_CAPACITY
+        ASSERT  NG_GATE_BUFFERS_END <= LOWRAM_NET_GATE_END
 
 ; ng_c_send wrapper parameter cells / ng_c_* result cells (S7 C bridge).
 ng_c_send_ptr:   DW 0
@@ -689,5 +717,16 @@ ng_v_call_status: DB 0
 ng_v_call_len:   DW 0
 ng_v_call_flags: DW 0
 ng_v_call_cf:    DB 0
+; ng_recv's per-poll request ceiling (S8 step 7): net_frame.c's
+; nc_mqtt_pump() lowers this to its MQTT stream accumulator's actual free
+; room before each ng_c_recv_poll(), because unlike ZX's UART ring, a
+; Sprinter ng_recv() poll hands the DLL's bytes over unconditionally --
+; there is no way to ask for N bytes and leave the rest queued for next
+; time, so asking for more than the C side has room to keep would lose
+; them outright. Defaults to (and nc_pump()'s own DIRECT path always asks
+; for) NG_RX_CAPACITY, the DLL's own ceiling -- unchanged behaviour for
+; the line-oriented path, which has no such loss-on-drop concern (an
+; oversize line is dropped as a whole unit, not silently truncated).
+ng_c_recv_max:   DW NG_RX_CAPACITY
 
         ENDIF

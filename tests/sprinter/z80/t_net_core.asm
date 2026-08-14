@@ -51,12 +51,13 @@ start:
         ld      (CANARY_ADDR),hl
         call    ng_test_install_lib
 
-; --- Scenario 1: ng_send(B=65) is rejected before ever reaching the DLL
-; (NG_TX_CAPACITY=64): CF=1, A=NERR_PARAM, dispatch never happens. --------
+; --- Scenario 1: ng_send(B=161) is rejected before ever reaching the DLL
+; (NG_TX_CAPACITY=160, S8 step 1 -- room for a full MQTT packet): CF=1,
+; A=NERR_PARAM, dispatch never happens. ------------------------------------
         xor     a
         ld      (test_dll_send_called),a
         ld      hl,test_src_65
-        ld      b,65
+        ld      b,161
         call    ng_send
         ld      (test_status_seen),a
         ld      a,1
@@ -70,11 +71,11 @@ start:
         ld      a,3
         call    t_expect_z
 
-; --- Scenario 2: ng_send(B=64) is accepted, stages exactly 64 bytes into
-; ng_buf_tx (a WIN2 address -- never test_src_64 itself), and the fake DLL
+; --- Scenario 2: ng_send(B=160) is accepted, stages exactly 160 bytes into
+; ng_buf_tx (a WIN2 address -- never test_src_160 itself), and the fake DLL
 ; sees that staged copy byte-for-byte. -------------------------------------
-        ld      hl,test_src_64
-        ld      b,64
+        ld      hl,test_src_160
+        ld      b,160
         call    ng_send
         ld      a,4
         call    t_expect_nc
@@ -97,27 +98,47 @@ start:
         ld      a,8
         call    t_expect_nz
 
+; --- Scenario 2b (S8 step 1): ng_buf_tx itself lives in the WIN2 half
+; [#8000,#C000) -- the S8 plan's own relocation of net_gate.asm's staging
+; buffers out of the tight code gap before NET_FRAME_C_ADDR and into
+; LOWRAM_NET_GATE. A regression here would mean a buffer landed back in
+; WIN1 or drifted past #C000, either of which check_sprinter_net_sections.py
+; also polices statically -- this is the same invariant proven dynamically,
+; through the actual staging copy above. -----------------------------------
+        ld      hl,ng_buf_tx
+        ld      de,#8000
+        or      a
+        sbc     hl,de
+        ld      a,9
+        call    t_expect_nc             ; ng_buf_tx >= #8000
+        ld      hl,ng_buf_tx
+        ld      de,#C000
+        or      a
+        sbc     hl,de
+        ld      a,10
+        call    t_expect_c              ; ng_buf_tx < #C000
+
 ; --- Scenario 3: ng_recv passes DE (length) and IX (flags) through from
 ; the DLL unmangled, and the received bytes land in ng_buf_rx. ------------
         ld      iy,0
         call    ng_recv
-        ld      a,9
+        ld      a,11
         call    t_expect_nc
         ld      a,(ng_buf_rx)
         cp      "H"
-        ld      a,10
+        ld      a,12
         call    t_expect_z
         ld      a,(ng_buf_rx+1)
         cp      "i"
-        ld      a,11
+        ld      a,13
         call    t_expect_z
         ld      a,e
         cp      2
-        ld      a,12
+        ld      a,14
         call    t_expect_z
         ld      a,ixl
         cp      2                       ; UNET_RXF_MORE
-        ld      a,13
+        ld      a,15
         call    t_expect_z
 
 ; --- Scenario 4: ng_c_recv_poll (the C-callable wrapper) sets IY=0 itself
@@ -125,23 +146,23 @@ start:
         call    ng_c_recv_poll
         ld      a,(ng_v_call_cf)
         or      a
-        ld      a,14
+        ld      a,16
         call    t_expect_z
         ld      a,(ng_v_call_status)
         or      a
-        ld      a,15
+        ld      a,17
         call    t_expect_z
         ld      hl,(ng_v_call_len)
         ld      de,2
         or      a
         sbc     hl,de
-        ld      a,16
+        ld      a,18
         call    t_expect_z
         ld      hl,(ng_v_call_flags)
         ld      de,2
         or      a
         sbc     hl,de
-        ld      a,17
+        ld      a,19
         call    t_expect_z
 
 ; --- Scenario 5: ng_c_send's overflow path (oversized length, ng_send's
@@ -150,16 +171,16 @@ start:
 ; either way. ---------------------------------------------------------------
         ld      hl,test_src_65
         ld      (ng_c_send_ptr),hl
-        ld      a,65
+        ld      a,161
         ld      (ng_c_send_len),a
         call    ng_c_send
         ld      a,(ng_v_call_cf)
         or      a
-        ld      a,18
+        ld      a,20
         call    t_expect_nz
         ld      a,(ng_v_call_status)
         cp      9                       ; NERR_PARAM
-        ld      a,19
+        ld      a,21
         call    t_expect_z
 
 ; --- Scenario 6: ng_c_connect resolves NETHOST/NETPORT itself; the env
@@ -168,11 +189,11 @@ start:
         call    ng_c_connect
         ld      a,(ng_v_call_cf)
         or      a
-        ld      a,20
+        ld      a,22
         call    t_expect_z
         ld      a,(test_dll_connect_match)
         or      a
-        ld      a,21
+        ld      a,23
         call    t_expect_nz
 
         call    t_end
@@ -181,7 +202,13 @@ start:
         assert  $ < TEST_RESULT
 
 test_src_65: DB "oversized-send-payload-content-is-never-read-before-the-length-check",0
-test_src_64: DB "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"
+; S8 step 1: NG_TX_CAPACITY grew 64->160 (SPECTRUM_MQTT_PACKET_MAX), so the
+; accepted-path fixture must be exactly 160 bytes for fake_dll_send's
+; byte-for-byte compare below.
+test_src_160: DB "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"
+              DB "MNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"
+              DB "YZabcdefghijklmnopqrstuvwxyzABCD"
+        ASSERT  $ - test_src_160 == 160
 
 ng_test_install_lib:
         ld      hl,LIBMAN.lib_table
@@ -224,7 +251,7 @@ fake_dll_table:
 
 ; UNET_FN_SEND: A=channel, DE=buffer, IX=length -> A, DE=bytes sent.
 ; Records whether DE points at ng_buf_tx (not the caller's own WIN1
-; source buffer) and whether the 64 staged bytes match test_src_64.
+; source buffer) and whether the 160 staged bytes match test_src_160.
 fake_dll_send:
         ld      a,1
         ld      (test_dll_send_called),a
@@ -234,8 +261,8 @@ fake_dll_send:
         ld      (test_dll_send_de_hi),a
 
         ex      de,hl                   ; HL = staged buffer (ng_buf_tx)
-        ld      de,test_src_64
-        ld      b,64
+        ld      de,test_src_160
+        ld      b,160
 .cmp:
         ld      a,(de)
         cp      (hl)

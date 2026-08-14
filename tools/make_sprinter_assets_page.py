@@ -21,15 +21,27 @@ Slot layout (asm/sprinter/bench_s2.asm's ASSET_* EQUs must match):
             32*256 = 8192 = 16*512, proving the parametric blitter's second
             stride)
     34..35  unused (zero) -- gap before the overlay slot
-    36..43  overlay atlas id 14 (CONTROL, S5 substep 2,
-            $(SPRINTER_OVL_CONTROL_BIN) in the Makefile): exactly 2048
-            bytes, copied at runtime by overlay_loader_sprinter.asm's
-            ovl_exec via platform_primitives.asm's ovl_copy_slot
-            (win0_map_di/LDIR/win0_restore) into OVL_SLOT (#A800). Only
-            one overlay slot exists in this page; ids 0-13 in
+    36..40  overlay atlas id 14 (CONTROL, S5 substep 2,
+            $(SPRINTER_OVL_CONTROL_BIN) in the Makefile): exactly 1280
+            bytes (S8 step 7, shrunk from 2048 in two passes -- CONTROL
+            itself is only 1082 bytes -- to cede room to NET_FRAME_C, see
+            src/sprinter/fixed_layout.json's OVL_SLOT note), copied at
+            runtime by overlay_loader_sprinter.asm's ovl_exec via
+            platform_primitives.asm's ovl_copy_slot (win0_map_di/LDIR/
+            win0_restore) into OVL_SLOT (#AB00). Only one overlay slot
+            exists in this page; ids 0-13 in
             overlay_atlas_table_sprinter.asm are still unported
             placeholders (port.md) -- a real subset atlas needs its own
             page(s) once more than one overlay has real content.
+    41..43  unused (zero) -- gap after the overlay slot (S8 step 7: opened
+            up as OVERLAY_SLOTS shrunk from 8 to 5; UI_ASSETS_SLOT stays
+            pinned at 44 rather than closing this gap, because
+            tools/build_sprinter_ui_assets.py's slot numbers -- logo,
+            markers, board cursor/selection frames -- are a FIXED contract
+            asm/sprinter/zcc/render_core.asm and render_core_cold.asm
+            hardcode as compile-time EQUs; shifting UI_ASSETS_SLOT would
+            cascade into both for no reason tied to this step's actual
+            goal (net_frame_c budget relief))
     44..63  UI assets (S4, tools/build_sprinter_ui_assets.py's
             --ui-bin -- Sprinter logo + point markers, hardware-keyed;
             exact slot span depends on the logo's committed width, see
@@ -69,8 +81,20 @@ TILE_WIDE_SLOT = 32
 TILE_WIDE_SLOTS = 2
 
 OVERLAY_SLOT = 36
-OVERLAY_SLOTS = 8
-OVERLAY_SIZE = OVERLAY_SLOTS * SLOT_SIZE  # 2048
+# S8 step 7: shrunk from 8 (2048 bytes) to 5 (1280 bytes) in two passes --
+# CONTROL, the only mode-0 overlay ever placed here, is 1082 bytes -- to
+# cede the freed 768 bytes to NET_FRAME_C's own budget
+# (src/sprinter/fixed_layout.json's OVL_SLOT region has the full story,
+# including why 198 bytes of CONTROL headroom was judged enough). Slots
+# 41..43 join the existing 34..35 gap before UI_ASSETS_SLOT=44,
+# zero-padded the same way. This constant and fixed_layout.json's
+# OVL_SLOT.size are independently hardcoded and must be changed together
+# -- a mismatch would let an overlay bin between the two sizes pass this
+# file's check below and then get silently truncated by
+# platform_primitives.asm's ovl_copy_slot at runtime (which LDIRs the
+# fixed_layout.json size, not this one).
+OVERLAY_SLOTS = 5
+OVERLAY_SIZE = OVERLAY_SLOTS * SLOT_SIZE  # 1280
 
 TILE32_W, TILE32_H, TILE32_STRIDE = 32, 16, 16
 TILE40_W, TILE40_H, TILE40_STRIDE = 40, 20, 20

@@ -54,6 +54,98 @@ COLD_RESIDENT_SYMBOLS = [
     # to read from the page for the same reason the calls above are safe to
     # make: WIN1 never leaves the address space, only WIN3 changes.
     "netchesszx_movement_hints",
+    # --- S8 relief pass: src/sprinter/session_sprinter.c's own bridge -----
+    # Mechanically derived from resident_c.map against that file's own
+    # extracted text (every true resident symbol -- not a cold_thunks stub
+    # published under the same name -- it references), plus net_active
+    # itself (main.c) and netchesszx_local_color (config/session.c, reached
+    # only through the netchesszx_local_is_white()/_session_has_local_turn()/
+    # _local_side_name() macros in session.h, so it never appears as a
+    # literal call in the source text -- found by reading the macros, not
+    # by grep). See that file's own header for why everything else it uses
+    # (render_core.asm, gui.c) needs no entry here: same cold-page image,
+    # plain same-page calls.
+    "net_active",                              # src/sprinter/main.c
+    "side_to_move",                            # src/spectrum/board/board.c
+    "spectrum_board_reset",
+    "spectrum_board_is_legal_move",
+    "spectrum_board_apply_trusted_move",
+    "spectrum_board_apply_trusted_move_with_undo",
+    "spectrum_board_cell",
+    "spectrum_board_check_state",
+    "spectrum_board_snapshot_save",
+    "spectrum_board_snapshot_restore",
+    "spectrum_board_undo_restore",
+    "spectrum_gui_log_ply_get",                # src/sprinter/gui_log_sprinter.c
+    "spectrum_gui_log_ply_set",
+    "spectrum_gui_add_move",
+    "spectrum_gui_remove_last_move",
+    "spectrum_gui_reset_move_log",
+    "spectrum_saveload_run",                   # src/spectrum/saveload/saveload.c
+    "spectrum_restore_build_b64",              # src/spectrum/restore/restore.c
+    "spectrum_restore_decode",
+    "spectrum_fileui_open_render",             # src/spectrum/fileui/fileui.c
+    "spectrum_fileui_send_key",
+    "spectrum_fileui_selected_name",
+    "spectrum_fileui_rerender",
+    "netchesszx_local_color",                  # src/spectrum/config/session.c
+    "netchesszx_host_color_ready",
+    "netchesszx_session_configure",
+    "netchesszx_session_poll",                 # src/spectrum/session/poll.c
+    "netchesszx_session_ping_reset",           # src/spectrum/session/ping.c
+    "netchesszx_session_peer_reset",           # src/spectrum/session/direct.c
+    "netchesszx_session_peer_mark_ready",
+    "netchesszx_session_direct_send_hello",
+    "netchesszx_session_direct_apply_hello",
+    "netchesszx_session_direct_apply_start_side",
+    "netchesszx_session_send_ack_move",        # src/spectrum/session/outgoing.c
+    "netchesszx_session_send_nack_move",
+    "netchesszx_session_send_ack_reset",
+    "netchesszx_session_send_nack_reset",
+    "netchesszx_session_send_nack_reset_busy",
+    "netchesszx_session_send_ack_resign",
+    "netchesszx_session_send_ack_game_start",
+    "netchess_proto_parse_ack",                # src/common/protocol/game_protocol_extra.c
+    "netchess_proto_parse_nack",
+    "spectrum_append_text",                    # src/spectrum/platform/text.c
+    "spectrum_append_u16",
+    # --- S8 relief pass, second cut ----------------------------------------
+    # session_sprinter.c overran the cold page's fixed 16 KiB ceiling by
+    # 1806 bytes once built for real; main.c's own save/load/file-browser/
+    # simple-menu-action code moved back to WIN1 to close the gap (main.c's
+    # own comment ahead of pending_local_ply has the full accounting).
+    # Mechanically re-derived the same way as the first batch above: every
+    # true resident symbol the still-cold code (net_handle_event, retry_
+    # pending_outgoing, board_select_or_move, menu_network, handle_menu_
+    # action) now reaches in main.c instead of in this same file.
+    "pending_local_ply",                       # src/sprinter/main.c
+    "pending_local_move",
+    "pending_retry_timer",
+    "control_retry_count",
+    "restore_rx_mask",
+    "saveload_snapshot",
+    "saveload_b64_pending",
+    "fileui_open",
+    "net_apply_loaded_snapshot",
+    "menu_cycle_theme",
+    "menu_flip_board",
+    "menu_not_available",
+    "saveload_full_redraw",
+    # --- S8 relief pass, third cut ------------------------------------------
+    # apply_takeback_snapshot through net_send_takeback_wire (main.c, ahead
+    # of its own takeback_undo declaration) -- the second cut alone still
+    # left the cold page 441 bytes over its fixed ceiling once actually
+    # built. Same mechanical derivation as the two batches above.
+    "takeback_undo",                           # src/sprinter/main.c
+    "takeback_snapshot_ply",
+    "takeback_snapshot_local",
+    "apply_takeback_snapshot",
+    "net_status_idle",
+    "net_send_move_wire",
+    "net_send_nack_sync",
+    "net_repaint_move",
+    "net_apply_pending_local_move",
+    "net_send_takeback_wire",
 ]
 
 GENERATED_BANNER = (
