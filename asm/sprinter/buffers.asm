@@ -34,7 +34,11 @@
 ; total, same #FF-when-unavailable convention. cold_win3_page (S7 step 4:
 ; the whole of render_core.asm/render_core_cold.asm, tools/make_sprinter_
 ; cold_page.py, reached through tools/gen_sprinter_cold_thunks.py's WIN1
-; stubs) is the fifth, needing >=5, same convention again. Clobbers AF.
+; stubs) is the fifth, needing >=5, same convention again. ovl_win3_page2
+; (S8 step 8b: the NET overlay's own second WIN3 page, tools/make_sprinter_
+; overlay_page.py's LAYOUT2) is the SIXTH asset page, needing >=6 -- added
+; last in the --assets order specifically so it never shifts any of the
+; first five pages' own indices. Clobbers AF.
 bench_init:
         ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
         or      a
@@ -45,6 +49,7 @@ bench_init:
         ld      (piece_page2),a
         ld      (ovl_win3_page),a
         ld      (cold_win3_page),a
+        ld      (ovl_win3_page2),a
         ret
 .have:
         ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET)
@@ -59,6 +64,7 @@ bench_init:
         ld      (piece_page2),a
         ld      (ovl_win3_page),a
         ld      (cold_win3_page),a
+        ld      (ovl_win3_page2),a
         ret
 .have_pieces:
         ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+1)
@@ -72,6 +78,7 @@ bench_init:
         ld      a,#FF
         ld      (ovl_win3_page),a
         ld      (cold_win3_page),a
+        ld      (ovl_win3_page2),a
         ret
 .have_ovl_win3_page:
         ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+3)
@@ -82,16 +89,28 @@ bench_init:
         jr      nc,.have_cold_win3_page
         ld      a,#FF
         ld      (cold_win3_page),a
+        ld      (ovl_win3_page2),a
         ret
 .have_cold_win3_page:
         ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+4)
         ld      (cold_win3_page),a
+
+        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
+        cp      6
+        jr      nc,.have_ovl_win3_page2
+        ld      a,#FF
+        ld      (ovl_win3_page2),a
+        ret
+.have_ovl_win3_page2:
+        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+5)
+        ld      (ovl_win3_page2),a
         ret
 bench_asset_page: DB #FF
 piece_page1: DB #FF
 piece_page2: DB #FF
 ovl_win3_page: DB #FF
 cold_win3_page: DB #FF
+ovl_win3_page2: DB #FF
 
 ; Reads RGMOD once and stores both buffer bases: front = currently
 ; displayed, back = the other. Clobbers AF, HL.

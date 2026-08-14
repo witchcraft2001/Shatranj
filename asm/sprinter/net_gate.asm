@@ -520,6 +520,18 @@ ng_c_connect:
         call    ng_connect
         jr      ng_c_store_result
 
+; ng_c_connect_at (S8 step 8c): connects to a CALLER-SUPPLIED host/port
+; (ng_c_connect_host/ng_c_connect_port, ASCIIZ pointers the C caller writes
+; before this call) instead of resolving NETHOST/NETPORT itself. ng_c_connect
+; above is untouched -- DIRECT stays env-only (S7's own design, port.md
+; section 3.7), byte-identical. MQTT needs an arbitrary broker address the
+; NET screen's editor produced, which no env var can stand in for.
+ng_c_connect_at:
+        ld      hl,(ng_c_connect_host)
+        ld      de,(ng_c_connect_port)
+        call    ng_connect
+        jr      ng_c_store_result
+
 ng_c_send:
         ld      hl,(ng_c_send_ptr)
         ld      a,(ng_c_send_len)
@@ -634,6 +646,32 @@ ng_env_netport:
         ld      hl,ng_buf_env_port
         ret
 
+; ng_c_env_get (S8 step 8c): generic C-callable ASCIIZ env resolver --
+; (ng_c_env_name)/(ng_c_env_dest) are pointer cells the C caller writes
+; before this call, in WIN1 C (net_mqtt_ui_sprinter.c: MQTTHOST/MQTTPORT/
+; MQTTROOM defaults for the NET screen's editor). One routine instead of a
+; third near-identical 17-byte resolver alongside ng_env_nethost/
+; ng_env_netport -- names and destination buffers live in WIN1 C, so this
+; costs LOWRAM_NET_GATE nothing (that region has 0 bytes free). Same
+; unbounded-destination risk ng_env_try's own comment already documents
+; and accepts for the other two resolvers -- the caller sizes its buffer.
+; Out: ng_c_env_found=1 and dest filled (NUL-terminated) if DSS had the
+; variable, ng_c_env_found=0 (dest untouched -- caller already seeded a
+; default) otherwise. Result lands in a cell, not the return register --
+; this codebase's established asm-to-C result convention throughout this
+; file (ng_v_call_status/ng_v_call_cf etc.), not a raw z88dk classic-ABI
+; return value.
+ng_c_env_get:
+        ld      hl,(ng_c_env_name)
+        ld      de,(ng_c_env_dest)
+        call    ng_env_try
+        ld      a,0
+        jr      c,.store
+        ld      a,1
+.store:
+        ld      (ng_c_env_found),a
+        ret
+
 ; Best-effort CLOSE -> NETDONE -> l_free (R11 exit discipline). A no-op if
 ; ng_up never got far enough to load a library. Must run under EI (ng_call
 ; requires it); call before im2_uninstall so the frame ISR chain is still
@@ -728,5 +766,13 @@ ng_v_call_cf:    DB 0
 ; the line-oriented path, which has no such loss-on-drop concern (an
 ; oversize line is dropped as a whole unit, not silently truncated).
 ng_c_recv_max:   DW NG_RX_CAPACITY
+
+; S8 step 8c: ng_c_connect_at/ng_c_env_get parameter cells -- ASCIIZ
+; pointers into WIN1 C storage, written by the caller before each call.
+ng_c_connect_host: DW 0
+ng_c_connect_port: DW 0
+ng_c_env_name:      DW 0
+ng_c_env_dest:       DW 0
+ng_c_env_found:      DB 0
 
         ENDIF

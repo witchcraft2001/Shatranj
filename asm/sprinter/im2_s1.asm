@@ -364,6 +364,10 @@ exit_stand:
 im2_frame_core:
         ld      a,1
         ld      (frame_flag),a
+        ld      a,(frame_counter)      ; S8 step 8c: MQTT ClientId/session-id
+        inc     a                      ; nonce source -- A only, no new
+        ld      (frame_counter),a      ; register clobber beyond this
+                                        ; routine's existing AF-only contract
         ld      a,(flip_request)
         or      a
         ret     z
@@ -388,6 +392,16 @@ CANARY_SENTINEL EQU #5A5A
 
 frame_flag:     DB 0
 im2_saved_i:    DB 0
+; S8 step 8c: free-running frame counter, exported to C via PLATFORM_SYMBOLS.
+; No other free-running counter is visible from C on Sprinter (frame_flag is
+; a one-shot flag frame_wait consumes, not a counter) -- this is the nonce
+; source the MQTT ClientId/session-id needs, mirroring ZX's own use of the
+; ROM FRAMES sysvar (app.c's mqtt_new_session_id, ($5c78)) for the same
+; purpose. Wraps silently at 256; combined with rtc_second (net_gate.asm's
+; already-sampled RTC, not a fresh rtc_sample -- forbidden under a remapped
+; WIN3) that is enough entropy for a same-process nonce, not a security
+; primitive.
+frame_counter:  DB 0
 fatal_msg_stack: DB 13,10,"Sprinter S1: stack canary corrupted (R4).",13,10,0
 
         ENDIF

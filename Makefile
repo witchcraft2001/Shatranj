@@ -909,7 +909,7 @@ endif
         sprinter-overlay-defs-check sprinter-overlay-control-check \
         sprinter-overlay-rules-check sprinter-overlay-board-check \
         sprinter-overlay-saveload-check sprinter-overlay-restore-check \
-        sprinter-overlay-fileui-check \
+        sprinter-overlay-fileui-check sprinter-overlay-net-check \
         sprinter-size-report \
         sprinter-about clean-sprinter
 
@@ -952,11 +952,20 @@ SPRINTER_NET_CORE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/net_core_crt0.asm
 # entry points/string constants once outright was simpler than a second
 # shim.
 # S8 step 6 relief (WIN1 overran the 16000-byte budget by 1448 bytes after
-# RESTORE chunking): src/sprinter/transport/unet_link.c only ever calls
-# ng_* (net_gate.asm, WIN2 asm, fixed address via platform_defs.asm --
-# already linked into this build), nc_* (net_frame.c, this same build) and
-# game_protocol.c (this same build, since step 5) -- nothing WIN1-only, so
-# it moves here cleanly the same way game_protocol.c did. restore.c/
+# RESTORE chunking) moved src/sprinter/transport/unet_link.c here, since it
+# only called ng_*/nc_*/game_protocol.c, nothing WIN1-only. S8 step 8a moved
+# it BACK to SPRINTER_RESIDENT_C_SRC below: mqtt_min.c (1697 bytes, see that
+# paragraph below) fits only in WIN1's much larger budget, and this blob
+# builds BEFORE resident_c.bin, so blob code cannot call a WIN1 function by
+# its (not yet known) fixed address -- unet_link.c calling into mqtt_min.c
+# for the MQTT half of link.h forces the caller to live wherever the callee
+# does. Moving unet_link.c costs nothing at the call sites that reach it:
+# tools/gen_sprinter_cold_defs.py's COLD_RESIDENT_SYMBOLS and tools/
+# gen_sprinter_overlay_defs.py's OVERLAY_RESIDENT_SYMBOLS bridge the same 15
+# spectrum_net_* names into WIN1 now instead of tools/gen_sprinter_
+# netframe_defs.py's NETFRAME_RESIDENT_SYMBOLS bridging them into this blob;
+# the reverse direction (unet_link.c calling this blob's nc_mqtt_* reassembler)
+# is what NETFRAME_RESIDENT_SYMBOLS bridges instead now. restore.c/
 # saveload.c stay resident, deliberately -- both are thin wrappers whose
 # entire body is a call to spectrum_overlay_exec_cached
 # (overlay_loader_sprinter.asm), which is linked INTO resident_c.bin and
@@ -970,38 +979,36 @@ SPRINTER_NET_CORE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/net_core_crt0.asm
 # blob's own ~4 KiB ceiling (the WIN2 gap between platform_primitives.asm
 # and the fixed OVL_SLOT_ADDR is hard-bounded regardless of how far
 # NET_FRAME_C.addr is pushed back) -- reverted; those three stay resident.
-# mqtt_session_protocol.c (177 bytes, its NETCHESSZX_DIRECT_ONLY-guarded
-# parse_host/join/side functions compiled out -- only
-# netchess_mqtt_session_parse_u16_token is live today, main.c's own
-# net_parse_u16). Bridged the same way; tools/gen_sprinter_overlay_defs.py
-# needs NO change despite CONTROL overlay also calling this symbol -- that
-# tool reads resident_c.map, and the defc netframe_defs.asm places there
-# (PUBLIC _netchess_mqtt_session_parse_u16_token pointing into this WIN2
-# blob) already resolves transitively for it, exactly as it already does
-# for netchess_after_prefix/NETCHESS_PROTO_* since step 5's move.
+# mqtt_session_protocol.c (177 bytes when only netchess_mqtt_session_
+# parse_u16_token was live, under -DNETCHESSZX_DIRECT_ONLY -- S8 step 8c
+# drops that flag for this build, so its parse_host/join/side functions
+# compile in too now, growing this file's contribution by roughly the
+# ~250 bytes accounted for in that step's own budget note). Bridged the
+# same way; tools/gen_sprinter_overlay_defs.py needs NO change despite
+# CONTROL overlay also calling netchess_mqtt_session_parse_u16_token --
+# that tool reads resident_c.map, and the defc netframe_defs.asm places
+# there (PUBLIC _netchess_mqtt_session_parse_u16_token pointing into this
+# WIN2 blob) already resolves transitively for it, exactly as it already
+# does for netchess_after_prefix/NETCHESS_PROTO_* since step 5's move.
 # mqtt_min.c (the MQTT packet codec ZX/Next already link unmodified,
-# src/spectrum/transport/net.c's own consumer) is DELIBERATELY NOT here
-# yet, despite the S8 plan naming this step as where it joins this blob.
-# Measured cost under this build's compiler (z88dk +pps/sccz80, not ZX's
-# SDCC/IY -- the two are not comparable): 1697 bytes whole-file-linked,
-# against this blob's ~4.5 KiB ceiling with only ~700 bytes free after
-# the nc_mqtt_* reassembler below already used its share. Nothing calls
-# mqtt_min.c yet either way (net_frame.c's nc_mqtt_* is a reassembler
-# only; a real caller needs step 8's unet_link.c MQTT half of link.h), so
-# paying that cost now would buy nothing this step actually needs and
-# would force restarting the OVL_SLOT-shrink byte hunt mid-step for a
-# dead-weight link. Deferred to step 8, whose own fresh budget accounting
-# (after its other additions are known) is the right place to find that
-# relief -- tests/sprinter/host/test_net_frame.c still links mqtt_min.c
-# on the host build below (zero byte cost there) for a real round-trip
-# proof of the reassembler feeding this exact codec, so step 7's own test
-# coverage is not narrowed by the deferral, only this target link is.
+# src/spectrum/transport/net.c's own consumer) is NOT here: measured cost
+# under this build's compiler (z88dk +pps/sccz80, not ZX's SDCC/IY -- the
+# two are not comparable) is 1697 bytes whole-file-linked, against this
+# blob's ~4.5 KiB ceiling with only ~700 bytes free after the nc_mqtt_*
+# reassembler below already used its share -- it would not fit here even
+# alone. S8 step 8a links it into SPRINTER_RESIDENT_C_SRC below instead,
+# alongside unet_link.c (see that move's own comment above): WIN1's budget
+# is the only one of the three pools large enough, and unet_link.c's new
+# MQTT half of link.h is the first real caller (net_frame.c's nc_mqtt_* was
+# always only a reassembler, never a codec). tests/sprinter/host/
+# test_net_frame.c already links mqtt_min.c on the host build below (zero
+# byte cost there) for a real round-trip proof of the reassembler feeding
+# this exact codec, unaffected by which target build links it.
 SPRINTER_NET_FRAME_C_SRC := src/sprinter/transport/net_frame.c \
                            src/common/protocol/game_protocol.c \
                            src/common/protocol/mqtt_session_protocol.c \
                            src/spectrum/transport/keepalive_protocol.c \
-                           src/common/protocol/direct_session_protocol.c \
-                           src/sprinter/transport/unet_link.c
+                           src/common/protocol/direct_session_protocol.c
 SPRINTER_NET_FRAME_C_BIN := $(SPRINTER_BUILD_DIR)/net_frame_c.bin
 SPRINTER_NET_FRAME_C_MAP := $(SPRINTER_BUILD_DIR)/net_frame_c.map
 
@@ -1031,8 +1038,13 @@ SPRINTER_COLD_PAGE_CRT0 := $(SPRINTER_ASM_DIR)/zcc/cold_page_crt0.asm
 SPRINTER_COLD_PAGE_SRC := $(SPRINTER_ASM_DIR)/zcc/render_core.asm \
                           $(SPRINTER_ASM_DIR)/zcc/render_core_cold.asm \
                           src/spectrum/ui/gui.c \
-                          src/sprinter/net_ui_sprinter.c \
                           src/sprinter/session_sprinter.c
+# src/sprinter/net_ui_sprinter.c moved OFF this page in S8 step 8b, onto its
+# own WIN3 page as the NET overlay (SPRINTER_OVL_NET_BIN below) -- the cold
+# page had only 43 bytes free (measured 2026-08-14 recon) once step 8a's
+# unet_link.c/mqtt_min.c moves were accounted for, nowhere near this file's
+# 1431 bytes. See that overlay's own Makefile rule and net_ui_sprinter.c's
+# own header for the full rationale.
 SPRINTER_COLD_PAGE_ORG := 0xC000
 SPRINTER_COLD_IMAGE_BIN := $(SPRINTER_BUILD_DIR)/cold_page_image.bin
 SPRINTER_COLD_IMAGE_MAP := $(SPRINTER_BUILD_DIR)/cold_page_image.map
@@ -1063,6 +1075,7 @@ SPRINTER_OVL_BOARD_BIN := $(SPRINTER_BUILD_DIR)/overlay_board_sprinter.bin
 SPRINTER_OVL_SAVELOAD_BIN := $(SPRINTER_BUILD_DIR)/overlay_saveload_sprinter.bin
 SPRINTER_OVL_RESTORE_BIN := $(SPRINTER_BUILD_DIR)/overlay_restore_sprinter.bin
 SPRINTER_OVL_FILEUI_BIN := $(SPRINTER_BUILD_DIR)/overlay_fileui_sprinter.bin
+SPRINTER_OVL_NET_BIN := $(SPRINTER_BUILD_DIR)/overlay_net_sprinter.bin
 
 SPRINTER_PALETTE_JSON := assets/sprinter/palette.json
 SPRINTER_PALETTE_INC := $(SPRINTER_GENERATED_DIR)/palette_base.inc
@@ -1357,7 +1370,7 @@ SPRINTER_NET_FRAME_C_DEPS := $(SPRINTER_NET_FRAME_C_SRC) $(SPRINTER_NET_CORE_CRT
 
 $(SPRINTER_NET_FRAME_C_BIN): $(SPRINTER_NET_FRAME_C_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
-		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM -DNETCHESSZX_DIRECT_ONLY \
+		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM \
 		-pragma-define:CRT_ORG_CODE=$$($(PYTHON) tools/gen_sprinter_layout.py \
 			--layout $(SPRINTER_LAYOUT_JSON) --print-symbol NET_FRAME_C_ADDR) \
 		-crt0=$(patsubst %.asm,%,$(SPRINTER_NET_CORE_CRT0)) -m \
@@ -1423,7 +1436,7 @@ $(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_COLD_PAGE_CRT0)
                             | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
 		-Ca-I$(SPRINTER_GENERATED_DIR) \
-		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM -DNETCHESSZX_DIRECT_ONLY \
+		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM \
 		-pragma-define:CRT_ORG_CODE=$(SPRINTER_COLD_PAGE_ORG) \
 		-crt0=$(patsubst %.asm,%,$(SPRINTER_COLD_PAGE_CRT0)) -m \
 		-o $(SPRINTER_COLD_IMAGE_BIN) \
@@ -1470,12 +1483,18 @@ SPRINTER_RESIDENT_C_SRC := src/sprinter/main.c \
                            src/spectrum/session/direct.c \
                            src/spectrum/session/outgoing.c \
                            src/spectrum/session/poll.c \
-                           src/spectrum/platform/text.c
-# game_protocol.c/keepalive_protocol.c/direct_session_protocol.c/
-# unet_link.c moved to SPRINTER_NET_FRAME_C_SRC above (S8 steps 4/5/6
-# relief) -- every resident caller (main.c, game_protocol_extra.c,
-# session/{event,poll,ping,direct,outgoing}.c) reaches their entry points
-# through the usual netframe_defs.asm bridge, not a direct C link.
+                           src/spectrum/platform/text.c \
+                           src/spectrum/transport/mqtt_min.c \
+                           src/sprinter/transport/unet_link.c \
+                           src/spectrum/session/mqtt.c \
+                           src/spectrum/transport/mqtt_session_wire.c
+# game_protocol.c/keepalive_protocol.c/direct_session_protocol.c moved to
+# SPRINTER_NET_FRAME_C_SRC above (S8 steps 4/5 relief) -- every resident
+# caller (main.c, game_protocol_extra.c, session/{event,poll,ping,direct,
+# outgoing}.c) reaches their entry points through the usual netframe_defs.asm
+# bridge, not a direct C link. unet_link.c/mqtt_min.c came back here in S8
+# step 8a (see SPRINTER_NET_FRAME_C_SRC's own comment) -- unet_link.c reaches
+# the WIN2 blob's nc_* through the same bridge in the other direction now.
 # session/{ping,direct,outgoing}.c/platform/text.c/config/session.c stay
 # resident -- see SPRINTER_NET_FRAME_C_SRC's own comment on why moving
 # them too overran that blob's ~4 KiB ceiling.
@@ -1497,7 +1516,7 @@ $(SPRINTER_RESIDENT_C_BIN): $(SPRINTER_RESIDENT_C_SRC) $(SPRINTER_RESIDENT_CRT0)
                             $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_NETFRAME_DEFS_ASM) \
                             $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps -clib=default -SO3 -Isrc -I$(SPRINTER_ASM_DIR)/zcc -I$(SPRINTER_GENERATED_DIR) \
-		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM -DNETCHESSZX_DIRECT_ONLY \
+		-DNETCHESSZX_SPRINTER -DNETCHESSZX_FIXED_LOW_RAM \
 		-pragma-define:CRT_ORG_CODE=$$($(PYTHON) tools/gen_sprinter_layout.py \
 			--layout $(SPRINTER_LAYOUT_JSON) --print-symbol C_IMAGE_ENTRY_ADDR) \
 		-crt0=$(patsubst %.asm,%,$(SPRINTER_RESIDENT_CRT0)) -m \
@@ -1707,7 +1726,47 @@ $(SPRINTER_OVL_FILEUI_BIN): $(SPRINTER_OVL_FILEUI_ENTRY_ASM) src/spectrum/overla
 
 sprinter-overlay-fileui-check: $(SPRINTER_OVL_FILEUI_BIN)
 
-# WIN3 overlay page (tools/make_sprinter_overlay_page.py, plan D7-bis, S6
+# NET (SPECTRUM_OVL_NET_CONNECT=3u, S8 steps 8b/8d): five entries -- the
+# MQTT connect lifecycle (src/sprinter/net_mqtt_ui_sprinter.c) plus the
+# DIRECT-join/config screen moved here from the WIN3 cold page
+# (src/sprinter/net_ui_sprinter.c). Lives on WIN3 overlay PAGE 2 (--page 2
+# below), not page 1 -- see tools/make_sprinter_overlay_page.py's own
+# header for why. Needs overlay_defs_sprinter.asm (net_ui_sprinter.c
+# reaches spectrum_render_fileui_frame/spectrum_render_ikkle_at through it,
+# the same bridge FILEUI uses; net_mqtt_ui_sprinter.c's CONNACK/SUBACK wait
+# reaches the WIN2 blob's nc_mqtt_* reassembler through this SAME file --
+# resident_c.bin already links netframe_defs.asm directly, so its PUBLIC
+# nc_mqtt_* defc's appear in resident_c.map too, exactly like spectrum_net_
+# background_drain's own entry above; linking netframe_defs.asm into THIS
+# overlay as well, instead, would duplicate-define every game_protocol.c
+# string constant both files bridge) and platform_defs.asm (ng_*/
+# frame_wait/key_poll, net_gate.asm/im2_s1.asm), plus the clib/crt0
+# archives (CONTROL's own comment on SPRINTER_OVL_LIBDIRS explains why).
+SPRINTER_OVL_NET_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.asm
+
+$(SPRINTER_OVL_NET_BIN): $(SPRINTER_OVL_NET_ENTRY_ASM) src/sprinter/net_ui_sprinter.c \
+                         src/sprinter/net_mqtt_ui_sprinter.c \
+                         $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
+                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_ui_sprinter.c \
+		-o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_mqtt_ui_sprinter.c \
+		-o $(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o
+	$(Z80ASM) $(SPRINTER_OVL_NET_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org NET) \
+		-o=$(SPRINTER_OVL_NET_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
+		$(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o \
+		$(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+sprinter-overlay-net-check: $(SPRINTER_OVL_NET_BIN)
+
+# WIN3 overlay page 1 (tools/make_sprinter_overlay_page.py, plan D7-bis, S6
 # plan step 2): RULES/BOARD/SAVELOAD/RESTORE/FILEUI's own bytes, each linked
 # at its own ORG inside #C000-#FFFF and packed per that tool's declarative
 # LAYOUT table (variable-size slots, not a uniform 4 KiB one -- see that
@@ -1725,6 +1784,21 @@ $(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RU
 		--fileui-bin $(SPRINTER_OVL_FILEUI_BIN) \
 		--output $(SPRINTER_OVL_WIN3_PAGE)
 
+# WIN3 overlay page 2 (S8 step 8b): NET only, plus a hard reserve twice its
+# own size -- see tools/make_sprinter_overlay_page.py's LAYOUT2 for why this
+# page exists at all instead of squeezing NET into page 1's own slack.
+# Published to HDR as the SIXTH asset page (appended last -- see buffers.asm's
+# own bench_init comment for why this order matters) and read into
+# ovl_win3_page2; overlay_atlas_table_sprinter.asm's ovl_atlas_page_table is
+# what makes id 3 alone read this cell instead of ovl_win3_page.
+SPRINTER_OVL_WIN3_PAGE2 := $(SPRINTER_BUILD_DIR)/ovl_win3_page2.bin
+
+$(SPRINTER_OVL_WIN3_PAGE2): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_NET_BIN) \
+                       | $(SPRINTER_BUILD_DIR)
+	$(PYTHON) tools/make_sprinter_overlay_page.py --page 2 \
+		--net-bin $(SPRINTER_OVL_NET_BIN) \
+		--output $(SPRINTER_OVL_WIN3_PAGE2)
+
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) \
                           $(SPRINTER_PLATFORM_PRIMITIVES_BIN) $(SPRINTER_NET_FRAME_C_BIN) \
                           tools/make_sprinter_resident.py \
@@ -1736,13 +1810,14 @@ $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) 
 
 $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
                  $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) $(SPRINTER_OVL_WIN3_PAGE) \
-                 $(SPRINTER_COLD_WIN3_PAGE) \
+                 $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_WIN3_PAGE2) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
 		--resident $(SPRINTER_RESIDENT_BIN) --assets $(SPRINTER_ASSETS_PAGE) \
 		--assets $(SPRINTER_PIECE_PAGE1) --assets $(SPRINTER_PIECE_PAGE2) \
 		--assets $(SPRINTER_OVL_WIN3_PAGE) --assets $(SPRINTER_COLD_WIN3_PAGE) \
+		--assets $(SPRINTER_OVL_WIN3_PAGE2) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -1828,6 +1903,7 @@ sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-overlay-control-check sprinter-overlay-rules-check \
                 sprinter-overlay-board-check sprinter-overlay-saveload-check \
                 sprinter-overlay-restore-check sprinter-overlay-fileui-check \
+                sprinter-overlay-net-check \
                 sprinter-z80-test sprinter-resident-test sprinter-host-test \
                 sprinter-size-report sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \

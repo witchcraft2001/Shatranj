@@ -91,6 +91,10 @@ COLD_RESIDENT_SYMBOLS = [
     "netchesszx_local_color",                  # src/spectrum/config/session.c
     "netchesszx_host_color_ready",
     "netchesszx_session_configure",
+    # S8 step 8e: menu_network()'s own post-connect follow-up branches on
+    # the transport the NET screen picked (netchesszx_transport_is_mqtt(),
+    # session.h's macro over this cell).
+    "netchesszx_transport",
     "netchesszx_session_poll",                 # src/spectrum/session/poll.c
     "netchesszx_session_ping_reset",           # src/spectrum/session/ping.c
     "netchesszx_session_peer_reset",           # src/spectrum/session/direct.c
@@ -146,6 +150,23 @@ COLD_RESIDENT_SYMBOLS = [
     "net_repaint_move",
     "net_apply_pending_local_move",
     "net_send_takeback_wire",
+    # --- S8 step 8a (MQTT relief pass): src/sprinter/transport/unet_link.c
+    # moved to WIN1 resident (see Makefile's SPRINTER_NET_FRAME_C_SRC
+    # comment); session_sprinter.c (this cold page) reaches its link.h
+    # surface -- spectrum_link_* macros, spectrum/transport/link.h -- through
+    # this same defc bridge now, exactly as it already does for board.c/
+    # fileui.c/config-session above. Only the subset session_sprinter.c
+    # actually calls: send_text/direct_peer_mark_valid/payload_scratch/
+    # start_uart, plus the new join_ui wrapper (below) that replaces the
+    # cold-page-native spectrum_net_join_ui this same file used to call
+    # same-page before net_ui_sprinter.c moved into the NET overlay (S8
+    # step 8b) -- see gen_sprinter_cold_thunks.py's COLD_THUNK_SYMBOLS,
+    # which no longer lists this name for the opposite reason.
+    "spectrum_net_send_text",
+    "spectrum_net_direct_peer_mark_valid",
+    "spectrum_net_payload_scratch",
+    "spectrum_net_start_uart",
+    "spectrum_net_join_ui",
 ]
 
 GENERATED_BANNER = (

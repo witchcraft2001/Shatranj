@@ -89,9 +89,63 @@ def main() -> None:
     if "mqttClientIdFor(pcIsHost_, mqttClientNonce_)" not in pc:
         fail("PC CONNECT does not use the instance nonce")
 
+    check_sprinter(root, room_max)
+
     print(
         f"[OK] MQTT ClientId contract: PC 19 bytes; Spectrum <= {fixed + room_max}"
     )
+
+
+def check_sprinter(root: Path, room_max: int) -> None:
+    """Sprinter (S8 step 8d) builds the same CONNECT packet in C instead of
+    Z80 (asm/overlay/mqtt_connect/entry_mqtt_connect.asm's own reason for
+    hand-written asm -- fitting ZX's 2 KiB copy slot -- does not apply to
+    Sprinter's own WIN3 overlay page). Same wire contract, different
+    source shape: this is an ADDITIVE check alongside the ZX/asm one above,
+    not a replacement -- no existing assertion above becomes conditional."""
+    src = (
+        root / "src/sprinter/net_mqtt_ui_sprinter.c"
+    ).read_text(encoding="utf-8")
+
+    fixed_match = re.search(r"room_len \+ (\d+)u\)\)?;\s*/\* ClientId len lo", src)
+    if not fixed_match:
+        fail("Sprinter ClientId length formula not found")
+    fixed = int(fixed_match.group(1))
+    if fixed + room_max > 23:
+        fail("Sprinter ClientId exceeds the portable 23-byte limit")
+
+    remaining_match = re.search(
+        r"room_len \* 2u \+ (\d+)u\); /\* remaining length", src
+    )
+    packet_match = re.search(r"return \(uint8_t\)\(room_len \* 2u \+ (\d+)u\);", src)
+    if not remaining_match or not packet_match:
+        fail("Sprinter CONNECT length formulas not found")
+    remaining = int(remaining_match.group(1))
+    packet = int(packet_match.group(1))
+    if remaining != fixed + 40 or packet != remaining + 2:
+        fail("Sprinter CONNECT lengths do not match the ClientId layout")
+
+    if "0x10u;" not in src or "0x06u;" not in src:
+        fail("Sprinter CONNECT packet type/flags byte missing")
+    if "'M'; *p++ = 'Q'; *p++ = 'T'; *p++ = 'T';" not in src:
+        fail("Sprinter CONNECT protocol name missing")
+
+    try:
+        client_body = src.split("*p++ = 'Z'; *p++ = 'X';", 1)[1].split(
+            "*p++ = 0u;", 1
+        )[0]
+    except IndexError:
+        fail("missing Sprinter ClientId builder bounds")
+    if "netchesszx_session_role * 2u + 'H'" not in client_body:
+        fail("Sprinter ClientId role-char formula missing")
+    if (
+        "netchesszx_local_color" in client_body
+        or "mqtt_ovl_next_id" in client_body
+        or "'-'" in client_body
+    ):
+        fail("Sprinter ClientId depends on color, packet-id, or punctuation")
+    if client_body.count("mqtt_ovl_hex_digit(") != 4:
+        fail("Sprinter nonce must emit four hexadecimal digits")
 
 
 if __name__ == "__main__":

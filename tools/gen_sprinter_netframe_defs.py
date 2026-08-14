@@ -77,12 +77,20 @@ NETFRAME_RESIDENT_SYMBOLS = [
     "netchess_proto_parse_move",
     "netchess_proto_parse_chat",
     # mqtt_session_protocol.c (moved with game_protocol.c in step 6's
-    # budget crisis, same reasoning) -- only this one entry point is live
+    # budget crisis, same reasoning) -- only this one entry point was live
     # under NETCHESSZX_DIRECT_ONLY; main.c's own net_parse_u16 uses it
     # directly, and tools/gen_sprinter_overlay_defs.py's existing bridge
     # for it (CONTROL overlay) needs no change -- see Makefile's own
     # comment on SPRINTER_NET_FRAME_C_SRC for why.
     "netchess_mqtt_session_parse_u16_token",
+    # S8 step 8c (DIRECT_ONLY dropped for this build): the other three
+    # mqtt_session_protocol.c entry points, now real here instead of
+    # compiled out. src/spectrum/session/mqtt.c (WIN1 resident) is their
+    # only caller -- directly (parse_side) and through mqtt.h's parse_host_
+    # payload/parse_join_payload macros (parse_host/parse_join).
+    "netchess_mqtt_session_parse_side",
+    "netchess_mqtt_session_parse_host",
+    "netchess_mqtt_session_parse_join",
     "NETCHESS_PROTO_ACK_PREFIX",
     "NETCHESS_PROTO_NACK_PREFIX",
     "NETCHESS_PROTO_MOVE_PREFIX",
@@ -96,34 +104,23 @@ NETFRAME_RESIDENT_SYMBOLS = [
     "NETCHESS_PROTO_BYE",
     "NETCHESS_PROTO_TAKEBACK_PREFIX",
     "NETCHESS_PROTO_ACK_PING",
-    # S8 step 6 (WIN1 budget relief, round 3): src/sprinter/transport/
-    # unet_link.c moved here outright -- it only ever called ng_*
-    # (net_gate.asm, WIN2 asm, already linked via platform_defs.asm), nc_*
-    # (this same build) and game_protocol.c (this same build since step
-    # 5), nothing WIN1-only. session/{ping,direct,outgoing}.c were ALSO
-    # tried (their only WIN1-only dependency was unet_link.c's
-    # spectrum_link_* surface, a #define alias for these spectrum_net_*
-    # names, link.h) but reverted -- see SPRINTER_NET_FRAME_C_SRC's own
-    # Makefile comment, this blob's ~4 KiB ceiling could not hold them
-    # plus what they pulled in behind them (platform/text.c, all of
-    # config/session.c). Every resident caller of link.h's contract
-    # (src/sprinter/main.c, session/{event,poll,ping,direct,outgoing}.c,
-    # all resident) reaches these 15 through this bridge.
-    "spectrum_net_start_uart",
-    "spectrum_net_listen",
-    "spectrum_net_connect_host",
-    "spectrum_net_wait_pc_connect",
-    "spectrum_net_direct_peer_mark_valid",
-    "spectrum_net_read_payload",
-    "spectrum_net_send_text",
-    "spectrum_net_send_ping",
-    "spectrum_net_payload_scratch",
-    "spectrum_net_link_activity",
-    "spectrum_net_payload_flags",
-    "spectrum_net_background_drain",
-    "spectrum_net_preflight_run",
-    "spectrum_net_last_ip",
-    "spectrum_net_sync_time",
+    # S8 step 6 moved src/sprinter/transport/unet_link.c here outright (it
+    # only called ng_*/nc_*/game_protocol.c, nothing WIN1-only); S8 step 8a
+    # moved it BACK to WIN1 (mqtt_min.c, its new MQTT-half dependency, fits
+    # only there -- see Makefile's SPRINTER_NET_FRAME_C_SRC comment). Its 15
+    # spectrum_net_* entry points are bridged the OTHER way now: tools/
+    # gen_sprinter_cold_defs.py's COLD_RESIDENT_SYMBOLS (session_sprinter.c,
+    # on the cold page, calls them) and tools/gen_sprinter_overlay_defs.py's
+    # OVERLAY_RESIDENT_SYMBOLS (the NET overlay, S8 step 8b, calls them).
+    # What THIS list bridges instead, since step 8a, is the reverse
+    # direction unet_link.c always needed: its own calls into this blob's
+    # nc_mqtt_* reassembler (net_frame.c, S7 step 7) from WIN1.
+    "nc_mqtt_reset",
+    "nc_mqtt_feed",
+    "nc_mqtt_take",
+    "nc_mqtt_packet",
+    "nc_mqtt_consume",
+    "nc_mqtt_pump",
 ]
 
 GENERATED_BANNER = (
@@ -284,55 +281,40 @@ def _clean_fixture() -> str:
         "_NETCHESS_PROTO_ACK_PING         = $A150 ; addr, public, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::NETCHESS_PROTO_ACK_PING::0::0:6\n"
-        "_spectrum_net_start_uart               = $A160 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_start_uart::0::0:6\n"
-        "_spectrum_net_listen                   = $A170 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_listen::0::0:6\n"
-        "_spectrum_net_connect_host             = $A180 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_connect_host::0::0:6\n"
-        "_spectrum_net_wait_pc_connect          = $A190 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_wait_pc_connect::0::0:6\n"
-        "_spectrum_net_direct_peer_mark_valid   = $A1A0 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_direct_peer_mark_valid::0::0:6\n"
-        "_spectrum_net_read_payload             = $A1B0 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_read_payload::0::0:6\n"
-        "_spectrum_net_send_text                = $A1C0 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_send_text::0::0:6\n"
-        "_spectrum_net_send_ping                = $A1D0 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_send_ping::0::0:6\n"
-        "_spectrum_net_payload_scratch          = $A1E0 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_payload_scratch::0::0:6\n"
-        "_spectrum_net_link_activity            = $A1F0 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_link_activity::0::0:6\n"
-        "_spectrum_net_payload_flags            = $A200 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_payload_flags::0::0:6\n"
-        "_spectrum_net_background_drain         = $A210 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_background_drain::0::0:6\n"
-        "_spectrum_net_preflight_run            = $A220 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_preflight_run::0::0:6\n"
-        "_spectrum_net_last_ip                  = $A230 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_last_ip::0::0:6\n"
-        "_spectrum_net_sync_time                = $A240 ; addr, public, , "
-        "src_sprinter_transport_unet_link_c, code_compiler, "
-        "src/sprinter/transport/unet_link.c::spectrum_net_sync_time::0::0:6\n"
+        "_nc_mqtt_reset                         = $A160 ; addr, public, , "
+        "src_sprinter_transport_net_frame_c, code_compiler, "
+        "src/sprinter/transport/net_frame.c::nc_mqtt_reset::0::0:6\n"
+        "_nc_mqtt_feed                          = $A170 ; addr, public, , "
+        "src_sprinter_transport_net_frame_c, code_compiler, "
+        "src/sprinter/transport/net_frame.c::nc_mqtt_feed::0::0:6\n"
+        "_nc_mqtt_take                          = $A180 ; addr, public, , "
+        "src_sprinter_transport_net_frame_c, code_compiler, "
+        "src/sprinter/transport/net_frame.c::nc_mqtt_take::0::0:6\n"
+        "_nc_mqtt_packet                        = $A190 ; addr, public, , "
+        "src_sprinter_transport_net_frame_c, code_compiler, "
+        "src/sprinter/transport/net_frame.c::nc_mqtt_packet::0::0:6\n"
+        "_nc_mqtt_consume                       = $A1A0 ; addr, public, , "
+        "src_sprinter_transport_net_frame_c, code_compiler, "
+        "src/sprinter/transport/net_frame.c::nc_mqtt_consume::0::0:6\n"
+        "_nc_mqtt_pump                          = $A1B0 ; addr, public, , "
+        "src_sprinter_transport_net_frame_c, code_compiler, "
+        "src/sprinter/transport/net_frame.c::nc_mqtt_pump::0::0:6\n"
         "_netchess_mqtt_session_parse_u16_token = $A250 ; addr, public, , "
         "src_common_protocol_mqtt_session_protocol_c, code_compiler, "
         "src/common/protocol/mqtt_session_protocol.c::"
         "netchess_mqtt_session_parse_u16_token::0::0:6\n"
+        "_netchess_mqtt_session_parse_side      = $A260 ; addr, public, , "
+        "src_common_protocol_mqtt_session_protocol_c, code_compiler, "
+        "src/common/protocol/mqtt_session_protocol.c::"
+        "netchess_mqtt_session_parse_side::0::0:6\n"
+        "_netchess_mqtt_session_parse_host      = $A270 ; addr, public, , "
+        "src_common_protocol_mqtt_session_protocol_c, code_compiler, "
+        "src/common/protocol/mqtt_session_protocol.c::"
+        "netchess_mqtt_session_parse_host::0::0:6\n"
+        "_netchess_mqtt_session_parse_join      = $A280 ; addr, public, , "
+        "src_common_protocol_mqtt_session_protocol_c, code_compiler, "
+        "src/common/protocol/mqtt_session_protocol.c::"
+        "netchess_mqtt_session_parse_join::0::0:6\n"
     )
 
 

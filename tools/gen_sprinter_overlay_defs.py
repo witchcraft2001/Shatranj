@@ -78,6 +78,54 @@ OVERLAY_RESIDENT_SYMBOLS = [
     # (was dss_fileio.asm's S6-era no-op; now unet_link.c's real
     # implementation, WIN1 -- nc_pump underneath).
     "spectrum_net_background_drain",
+    # S8 step 8d: the NET overlay's MQTT connect flow (src/sprinter/
+    # net_mqtt_ui_sprinter.c) builds its own CONNECT/SUBSCRIBE packets and
+    # topic strings, needing the same portable codec/formatting primitives
+    # unet_link.c (WIN1) already uses for PUBLISH -- src/spectrum/platform/
+    # text.c's builders and src/spectrum/transport/mqtt_min.c's packet
+    # encoders/type reader.
+    "spectrum_append_text",
+    "spectrum_append_u16",
+    "spectrum_mqtt_subscribe",
+    "spectrum_mqtt_type",
+    # config/session.c globals the connect flow reads directly (room code,
+    # broker host/port, local color/role, host_color_ready, the MQTT
+    # session-id nonce) -- same cross-boundary shape board.c's side_to_move
+    # etc. above already use.
+    "netchesszx_mqtt_code",
+    "netchesszx_mqtt_host",
+    "netchesszx_mqtt_port",
+    "netchesszx_local_color",
+    "netchesszx_session_role",
+    "netchesszx_host_color_ready",
+    "netchesszx_mqtt_session_id",
+    # S8 step 8e: the NET screen's own ENTER handler configures the session
+    # (role/transport/host_color the user picked) before dispatching either
+    # connect flow -- same call session_sprinter.c's DIRECT path already
+    # makes, now also reachable from this overlay.
+    "netchesszx_session_configure",
+    # net_frame.c's MQTT stream reassembler (WIN2 blob) -- reaches this
+    # overlay the SAME way spectrum_net_background_drain above already
+    # does: resident_c.bin links netframe_defs.asm directly, so these
+    # PUBLIC nc_mqtt_* defc's (pointing into the WIN2 blob) appear in
+    # resident_c.map too, transitively. Do NOT also link netframe_defs.asm
+    # into this overlay's own build -- see the Makefile's own comment on
+    # SPRINTER_OVL_NET_BIN for why that duplicate-defines every
+    # game_protocol.c string constant both files bridge.
+    "nc_mqtt_pump",
+    "nc_mqtt_take",
+    "nc_mqtt_packet",
+    "nc_mqtt_consume",
+    # mqtt_session_wire.c's topic-suffix builders and unet_link.c's own
+    # publish_presence/publish_setup (both WIN1 resident since S8 step 8c)
+    # -- the NET overlay's connect flow needs all six for subscribe/publish
+    # topics and to arm presence once activated.
+    "spectrum_net_mqtt_in_suffix",
+    "spectrum_net_mqtt_in_ack_suffix",
+    "spectrum_net_mqtt_peer_presence_suffix",
+    "spectrum_net_mqtt_presence_suffix",
+    "spectrum_net_mqtt_publish_presence",
+    "spectrum_net_mqtt_publish_setup",
 ]
 
 GENERATED_BANNER = (
@@ -200,6 +248,72 @@ def _clean_fixture() -> str:
         "_spectrum_net_background_drain  = $4B50 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_background_drain::0::0:6\n"
+        "_spectrum_append_text           = $4B80 ; addr, public, , "
+        "src_spectrum_platform_text_c, code_compiler, "
+        "src/spectrum/platform/text.c::spectrum_append_text::0::0:6\n"
+        "_spectrum_append_u16            = $4B90 ; addr, public, , "
+        "src_spectrum_platform_text_c, code_compiler, "
+        "src/spectrum/platform/text.c::spectrum_append_u16::0::0:6\n"
+        "_spectrum_mqtt_subscribe        = $4BA0 ; addr, public, , "
+        "src_spectrum_transport_mqtt_min_c, code_compiler, "
+        "src/spectrum/transport/mqtt_min.c::spectrum_mqtt_subscribe::0::0:6\n"
+        "_spectrum_mqtt_type             = $4BB0 ; addr, public, , "
+        "src_spectrum_transport_mqtt_min_c, code_compiler, "
+        "src/spectrum/transport/mqtt_min.c::spectrum_mqtt_type::0::0:6\n"
+        "_netchesszx_mqtt_code           = $4BC0 ; addr, public, , "
+        "src_spectrum_config_session_c, bss_compiler, "
+        "src/spectrum/config/session.c:66\n"
+        "_netchesszx_mqtt_host           = $4BD0 ; addr, public, , "
+        "src_spectrum_config_session_c, data_compiler, "
+        "src/spectrum/config/session.c:64\n"
+        "_netchesszx_mqtt_port           = $4BE0 ; addr, public, , "
+        "src_spectrum_config_session_c, data_compiler, "
+        "src/spectrum/config/session.c:65\n"
+        "_netchesszx_local_color         = $4BE2 ; addr, public, , "
+        "src_spectrum_config_session_c, bss_compiler, "
+        "src/spectrum/config/session.c:8\n"
+        "_netchesszx_session_role        = $4BE3 ; addr, public, , "
+        "src_spectrum_config_session_c, bss_compiler, "
+        "src/spectrum/config/session.c:6\n"
+        "_netchesszx_host_color_ready    = $4BE4 ; addr, public, , "
+        "src_spectrum_config_session_c, bss_compiler, "
+        "src/spectrum/config/session.c:10\n"
+        "_netchesszx_mqtt_session_id     = $4BE5 ; addr, public, , "
+        "src_spectrum_config_session_c, data_compiler, "
+        "src/spectrum/config/session.c:17\n"
+        "_netchesszx_session_configure   = $4BE6 ; addr, public, , "
+        "src_spectrum_config_session_c, code_compiler, "
+        "src/spectrum/config/session.c::netchesszx_session_configure::0::0:6\n"
+        "_nc_mqtt_pump                   = $9FA1 ; addr, public, , "
+        "asm_sprinter_zcc_netframe_defs_asm, code_user, "
+        "build/sprinter/generated/netframe_defs.asm:1\n"
+        "_nc_mqtt_take                   = $9FB0 ; addr, public, , "
+        "asm_sprinter_zcc_netframe_defs_asm, code_user, "
+        "build/sprinter/generated/netframe_defs.asm:1\n"
+        "_nc_mqtt_packet                 = $9FC0 ; addr, public, , "
+        "asm_sprinter_zcc_netframe_defs_asm, code_user, "
+        "build/sprinter/generated/netframe_defs.asm:1\n"
+        "_nc_mqtt_consume                = $9FD0 ; addr, public, , "
+        "asm_sprinter_zcc_netframe_defs_asm, code_user, "
+        "build/sprinter/generated/netframe_defs.asm:1\n"
+        "_spectrum_net_mqtt_in_suffix    = $4BF0 ; addr, public, , "
+        "src_spectrum_transport_mqtt_session_wire_c, code_compiler, "
+        "src/spectrum/transport/mqtt_session_wire.c::spectrum_net_mqtt_in_suffix::0::0:6\n"
+        "_spectrum_net_mqtt_in_ack_suffix = $4C00 ; addr, public, , "
+        "src_spectrum_transport_mqtt_session_wire_c, code_compiler, "
+        "src/spectrum/transport/mqtt_session_wire.c::spectrum_net_mqtt_in_ack_suffix::0::0:6\n"
+        "_spectrum_net_mqtt_peer_presence_suffix = $4C10 ; addr, public, , "
+        "src_spectrum_transport_mqtt_session_wire_c, code_compiler, "
+        "src/spectrum/transport/mqtt_session_wire.c::spectrum_net_mqtt_peer_presence_suffix::0::0:6\n"
+        "_spectrum_net_mqtt_presence_suffix = $4C20 ; addr, public, , "
+        "src_spectrum_transport_mqtt_session_wire_c, code_compiler, "
+        "src/spectrum/transport/mqtt_session_wire.c::spectrum_net_mqtt_presence_suffix::0::0:6\n"
+        "_spectrum_net_mqtt_publish_presence = $4C30 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_mqtt_publish_presence::0::0:6\n"
+        "_spectrum_net_mqtt_publish_setup = $4C40 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_mqtt_publish_setup::0::0:6\n"
         "i_15                            = $4259 ; addr, local, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"

@@ -164,10 +164,12 @@ COLD_THUNK_SYMBOLS = [
     "spectrum_gui_clear_cursor_coords",
     "spectrum_gui_game_timer_start",
     "spectrum_gui_move_timer_reset",
-    # --- src/sprinter/net_ui_sprinter.c (S7 step 5) ------------------------
-    # The whole modal DIRECT-join screen behind one entry: main.c's NETWORK
-    # tab calls it and gets back "connected" or "not".
-    "spectrum_net_join_ui",
+    # src/sprinter/net_ui_sprinter.c (S7 step 5) moved off the cold page into
+    # the NET overlay in S8 step 8b -- spectrum_net_join_ui is no longer a
+    # cold-page-native symbol a WIN1 caller reaches through a thunk here; it
+    # is now a WIN1-native wrapper (src/sprinter/transport/unet_link.c) that
+    # dispatches the NET overlay directly, bridged the opposite way instead
+    # -- see gen_sprinter_cold_defs.py's COLD_RESIDENT_SYMBOLS.
     # --- src/sprinter/session_sprinter.c (S8 relief pass) ------------------
     # The DIRECT-session/board-interaction/menu-action driver, moved here
     # verbatim off WIN1 (that file's own header has the full rationale).

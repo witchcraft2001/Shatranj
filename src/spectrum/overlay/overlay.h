@@ -23,6 +23,11 @@
 #define SPECTRUM_OVL_MQTT_CONNECT_ACTIVATE 1u
 #define SPECTRUM_OVL_NET_PREFLIGHT 2u
 #define SPECTRUM_OVL_MQTT_CONNECT_PROBE_SEAT 3u
+/* Sprinter-only (S8 step 8b): the DIRECT-join/config screen sharing this
+   overlay id's own WIN3 page (src/sprinter/net_ui_sprinter.c). ZX/Next
+   never dispatch entry 4 for this id -- their own NET_CONNECT overlay has
+   no screen of its own, the SETUP overlay (id 8) owns that role there. */
+#define SPECTRUM_OVL_NET_CONNECT_SCREEN 4u
 #define SPECTRUM_OVL_MQTT_TX 4u
 #define SPECTRUM_OVL_MQTT_TX_SEND_TEXT 0u
 #define SPECTRUM_OVL_MQTT_TX_PUBLISH_SETUP 1u

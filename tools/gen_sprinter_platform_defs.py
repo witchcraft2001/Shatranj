@@ -60,6 +60,11 @@ PLATFORM_SYMBOLS = [
     # tools/gen_sprinter_cold_thunks.py generates into the WIN1 resident,
     # which maps it into WIN3 for the duration of one painter call.
     "cold_win3_page",
+    # S8 step 8b: the NET overlay's own second WIN3 page (sixth asset page,
+    # >=6 gate) -- overlay_loader_sprinter.asm's ovl_atlas_page_table reads
+    # this cell instead of ovl_win3_page for id 3 only; every other mode-1
+    # id is unaffected.
+    "ovl_win3_page2",
     "front_base",
     "back_base",
     # gfx_core.asm's tile_* parameter cells: gfx_draw_tile/gfx_blit_rows take
@@ -167,6 +172,10 @@ PLATFORM_SYMBOLS = [
     # the frame loop (S5 substep 3, input handling's first slice).
     "key_poll",
     "key_code",
+    # S8 step 8c: free-running frame counter (im2_frame_core's own comment
+    # has the full rationale) -- the MQTT ClientId/session-id nonce source,
+    # read from src/sprinter/transport/unet_link.c.
+    "frame_counter",
     # net_gate.asm -- the funnel into LIBMAN.l_call (ng_* wrappers take no
     # caller-supplied pointers; buffers are net_gate's own WIN2-resident
     # ones, per port.md's "R5" note).
@@ -216,6 +225,15 @@ PLATFORM_SYMBOLS = [
     # nc_mqtt_pump() to the MQTT stream accumulator's free room before each
     # poll -- see net_gate.asm's own comment on the cell.
     "ng_c_recv_max",
+    # S8 step 8c: MQTT connect (arbitrary broker, not NETHOST/NETPORT) and a
+    # generic env resolver -- see net_gate.asm's own comments on each.
+    "ng_c_connect_at",
+    "ng_c_connect_host",
+    "ng_c_connect_port",
+    "ng_c_env_get",
+    "ng_c_env_name",
+    "ng_c_env_dest",
+    "ng_c_env_found",
     # dss_fileio.asm -- esx-ABI-over-DSS file I/O gate (S6, port.md section
     # 3.10 item 4). Called from the SAVELOAD/RESTORE/FILEUI overlay C
     # sources (src/spectrum/overlay/{saveload,fileui}_ovl.c), which are
@@ -328,6 +346,7 @@ def _clean_fixture() -> str:
         "piece_page2: EQU 0x00008227\n"
         "ovl_win3_page: EQU 0x00008228\n"
         "cold_win3_page: EQU 0x00008229\n"
+        "ovl_win3_page2: EQU 0x0000822A\n"
         "tile_dest_base: EQU 0x00004920\n"
         "tile_x_byte: EQU 0x00004922\n"
         "tile_x_hi: EQU 0x00004923\n"
@@ -377,6 +396,7 @@ def _clean_fixture() -> str:
         "exit_stand: EQU 0x00008160\n"
         "key_poll: EQU 0x00008165\n"
         "key_code: EQU 0x00008170\n"
+        "frame_counter: EQU 0x00008172\n"
         "ng_up: EQU 0x0000899F\n"
         "ng_connect: EQU 0x000089A0\n"
         "ng_send: EQU 0x000089B0\n"
@@ -406,6 +426,13 @@ def _clean_fixture() -> str:
         "ng_v_call_flags: EQU 0x00008F9A\n"
         "ng_v_call_cf: EQU 0x00008F9C\n"
         "ng_c_recv_max: EQU 0x00008F9D\n"
+        "ng_c_connect_at: EQU 0x00008FA0\n"
+        "ng_c_connect_host: EQU 0x00008FA2\n"
+        "ng_c_connect_port: EQU 0x00008FA4\n"
+        "ng_c_env_get: EQU 0x00008FA6\n"
+        "ng_c_env_name: EQU 0x00008FA8\n"
+        "ng_c_env_dest: EQU 0x00008FAA\n"
+        "ng_c_env_found: EQU 0x00008FAC\n"
         "esx_handle: EQU 0x00008B00\n"
         "esx_buf: EQU 0x00008B01\n"
         "esx_count: EQU 0x00008B03\n"

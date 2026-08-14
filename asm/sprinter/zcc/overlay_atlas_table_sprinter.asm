@@ -49,8 +49,19 @@
 ;     #FE00  reserved           512 bytes
 ; GUI_LOG (id 2) and STATUS (id 7) stay mode 0 (unported, no WIN3 slot of
 ; their own -- both resolved a different way, see this table's own id
-; comments below); a future overlay needing a second WIN3 page is the point
-; at which ovl_win3_page (today a single global) becomes a per-id table.
+; comments below).
+;
+; S8 step 8b: NET (id 3) is the first overlay on a SECOND WIN3 page
+; (tools/make_sprinter_overlay_page.py's LAYOUT2), because page 1's own
+; 3929 bytes of slack are fragmented across five slots and carving NET's
+; ~2816 bytes out of it would zero every remaining margin (measured
+; 2026-08-14 recon). This is the point the loader's own header called out:
+; ovl_win3_page stops being the single global every mode-1 id reads and
+; becomes ovl_atlas_page_table below -- one cell ADDRESS per id, so ids on
+; page 1 keep reading ovl_win3_page and NET reads ovl_win3_page2 instead,
+; with no change to any other id's behaviour.
+;     #C000  NET       (id 3, page 2)   8192 bytes
+;     #E000  reserved  (page 2)         8192 bytes
 ;
 ; Id 14 (CONTROL) stays mode 0: src/spectrum/overlay/control_ovl.c, embedded
 ; at assets-page slot 36 (tools/make_sprinter_assets_page.py's OVERLAY_SLOT),
@@ -78,12 +89,13 @@ OVL_WIN3_BOARD_ORG    EQU 0xC800
 OVL_WIN3_SAVELOAD_ORG EQU 0xD400
 OVL_WIN3_RESTORE_ORG  EQU 0xDE00
 OVL_WIN3_FILEUI_ORG   EQU 0xEA00
+OVL_WIN3_NET_ORG      EQU 0xC000  ; page 2's own first slot, restarts at WIN3_BASE
 
 ovl_atlas_table:
     defw OVL_WIN3_RULES_ORG       ; id 0  (RULES)
     defw OVL_WIN3_BOARD_ORG       ; id 1  (BOARD)
     defw 0x0000   ; id 2  (GUI_LOG)     -- not ported (native resident C)
-    defw 0x0000   ; id 3  (NET_CONNECT) -- S7/S8 scope
+    defw OVL_WIN3_NET_ORG         ; id 3  (NET_CONNECT) -- S8 step 8b, page 2
     defw 0x0000   ; id 4  (MQTT_TX)     -- S7/S8 scope
     defw 0x0000   ; id 5  (DIRECT)      -- S7/S8 scope
     defw 0x0000   ; id 6  (MENU_CONFIG) -- S9 scope
@@ -106,7 +118,7 @@ ovl_atlas_mode_table:
     defb OVL_MODE_WIN3   ; id 0  (RULES)
     defb OVL_MODE_WIN3   ; id 1  (BOARD)
     defb OVL_MODE_COPY   ; id 2  (GUI_LOG)     -- placeholder
-    defb OVL_MODE_COPY   ; id 3  (NET_CONNECT) -- placeholder
+    defb OVL_MODE_WIN3   ; id 3  (NET_CONNECT) -- S8 step 8b, page 2
     defb OVL_MODE_COPY   ; id 4  (MQTT_TX)     -- placeholder
     defb OVL_MODE_COPY   ; id 5  (DIRECT)      -- placeholder
     defb OVL_MODE_COPY   ; id 6  (MENU_CONFIG) -- placeholder
@@ -118,3 +130,27 @@ ovl_atlas_mode_table:
     defb OVL_MODE_COPY   ; id 12 (ABOUT)       -- placeholder
     defb OVL_MODE_WIN3   ; id 13 (FILEUI)      -- S6, slot not yet linked
     defb OVL_MODE_COPY   ; id 14 (CONTROL)     -- real, unchanged
+
+; Per-id WIN3 PAGE CELL address (S8 step 8b): which byte the loader's
+; ovl_map_win3 reads the physical page number from, one word per id, same
+; dense indexing as the two tables above. Every mode-1 id on page 1 points
+; at ovl_win3_page (unchanged behaviour); NET (id 3) is the first id to
+; point at ovl_win3_page2 instead. Mode-0 ids are never read through this
+; table (ovl_map_win3 is only reached when ovl_atlas_mode_table says WIN3),
+; so their entries are harmless filler, not a real page cell reference.
+ovl_atlas_page_table:
+    defw ovl_win3_page    ; id 0  (RULES)
+    defw ovl_win3_page    ; id 1  (BOARD)
+    defw ovl_win3_page    ; id 2  (GUI_LOG)     -- unused (mode 0)
+    defw ovl_win3_page2   ; id 3  (NET_CONNECT) -- page 2
+    defw ovl_win3_page    ; id 4  (MQTT_TX)     -- unused (mode 0)
+    defw ovl_win3_page    ; id 5  (DIRECT)      -- unused (mode 0)
+    defw ovl_win3_page    ; id 6  (MENU_CONFIG) -- unused (mode 0)
+    defw ovl_win3_page    ; id 7  (STATUS)      -- unused (mode 0)
+    defw ovl_win3_page    ; id 8  (SETUP)       -- unused (mode 0)
+    defw ovl_win3_page    ; id 9  (INPUT_EDIT)  -- unused (mode 0)
+    defw ovl_win3_page    ; id 10 (SAVELOAD)
+    defw ovl_win3_page    ; id 11 (RESTORE)
+    defw ovl_win3_page    ; id 12 (ABOUT)       -- unused (mode 0)
+    defw ovl_win3_page    ; id 13 (FILEUI)
+    defw ovl_win3_page    ; id 14 (CONTROL)     -- unused (mode 0)

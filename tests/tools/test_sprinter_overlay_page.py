@@ -80,13 +80,13 @@ class SprinterOverlayPageTests(unittest.TestCase):
         this tool's packing and that table ever disagree, the loader
         dispatches into the middle of another overlay. Pin them together."""
         text = ATLAS_ASM.read_text(encoding="utf-8")
-        for name in msop.OVERLAY_NAMES:
+        for name in msop.OVERLAY_NAMES + msop.OVERLAY_NAMES2:
             match = re.search(rf"^OVL_WIN3_{name}_ORG\s+EQU\s+(0x[0-9A-Fa-f]+)",
                               text, re.M)
             self.assertIsNotNone(match, f"OVL_WIN3_{name}_ORG missing from the atlas table")
             self.assertEqual(int(match.group(1), 16), msop.slot_org(name))
 
-        # RULES/BOARD/SAVELOAD/RESTORE/FILEUI must be declared mode 1
+        # RULES/BOARD/SAVELOAD/RESTORE/FILEUI/NET must be declared mode 1
         # (mapped), not mode 0 (copied): a 2772-byte BOARD silently
         # truncated into a 2 KiB copy slot is exactly the failure this pass
         # exists to avoid.
@@ -95,11 +95,40 @@ class SprinterOverlayPageTests(unittest.TestCase):
         self.assertIsNotNone(modes, "ovl_atlas_mode_table missing")
         entries = re.findall(r"defb\s+(OVL_MODE_\w+)", modes.group(1))
         self.assertEqual(len(entries), 15, "mode table must cover ids 0-14")
-        win3_ids = {0: "RULES", 1: "BOARD", 10: "SAVELOAD", 11: "RESTORE",
-                    13: "FILEUI"}
+        win3_ids = {0: "RULES", 1: "BOARD", 3: "NET", 10: "SAVELOAD",
+                    11: "RESTORE", 13: "FILEUI"}
         for idx, name in win3_ids.items():
             self.assertEqual(entries[idx], "OVL_MODE_WIN3", name)
         self.assertEqual(entries[14], "OVL_MODE_COPY")  # CONTROL, unchanged
+
+    def test_page2_layout_budgets_sum_to_one_page(self) -> None:
+        self.assertEqual(sum(budget for _, budget in msop.LAYOUT2), msop.PAGE_SIZE)
+
+    def test_page2_output_is_exactly_one_page_and_zero_when_empty(self) -> None:
+        page = msop.build_overlay_page(page=2)
+        self.assertEqual(len(page), msop.PAGE_SIZE)
+        self.assertEqual(page, bytes(msop.PAGE_SIZE))
+
+    def test_net_lands_at_its_own_slot_on_page_2(self) -> None:
+        data = b"\x2au" * (msop.slot_budget("NET") // 2)
+        page = msop.build_overlay_page(page=2, net=data)
+        offset = msop.slot_org("NET") - msop.WIN3_BASE
+        self.assertEqual(page[offset:offset + len(data)], data)
+
+    def test_net_org_restarts_at_win3_base_like_page_1(self) -> None:
+        # Both pages map into the same #C000-#FFFF hardware window -- only
+        # one is ever mapped at a time -- so page 2's own first slot must
+        # restart at WIN3_BASE exactly like page 1's RULES does.
+        self.assertEqual(msop.slot_org("NET"), 0xC000)
+
+    def test_page2_oversized_overlay_is_rejected(self) -> None:
+        too_big = b"\x00" * (msop.slot_budget("NET") + 1)
+        with self.assertRaises(SystemExit):
+            msop.build_overlay_page(page=2, net=too_big)
+
+    def test_page1_keyword_is_rejected_on_page_2(self) -> None:
+        with self.assertRaises(SystemExit):
+            msop.build_overlay_page(page=2, rules=b"\x00")
 
 
 if __name__ == "__main__":

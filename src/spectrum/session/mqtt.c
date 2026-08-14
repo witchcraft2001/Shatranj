@@ -30,10 +30,14 @@ uint8_t netchesszx_session_mqtt_payload_is_foreign_host(const char *payload)
     uint8_t host_color;
     uint16_t session_id;
 
-    return (uint8_t)(netchesszx_session_mqtt_parse_host_payload(
-                         payload,
-                         &host_color,
-                         &session_id) &&
+    /* Single-line macro call, deliberately: z88dk's sccz80 (Sprinter's
+       compiler, S8 step 8c's first real build of this file there) mis-
+       tokenizes a macro invocation whose arguments span multiple physical
+       lines -- corrupts not just this call but the token immediately
+       after it, confirmed with a minimal repro outside this codebase.
+       SDCC (ZX/Next) is unaffected either way; this is a pure formatting
+       change, safe for both. */
+    return (uint8_t)(netchesszx_session_mqtt_parse_host_payload(payload, &host_color, &session_id) &&
                      session_id != netchesszx_mqtt_session_id);
 }
 
@@ -42,9 +46,9 @@ uint8_t netchesszx_session_mqtt_payload_marks_peer_ready(const char *payload,
 {
     uint16_t session_id;
 
+    /* Single-line macro call -- see the sccz80 multi-line note above. */
     if (!is_host ||
-        !netchesszx_session_mqtt_parse_join_payload(payload,
-                                                    &session_id) ||
+        !netchesszx_session_mqtt_parse_join_payload(payload, &session_id) ||
         session_id != netchesszx_mqtt_session_id) {
         return 0u;
     }
@@ -63,9 +67,8 @@ uint8_t netchesszx_session_mqtt_apply_host_color(const char *payload,
 
     *color_changed = 0u;
     *new_live_session = 0u;
-    if (!netchesszx_session_mqtt_parse_host_payload(payload,
-                                                    &host_color,
-                                                    &session_id)) {
+    /* Single-line macro call -- see the sccz80 multi-line note above. */
+    if (!netchesszx_session_mqtt_parse_host_payload(payload, &host_color, &session_id)) {
         return 0u;
     }
     if (netchesszx_mqtt_session_id != 0u &&

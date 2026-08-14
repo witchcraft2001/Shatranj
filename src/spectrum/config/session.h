@@ -130,9 +130,23 @@ const char *netchesszx_session_start_text(void);
 #define netchesszx_notation_is_san() \
     (netchesszx_notation == NETCHESSZX_NOTATION_SAN)
 
+/* Sprinter (S8 step 8c): the NET overlay's own editor lets the user retype
+   the broker host/port at runtime (no build-time macro can stand in for a
+   bring-your-own-broker screen the way NETCHESSZX_MQTT_HOST/PORT's Makefile
+   token does for ZX/Next), so these two are mutable there -- an explicit
+   fixed-size buffer, not a string-literal-sized const array, since the
+   edited value will not in general be the same length as the compiled-in
+   default. netchesszx_mqtt_code is already mutable on every platform
+   (SETUP/MENU_CONFIG overlay edits the room code today); ZX/Next's own
+   host/port stay const, resolved only from the build-time macro. */
+#if defined(NETCHESSZX_SPRINTER)
+extern char netchesszx_mqtt_host[NETCHESSZX_MQTT_HOST_MAX + 1u];
+extern uint16_t netchesszx_mqtt_port;
+#else
 extern const char netchesszx_mqtt_host[];
-extern char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 extern const uint16_t netchesszx_mqtt_port;
+#endif
+extern char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 extern char netchesszx_direct_host[NETCHESSZX_DIRECT_HOST_MAX + 1u];
 extern uint16_t netchesszx_direct_port;
 

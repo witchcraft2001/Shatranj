@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build the Sprinter WIN3 overlay page: RULES + BOARD + (S6) SAVELOAD +
-RESTORE + FILEUI (plan D7-bis, S6 plan step 2).
+"""Build the Sprinter WIN3 overlay page(s): RULES + BOARD + (S6) SAVELOAD +
+RESTORE + FILEUI on page 1 (plan D7-bis, S6 plan step 2), NET on page 2
+(S8 step 8b).
 
 S5 substep 2's overlay mechanism (plan D2) copies a 2 KiB blob from the
 assets page into a fixed slot. That ceiling does not survive contact with a
@@ -15,18 +16,33 @@ inside the WIN3 window and mapped there with a single OUT
 packs that page image: one 16384-byte WIN0-manifest asset page whose bytes,
 once mapped into WIN3, appear at #C000-#FFFF.
 
-Layout (S6 plan step 2): a declarative table of (name, id, budget) replaces
-the original uniform 4x4 KiB slot scheme -- SAVELOAD/RESTORE/FILEUI, all
+Layout (S6 plan step 2): a declarative table of (name, budget) replaces the
+original uniform 4x4 KiB slot scheme -- SAVELOAD/RESTORE/FILEUI, all
 compiled C overlays with real content, do not share BOARD's size, and a
 uniform slot would either waste most of a 4 KiB slot on a 1240-byte
 SAVELOAD or fail to hold a 5+ KiB FILEUI (the sccz80 codegen factor pushes
-compiled sizes well above the ZX/SDCC figures -- see this file's own
-LAYOUT comment). Budgets are generous (25-100%+ headroom over the ZX/SDCC
-size each overlay's own C source measures at) precisely because that
-factor is not known exactly ahead of a real compile; an overlay that still
-does not fit is a hard build error, not a silent truncation.
+compiled sizes well above the ZX/SDCC figures). Budgets are generous
+(25-100%+ headroom over the ZX/SDCC size each overlay's own C source
+measures at) precisely because that factor is not known exactly ahead of a
+real compile; an overlay that still does not fit is a hard build error, not
+a silent truncation.
 
-Slot layout (asm/sprinter/zcc/overlay_atlas_table_sprinter.asm's
+S8 step 8b adds a SECOND 16384-byte page carrying the NET overlay
+(SPECTRUM_OVL_NET_CONNECT=3u) -- the existing page 1's own 3929 bytes of
+slack are fragmented across five slots (measured, 2026-08-14 recon: RULES
+420/BOARD 300/SAVELOAD 667/RESTORE 242/FILEUI 1788/RESERVE 512), and
+carving NET's ~2816 bytes out of it would zero every remaining margin AND
+S9's own headroom (SETUP/ABOUT/MENU_CONFIG are large UI overlays that would
+hit the same wall immediately). A second WIN3 page costs nothing extra to
+map -- asm/sprinter/buffers.asm's ovl_win3_page2 cell and
+overlay_atlas_table_sprinter.asm's per-id page table (not a single global)
+are what make this possible; see that table's own header.
+
+Both pages map into the SAME #C000-#FFFF hardware window (WIN3), just via a
+different physical bank OUT -- so page 2's own slot orgs restart at #C000
+exactly like page 1's, they are never both mapped at once.
+
+Slot layout, page 1 (asm/sprinter/zcc/overlay_atlas_table_sprinter.asm's
 OVL_WIN3_*_ORG constants and the Makefile's -r link addresses must match --
 tests/tools/test_sprinter_overlay_page.py's test_atlas_table_agrees_with_
 this_packing pins the two together):
@@ -37,9 +53,16 @@ this_packing pins the two together):
     #EA00  FILEUI    (SPECTRUM_OVL_FILEUI=13u)     5120 bytes
     #FE00  reserved                                 512 bytes
 
-Published to HDR as the fourth asset page (HDR_ASSET_PAGE0_OFFSET+3);
-asm/sprinter/buffers.asm's bench_init reads it into ovl_win3_page with the
-same "#FF when unavailable" convention piece_page1/piece_page2 use.
+Slot layout, page 2:
+    #C000  NET       (SPECTRUM_OVL_NET_CONNECT=3u) 8192 bytes
+    #E000  reserved (RESERVE2)                     8192 bytes
+
+Page 1 is published to HDR as the fourth asset page
+(HDR_ASSET_PAGE0_OFFSET+3); page 2 as the sixth
+(HDR_ASSET_PAGE0_OFFSET+5), appended LAST so page 1's own index and the
+piece-page indices ahead of it never shift. asm/sprinter/buffers.asm's
+bench_init reads them into ovl_win3_page/ovl_win3_page2 with the same
+"#FF when unavailable" convention piece_page1/piece_page2 use.
 
 The output is a pure function of the inputs (no timestamps), same contract
 as tools/make_sprinter_assets_page.py.
@@ -55,11 +78,10 @@ PAGE_SIZE = 16384
 
 WIN3_BASE = 0xC000
 
-# (name, budget). Order fixes the layout (cumulative offsets); id is not
-# tracked here (the atlas table owns overlay ids) -- this tool only knows
-# names and byte budgets. Sum of budgets must equal PAGE_SIZE exactly: no
-# slack is silently absorbed, any change to one budget must adjust the
-# reserve (or another budget) to match.
+# (name, budget). Order fixes the layout (cumulative offsets within its own
+# page); each page's budgets must sum to PAGE_SIZE exactly: no slack is
+# silently absorbed, any change to one budget must adjust the reserve (or
+# another budget) to match.
 LAYOUT = [
     ("RULES", 2048),
     ("BOARD", 3072),
@@ -69,27 +91,47 @@ LAYOUT = [
     ("RESERVE", 512),
 ]
 
-_TOTAL = sum(budget for _, budget in LAYOUT)
-if _TOTAL != PAGE_SIZE:
-    raise SystemExit(
-        f"Error: LAYOUT budgets sum to {_TOTAL}, must equal PAGE_SIZE {PAGE_SIZE}"
-    )
+LAYOUT2 = [
+    ("NET", 8192),
+    ("RESERVE2", 8192),
+]
+
+# Page number -> that page's LAYOUT. Order of this dict is not significant;
+# each page is packed independently.
+PAGES = {1: LAYOUT, 2: LAYOUT2}
+
+for _page_num, _layout in PAGES.items():
+    _total = sum(budget for _, budget in _layout)
+    if _total != PAGE_SIZE:
+        raise SystemExit(
+            f"Error: page {_page_num} LAYOUT budgets sum to {_total}, "
+            f"must equal PAGE_SIZE {PAGE_SIZE}"
+        )
 
 
-def _compute_offsets() -> dict[str, int]:
+def _compute_offsets(layout: list[tuple[str, int]]) -> dict[str, int]:
     offsets: dict[str, int] = {}
     offset = 0
-    for name, budget in LAYOUT:
+    for name, budget in layout:
         offsets[name] = offset
         offset += budget
     return offsets
 
 
-_OFFSETS = _compute_offsets()
-_BUDGETS = dict(LAYOUT)
+_OFFSETS = {page: _compute_offsets(layout) for page, layout in PAGES.items()}
+_BUDGETS = {page: dict(layout) for page, layout in PAGES.items()}
+# Every slot name (across all pages) -> the page it lives on. Names are
+# unique across pages by construction (RESERVE vs RESERVE2 etc.), so one
+# flat lookup is enough for slot_org()/slot_budget() to stay page-agnostic
+# from the caller's point of view.
+_PAGE_OF_NAME = {name: page for page, layout in PAGES.items() for name, _ in layout}
 
-# Overlay names this tool actually places bytes for (RESERVE never does).
+# Overlay names this tool actually places bytes for (RESERVE*never does),
+# one list per page -- kept separate (not unioned) because build_overlay_page()
+# packs exactly one 16384-byte page per call and the two pages' budgets
+# would overflow a single page if combined.
 OVERLAY_NAMES = [name for name, _ in LAYOUT if name != "RESERVE"]
+OVERLAY_NAMES2 = [name for name, _ in LAYOUT2 if name != "RESERVE2"]
 
 
 def fail(message: str) -> None:
@@ -97,47 +139,60 @@ def fail(message: str) -> None:
 
 
 def slot_org(name: str) -> int:
-    """Link address (-r) the named overlay must be built at."""
-    if name not in _OFFSETS:
-        fail(f"unknown overlay name {name!r} (known: {', '.join(_OFFSETS)})")
-    return WIN3_BASE + _OFFSETS[name]
+    """Link address (-r) the named overlay must be built at. Works across
+    both pages -- each page's own slots restart at WIN3_BASE, since only
+    one page is ever mapped into the WIN3 window at a time."""
+    if name not in _PAGE_OF_NAME:
+        fail(f"unknown overlay name {name!r} (known: {', '.join(_PAGE_OF_NAME)})")
+    page = _PAGE_OF_NAME[name]
+    return WIN3_BASE + _OFFSETS[page][name]
 
 
 def slot_budget(name: str) -> int:
-    if name not in _BUDGETS:
-        fail(f"unknown overlay name {name!r} (known: {', '.join(_BUDGETS)})")
-    return _BUDGETS[name]
+    if name not in _PAGE_OF_NAME:
+        fail(f"unknown overlay name {name!r} (known: {', '.join(_PAGE_OF_NAME)})")
+    page = _PAGE_OF_NAME[name]
+    return _BUDGETS[page][name]
 
 
-def build_overlay_page(**overlays: bytes | None) -> bytes:
-    """overlays: lowercase-name keyword args (rules=..., board=...,
-    saveload=..., restore=..., fileui=...), any subset, None/omitted left
-    zero."""
-    page = bytearray(PAGE_SIZE)
+def build_overlay_page(page: int = 1, **overlays: bytes | None) -> bytes:
+    """overlays: lowercase-name keyword args for the given page (page 1:
+    rules=..., board=..., saveload=..., restore=..., fileui=...; page 2:
+    net=...), any subset, None/omitted left zero. Defaults to page 1 so
+    existing callers (and tests) that never pass page= keep building the
+    first page, unchanged."""
+    if page not in PAGES:
+        fail(f"unknown page {page!r} (known: {', '.join(str(p) for p in PAGES)})")
+    names_this_page = OVERLAY_NAMES if page == 1 else OVERLAY_NAMES2
+    budgets = _BUDGETS[page]
+    offsets = _OFFSETS[page]
+    out = bytearray(PAGE_SIZE)
     for key, data in overlays.items():
         if data is None:
             continue
         name = key.upper()
-        if name not in OVERLAY_NAMES:
-            fail(f"unknown overlay keyword {key!r} (known: "
-                 f"{', '.join(n.lower() for n in OVERLAY_NAMES)})")
-        budget = _BUDGETS[name]
+        if name not in names_this_page:
+            fail(f"unknown overlay keyword {key!r} for page {page} (known: "
+                 f"{', '.join(n.lower() for n in names_this_page)})")
+        budget = budgets[name]
         if len(data) > budget:
             fail(f"{name} is {len(data)} bytes, exceeds the {budget}-byte "
                  f"WIN3 overlay slot (base {slot_org(name):#06x})")
-        offset = _OFFSETS[name]
-        page[offset:offset + len(data)] = data
-    data = bytes(page)
+        offset = offsets[name]
+        out[offset:offset + len(data)] = data
+    data = bytes(out)
     assert len(data) == PAGE_SIZE
     return data
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in OVERLAY_NAMES:
+    for name in OVERLAY_NAMES + OVERLAY_NAMES2:
         parser.add_argument(f"--{name.lower()}-bin", type=Path,
                             help=f"{name} overlay .bin; omit to leave its "
                                  "slot zero")
+    parser.add_argument("--page", type=int, choices=sorted(PAGES), default=1,
+                        help="which WIN3 overlay page to build (default 1)")
     parser.add_argument("--print-org", metavar="NAME",
                         help="print the -r link address for NAME and exit "
                              "(the Makefile's link rules read it from here "
@@ -152,8 +207,9 @@ def main() -> int:
     if args.output is None:
         fail("--output is required unless --print-org is given")
 
+    names_this_page = OVERLAY_NAMES if args.page == 1 else OVERLAY_NAMES2
     overlays: dict[str, bytes | None] = {}
-    for name in OVERLAY_NAMES:
+    for name in names_this_page:
         bin_path = getattr(args, f"{name.lower()}_bin")
         if bin_path is None:
             overlays[name.lower()] = None
@@ -162,7 +218,7 @@ def main() -> int:
             fail(f"missing {name.lower()}-bin: {bin_path}")
         overlays[name.lower()] = bin_path.read_bytes()
 
-    page = build_overlay_page(**overlays)
+    page = build_overlay_page(page=args.page, **overlays)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(page)
     digest = hashlib.sha256(page).hexdigest()

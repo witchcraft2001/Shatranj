@@ -57,14 +57,22 @@ const char *netchesszx_session_start_text(void)
 }
 
 #ifndef NETCHESSZX_DIRECT_ONLY
-/* DIRECT-only builds (Sprinter) resolve host/port from the NETHOST/NETPORT
-   env vars at connect time (net_gate.asm's ng_env_nethost/ng_env_netport,
-   S7 step 1) and never reference these globals -- MQTT host/code/port are
-   unreachable on a transport without an MQTT backend, and the interactive
-   DIRECT host/port entry these back (SETUP overlay) is S9 scope. */
+/* Sprinter (S8 step 8c) still resolves DIRECT host/port from the NETHOST/
+   NETPORT env vars at connect time (net_gate.asm's ng_env_nethost/
+   ng_env_netport, S7 step 1) -- netchesszx_direct_host/port below are
+   unused there, kept only because ZX/Next's SETUP overlay writes them.
+   MQTT host/port are the opposite: mutable there (session.h's own comment
+   on the #if defined(NETCHESSZX_SPRINTER) branch explains why), so the
+   initialiser is a plain strcpy-shaped byte loop, not a string literal a
+   const array could borrow storage from directly. */
+#if defined(NETCHESSZX_SPRINTER)
+char netchesszx_mqtt_host[NETCHESSZX_MQTT_HOST_MAX + 1u] = NETCHESSZX_MQTT_HOST;
+uint16_t netchesszx_mqtt_port = NETCHESSZX_MQTT_PORT;
+#else
 const char netchesszx_mqtt_host[] = NETCHESSZX_MQTT_HOST;
-char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 const uint16_t netchesszx_mqtt_port = NETCHESSZX_MQTT_PORT;
+#endif
+char netchesszx_mqtt_code[NETCHESSZX_MQTT_CODE_MAX + 1u];
 char netchesszx_direct_host[NETCHESSZX_DIRECT_HOST_MAX + 1u] = "";
 uint16_t netchesszx_direct_port = NETCHESSZX_PORT;
 #endif

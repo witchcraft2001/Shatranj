@@ -1532,34 +1532,22 @@ static void menu_network(void) {
         return;
     }
 
-    /* Role is fixed JOIN until SETUP is ported (S9): host_color is a
-       provisional guess that the peer's HELLO overwrites -- see
-       net_apply_hello. */
-    netchesszx_session_configure(NETCHESSZX_SESSION_ROLE_JOIN,
-                                 NETCHESSZX_TRANSPORT_DIRECT,
-                                 NETCHESSZX_COLOR_WHITE);
-    /* ...and THIS is what makes it a guess rather than a decision.
-       netchesszx_session_configure() always sets host_color_ready, which
-       for a JOIN means "the colours are already settled" -- and
-       netchesszx_session_direct_apply_hello() then REJECTS any HELLO whose
-       WHITE= owner disagrees with the guess. A rejected HELLO is silent:
-       net_peer_known stays clear, every later event is dropped by the
-       peer-known gate, the board never moves and every local press answers
-       "Not your turn". That is exactly what MAME showed on 2026-08-13
-       against a Qt host dealing the guest white. app.c does the same two
-       steps in the same order (session_setup_start: configure, then clear
-       for JOIN; and again on session reset for a non-host DIRECT session),
-       which is what this port had copied everything from except this
-       line. */
-    netchesszx_host_color_ready = 0u;
-    spectrum_link_start_uart();
+    /* S8 step 8e: spectrum_net_join_ui() (the NET screen) now configures
+       the session itself -- role/transport/host_color the user picked,
+       plus the host_color_ready JOIN fix (net_ui_sprinter.c's own
+       net_ui_try_connect() comment has the full post-mortem this used to
+       live here, verbatim, for the DIRECT-only role-is-always-JOIN case).
+       Only the transport-neutral follow-up stays here. */
+    if (!netchesszx_transport_is_mqtt()) {
+        spectrum_link_start_uart();
+    }
     netchesszx_session_ping_reset(&net_ping);
     netchesszx_session_peer_reset();
     net_peer_known = 0u;
     net_hello_wait = 0u;
     net_active = 1u;
 
-    spectrum_gui_set_connected(2u);     /* gui.c: 2 = DIRECT, 1 = MQTT */
+    spectrum_gui_set_connected(netchesszx_transport_is_mqtt() ? 1u : 2u);
     spectrum_gui_set_status("WAITING");
     spectrum_gui_notify_persistent("Waiting for opponent");
 }

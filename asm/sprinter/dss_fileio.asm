@@ -81,14 +81,28 @@
 ; it in would have been touching a port to no effect, exactly the kind of
 ; unfounded change this project's own review culture rejects.
 ;
-; WIN3 gets remapped back to ovl_win3_page afterward UNCONDITIONALLY,
-; under DI again by then. DSS's own Read/Write internally save/restore
-; SLOT3 (=WIN3) via IN/OUT around their sub-sector buffer detour (Estex-
-; DSS Read.asm/Write.asm), so in the common case this remap rewrites the
-; value already there -- a cheap defensive belt, not a load-bearing fix,
-; pinned by t_dss_fileio.asm's WIN3-clobbering RST stub. The remap
-; touches only A/F (push af around it), so it never disturbs a DSS output
-; register a caller still needs (DE for Read's byte count, in particular).
+; WIN3 gets remapped back to WHATEVER IT WAS AT ENTRY afterward
+; UNCONDITIONALLY, under DI again by then. DSS's own Read/Write internally
+; save/restore SLOT3 (=WIN3) via IN/OUT around their sub-sector buffer
+; detour (Estex-DSS Read.asm/Write.asm), so in the common case this remap
+; rewrites the value already there -- a cheap defensive belt, not a
+; load-bearing fix, pinned by t_dss_fileio.asm's WIN3-clobbering RST stub.
+; The remap touches only A/F (push af around it), so it never disturbs a
+; DSS output register a caller still needs (DE for Read's byte count, in
+; particular).
+;
+; S8 step 8b fix: this used to restore a hardcoded (ovl_win3_page) instead
+; of what was actually mapped at entry -- already wrong whenever the
+; CALLER was the WIN3 cold page (session_sprinter.c's own callers, whose
+; page is cold_win3_page, not ovl_win3_page) or, since this same step, the
+; NET overlay's own second page (ovl_win3_page2). Every caller of esx_*
+; happens to be a mode-1 overlay today, so the bug never surfaced in
+; practice, but "happens to be right for the callers that exist so far" is
+; exactly the kind of latent defect this project's own review culture does
+; not leave in place once found (CLAUDE.md section 2 item 3: a discovered
+; defect stops the change until understood). Fixed the same way
+; overlay_loader_sprinter.asm's own mode-1 dispatch already does it: save
+; what was read (dfio_saved_win3), restore that, never a constant.
 ;
 ; A reentry guard (dfio_v_depth) mirrors net_gate.asm's ng_call_reentry --
 ; nothing here is expected to call dfio_dss recursively in normal
@@ -119,6 +133,9 @@ dfio_dss:
         ld      a,1
         ld      (dfio_v_depth),a
 
+        in      a,(WIN3_PORT)           ; S8 step 8b: save what the CALLER
+        ld      (dfio_saved_win3),a     ; had mapped, not a fixed guess
+
         push    ix
         push    iy
         ld      a,(dfio_call_arg_a)
@@ -138,7 +155,7 @@ dfio_dss:
                                          ; never read by anything that
                                          ; changes control flow here.
 dfio_no_error:
-        ld      a,(ovl_win3_page)
+        ld      a,(dfio_saved_win3)
         out     (WIN3_PORT),a
         pop     af
 
@@ -180,6 +197,7 @@ dfio_trap_msg: DB 13,10,"Sprinter S6: dss_fileio reentrancy trap.",13,10,0
 
 dfio_v_depth: DB 0
 dfio_call_arg_a: DB 0
+dfio_saved_win3: DB 0
 
 ; S6 round 5 (docs/sprinter-testnotes/S6.md "MAME round 5"): "Save
 ; failed:IO" alone doesn't say whether Estex-DSS's own Write/Close refused

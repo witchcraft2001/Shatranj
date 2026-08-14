@@ -85,10 +85,13 @@
 
     EXTERN ovl_copy_slot
     EXTERN OVL_SLOT_ADDR
-    ; Mode-1 (WIN3-mapped) dispatch: the page number published by
-    ; buffers.asm's bench_init from HDR, and the window port itself
+    ; Mode-1 (WIN3-mapped) dispatch: the page number(s) published by
+    ; buffers.asm's bench_init from HDR (ovl_win3_page2 added S8 step 8b, a
+    ; second WIN3 page for the NET overlay -- see ovl_atlas_page_table's own
+    ; header for which ids read which cell), and the window port itself
     ; (dss.inc stays the one place that spells #E2).
     EXTERN ovl_win3_page
+    EXTERN ovl_win3_page2
     EXTERN WIN3_PORT
     ; The shared overlay-argument buffer (see ovl_ctx's own comment below).
     EXTERN LOWRAM_OVERLAY_CONTEXT_ADDR
@@ -175,9 +178,23 @@ ovl_exec_cached:
     ; a later mode-0 dispatch of an already-copied overlay still correctly
     ; skips its own copy.
 ovl_map_win3:
-    ld a,(ovl_win3_page)
+    ; S8 step 8b: which page CELL to read is per-id now (ovl_win3_page for
+    ; every id already on page 1, ovl_win3_page2 for NET) -- ovl_atlas_
+    ; page_table holds the cell's ADDRESS, not its value, so this is an
+    ; extra indirection ahead of the same "#FF means unavailable" check the
+    ; single-page version already did.
+    ld a,(ovl_v_requested_id)
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,ovl_atlas_page_table
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)                  ; de = address of this id's page cell
+    ld a,(de)
     cp 0xFF
-    jp z,ovl_dispatch_fail      ; no overlay page published (HDR < 4 pages)
+    jp z,ovl_dispatch_fail      ; no overlay page published (HDR < 4/6 pages)
     ld b,a
     di                          ; R7: WIN3 replaced only under DI, whole
                                 ; duration, restored before EI
