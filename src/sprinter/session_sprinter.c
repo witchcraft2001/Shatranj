@@ -896,6 +896,36 @@ static void net_apply_remote_move(const char *payload) {
     }
 }
 
+/* Everything both transports do the moment the peer becomes real: colours
+   are settled, so the board can finally be oriented, and any state left
+   over from a previous session must not survive into this one.
+
+   Extracted from net_apply_hello (DIRECT) when S8 step 8f gave MQTT its own
+   route to the same moment -- MQTT reaches it from net_mqtt_host_event's
+   READY_WAIT (guest) or MQTT_PEER_READY (host) instead of from a HELLO, but
+   what has to happen locally is identical. See net_apply_hello's own comment
+   below for the 2026-08-14 MAME finding that put the reset sequence here. */
+static void net_session_begin(void) {
+    net_peer_known = 1u;
+    pending_local_clear();
+    control_pending_clear();
+    takeback_clear();
+    restore_net_clear();
+    spectrum_board_reset();
+    selection_clear();
+    spectrum_gui_set_board_view((unsigned char)(!netchesszx_local_is_white()));
+    render_board_full();
+    render_coord_labels();
+    render_select_marker();
+    render_cursor_marker();
+    spectrum_gui_reset_move_log();
+    spectrum_gui_game_timer_start();
+    net_set_turn_label_from_side();
+    spectrum_gui_set_connected(2u);
+    spectrum_gui_set_status(netchesszx_local_side_name());
+    spectrum_gui_notify_success("Opponent ready");
+}
+
 /* The peer's HELLO is what settles which colour this side plays, so the
    board view can only be oriented once it arrives -- until then the board
    is drawn white-at-the-bottom, which is also what a JOIN playing white
@@ -911,7 +941,6 @@ static void net_apply_hello(const char *payload) {
         spectrum_gui_notify("Bad HELLO from opponent", 1u);
         return;
     }
-    net_peer_known = 1u;
     netchesszx_session_peer_mark_ready();
     spectrum_link_direct_peer_mark_valid();
     /* Every accepted HELLO starts a fresh session from this side's point of
@@ -929,28 +958,270 @@ static void net_apply_hello(const char *payload) {
        count caught up past the old one. Mirrors net_apply_reset's own
        reset sequence (that function's in-session RESET counterpart to
        this one's join-time reset), minus the "New game" notice this
-       function already has its own success notice for. */
+       function already has its own success notice for. That whole sequence
+       is net_session_begin() above now -- MQTT reaches the same moment by
+       a different route. */
+    net_session_begin();
+}
+
+/* --- MQTT presence half (S8 step 8f) ------------------------------------
+ *
+ * A port of src/spectrum/app/app.c's session_presence_handle_event MQTT
+ * branches. It had to be ported rather than linked for the same reason the
+ * rest of this file exists: app.c is not built on Sprinter (D8), so every
+ * one of its dispatch decisions has a counterpart here or does not happen
+ * at all -- and until this step, the MQTT ones did not happen at all.
+ *
+ * That was the whole of the 2026-08-15 "both clients sit in Waiting for
+ * opponent" report, and it is worth being precise about why nothing
+ * complained: the transport, the reassembler, the classifier and
+ * netchesszx_session_poll's MQTT half were all present and all working, so
+ * the retained "H <colour> <sid>" the peer host published really did arrive
+ * here, really was classified as NETCHESSZX_SESSION_EVENT_MQTT_HOST, and
+ * really was handed to net_handle_event -- which had no branch for it and
+ * dropped it on the floor. A guest that never acts on H never subscribes to
+ * the game topics and never publishes its own presence, so the host never
+ * learns a guest exists either: both ends wait, forever, on a link that is
+ * entirely healthy.
+ *
+ * Unlike DIRECT, losing the peer here does NOT mean losing the link: the
+ * broker session and the room subscription survive, so this half never
+ * calls net_drop() for a peer-side event -- see net_mqtt_peer_lost.
+ */
+
+/* app.c's mqtt_seat_probed: a retained H names the seat we WOULD take, and
+   probing it (subscribe, no claim) is a one-shot -- the host re-announces
+   its retained H on a timer, and re-probing on every one of those would
+   re-subscribe forever. Cleared per connect attempt by menu_network. */
+static unsigned char mqtt_seat_probed;
+
+/* unet_link.c (WIN1): which layer decided the MQTT link was down. See that
+   file's own comment -- netchesszx_session_poll collapses four unrelated
+   failures into one DISCONNECTED return, and it is shared with ZX/Next, so
+   the discrimination has to happen on this side of it. */
+extern unsigned char net_mqtt_down_reason;
+
+/* unet_link.c (WIN1) again: which step of the NET overlay's MQTT sequence
+   gave up, and uNet's own verdict on it. They live in WIN1 rather than in
+   the overlay precisely so this file can read them -- the overlay page is
+   gone by the time its caller is back. */
+extern unsigned char net_mqtt_fail_step;
+extern unsigned char net_mqtt_fail_cf;
+extern unsigned char net_mqtt_fail_status;
+extern unsigned char net_mqtt_fail_detail;
+
+/* "Activate side failed" names the CALLER, not the step that gave up --
+   which is the same shortfall that cost the previous round, one layer in.
+   net_mqtt_fail_step partitions the whole space (7 send-subscribe,
+   8 wait-suback, 9 suback-rejected, 10 the presence publish -- see
+   net_mqtt_ui_sprinter.c's MQTT_FAIL_* list), and the uNet status says
+   whether the gate even reached the DLL. Rendered as "<what> s<step>/<status>"
+   plus "cf" when the carry flag was set. */
+static char net_mqtt_fail_text[28];
+
+static const char *net_mqtt_fail_why(const char *what) {
+    char *p = spectrum_append_text(net_mqtt_fail_text, what);
+
+    p = spectrum_append_text(p, " s");
+    p = spectrum_append_u16(p, net_mqtt_fail_step);
+    p = spectrum_append_text(p, "/");
+    p = spectrum_append_u16(p, net_mqtt_fail_status);
+    if (net_mqtt_fail_cf) {
+        p = spectrum_append_text(p, "cf");
+    }
+    if (net_mqtt_fail_detail != 0u) {
+        p = spectrum_append_text(p, " #");
+        (void)spectrum_append_u16(p, net_mqtt_fail_detail);
+    }
+    return net_mqtt_fail_text;
+}
+
+/* Spelled out on the notice line, because "Link down" alone cost a MAME
+   round on 2026-08-15: the same three words are the honest report of the
+   socket closing, of the broker going quiet, of uNet refusing a send, and
+   of the PEER going quiet -- four different bugs in four different places,
+   and no way to tell which from the screen. Anything poll decided on its
+   own (the app-level PING/ACK PING ladder in ping.c) reaches this with
+   net_mqtt_down_reason still clear, which is exactly the "peer" case. */
+static const char *net_link_down_why(void) {
+    if (!netchesszx_transport_is_mqtt()) {
+        return "Link down";
+    }
+    if (net_mqtt_down_reason == 1u) {
+        return "Link down: stream";
+    }
+    if (net_mqtt_down_reason == 2u) {
+        return "Link down: broker";
+    }
+    if (net_mqtt_down_reason == 3u) {
+        return "Link down: send";
+    }
+    return "Link down: peer ping";
+}
+
+/* app.c's mqtt_peer_reset_wait_state + mqtt_peer_disconnected_wait, reduced
+   to this port's state. Deliberately NOT net_drop(): on MQTT the peer is
+   gone but the broker connection is not, so the room stays joined and a
+   replacement opponent can walk straight in. net_drop would close the
+   socket and leave the retained presence claiming a seat nobody holds. */
+static void net_mqtt_peer_lost(const char *why) {
+    net_peer_known = 0u;
     pending_local_clear();
     control_pending_clear();
     takeback_clear();
     restore_net_clear();
-    spectrum_board_reset();
+    netchesszx_session_peer_reset();
     selection_clear();
-    spectrum_gui_set_board_view((unsigned char)(!netchesszx_local_is_white()));
-    render_board_full();
-    render_coord_labels();
-    render_select_marker();
-    render_cursor_marker();
-    spectrum_gui_reset_move_log();
-    spectrum_gui_game_timer_start();
-    net_set_turn_label_from_side();
-    spectrum_gui_set_status(netchesszx_local_side_name());
-    spectrum_gui_notify_success("Opponent ready");
+    spectrum_gui_game_timer_stop();
+    spectrum_gui_set_connected(1u);
+    spectrum_gui_set_status("WAITING");
+    spectrum_gui_notify(why, 1u);
 }
 
-static void net_handle_event(unsigned char event, const char *payload) {
+/* The guest's whole handshake, driven off the host's "H <colour> <sid>" on
+   the room's meta topic. netchesszx_session_mqtt_host_flags (session/
+   event.c, shared with ZX/Next) owns every decision; this function only
+   carries them out, in app.c's own order.
+
+   The two-stage shape is not redundancy. The FIRST H a guest sees is the
+   broker's retained copy, delivered at subscribe time: it proves a host
+   exists but not that it is listening right now, so all it earns is a seat
+   probe (RETAINED_WAIT). The host re-announces on its own timer, and that
+   copy arrives live -- which is what earns ACTIVATE_SIDE: subscribe to the
+   game topics and publish our own retained presence, the first thing the
+   host can actually see. */
+static void net_mqtt_host_event(const char *payload, unsigned char retained) {
+    unsigned char bad_color = 0u;
+    unsigned char flags;
+
+    flags = netchesszx_session_mqtt_host_flags(payload, 0u, retained,
+                                               &bad_color);
+    if (bad_color) {
+        spectrum_gui_notify("Bad host colour", 1u);
+        return;
+    }
+    if (flags & NETCHESSZX_SESSION_MQTT_HOST_COLOR_CHANGED) {
+        spectrum_gui_set_board_view((unsigned char)(!netchesszx_local_is_white()));
+        render_board_full();
+        render_coord_labels();
+        render_cursor_marker();
+    }
+    if (flags & NETCHESSZX_SESSION_MQTT_HOST_ACTIVATE_SIDE) {
+        if (!spectrum_link_mqtt_activate_side()) {
+            net_drop(net_mqtt_fail_why("Activate"));
+            return;
+        }
+    }
+    if (flags & NETCHESSZX_SESSION_MQTT_HOST_RETAINED_WAIT) {
+        uint8_t host_color;
+        uint16_t probe_session;
+
+        /* Learn the seat we would take and subscribe to it WITHOUT claiming
+           it. An occupied seat answers with its own retained O, which the
+           classifier turns into MQTT_SEAT_TAKEN below -- so a third client
+           reports BUSY instead of hanging on "waiting for opponent". */
+        if (!mqtt_seat_probed && !netchesszx_host_color_ready &&
+            netchess_mqtt_session_parse_host(payload, &host_color, &probe_session)) {
+            netchesszx_local_color = (unsigned char)(host_color ^ 1u);
+            netchesszx_mqtt_session_id = probe_session;
+            if (!spectrum_link_mqtt_probe_seat()) {
+                net_drop(net_mqtt_fail_why("Probe"));
+                return;
+            }
+            mqtt_seat_probed = 1u;
+        }
+        return;
+    }
+    if (flags & NETCHESSZX_SESSION_MQTT_HOST_PUBLISH_SETUP) {
+        if (!spectrum_link_mqtt_publish_setup(SPECTRUM_LINK_MQTT_SETUP_LIVE)) {
+            net_drop("Setup publish failed");
+            return;
+        }
+    }
+    if (flags & NETCHESSZX_SESSION_MQTT_HOST_READY_WAIT) {
+        net_session_begin();
+    }
+}
+
+/* Returns 1 if the event was an MQTT presence event and has been dealt
+   with, 0 to let net_handle_event's shared game half have it. */
+static unsigned char net_handle_mqtt_event(unsigned char event,
+                                           const char *payload,
+                                           unsigned char retained) {
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_EMPTY) {
+        /* A cleared retained slot (zero-length payload). Nothing to do --
+           but it must not fall through to the game half either. */
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_TEXT) {
+        spectrum_gui_notify(payload, 0u);
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_PEER_OFFLINE) {
+        if (netchesszx_session_peer_ready_state) {
+            net_mqtt_peer_lost("Opponent left");
+        }
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_LOCAL_OFFLINE) {
+        /* Our OWN retained F, republished by the broker -- either this
+           run's will fired on a previous connection, or a previous run's
+           did. Re-assert O, or the seat we are sitting in looks empty. */
+        if (netchesszx_mqtt_session_id != 0u &&
+            netchesszx_session_peer_ready_state) {
+            (void)spectrum_link_mqtt_publish_presence();
+        }
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_FOREIGN_HOST) {
+        /* Another host announced itself in the room we are hosting. Say so
+           and keep waiting -- whichever guest arrives first settles it. */
+        if (!netchesszx_session_peer_ready_state) {
+            spectrum_gui_notify("Room already hosted", 1u);
+        }
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_SEAT_TAKEN) {
+        /* Retained O on the seat the probe above claimed-in-name-only:
+           somebody else is already playing it. Leaving is the only honest
+           answer -- announcing would steal the sitting guest's slot. */
+        if (!netchesszx_session_peer_ready_state) {
+            net_drop("Seat taken");
+        }
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_HOST) {
+        net_mqtt_host_event(payload, retained);
+        return 1u;
+    }
+    if (event == NETCHESSZX_SESSION_EVENT_MQTT_PEER_READY) {
+        /* The host's side: the guest's "J <sid>" on meta. Answer with a
+           LIVE H -- the retained copy the guest already has proves only
+           that we existed, this one proves we are here now, and it is what
+           makes the guest activate its side. */
+        if (netchesszx_session_peer_ready_state) {
+            (void)spectrum_link_mqtt_publish_setup(SPECTRUM_LINK_MQTT_SETUP_LIVE);
+            return 1u;
+        }
+        netchesszx_session_peer_mark_ready();
+        if (!spectrum_link_mqtt_publish_setup(SPECTRUM_LINK_MQTT_SETUP_LIVE)) {
+            net_drop("Setup publish failed");
+            return 1u;
+        }
+        net_session_begin();
+        return 1u;
+    }
+    return 0u;
+}
+
+static void net_handle_event(unsigned char event, const char *payload,
+                             unsigned char retained) {
     if (event == NETCHESSZX_SESSION_EVENT_DIRECT_HELLO) {
         net_apply_hello(payload);
+        return;
+    }
+    if (netchesszx_transport_is_mqtt() &&
+        net_handle_mqtt_event(event, payload, retained)) {
         return;
     }
     /* Before the peer has identified itself there is no agreed colour, so
@@ -1259,7 +1530,19 @@ static void net_handle_event(unsigned char event, const char *payload) {
             spectrum_gui_notify_success("Opponent loaded the game");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_BYE) {
-        net_drop("Opponent left");
+        /* On MQTT a peer's BYE ends the GAME, not the connection -- see
+           net_mqtt_peer_lost. A host also releases the seat its guest was
+           sitting in, so the next guest sees it free rather than held by a
+           retained O nobody is behind (app.c's own BYE branch). */
+        if (netchesszx_transport_is_mqtt()) {
+            if (netchesszx_session_is_host()) {
+                (void)spectrum_link_mqtt_publish_offline(
+                    SPECTRUM_LINK_ROUTE_PRESENCE_PEER);
+            }
+            net_mqtt_peer_lost("Opponent left");
+        } else {
+            net_drop("Opponent left");
+        }
     } else if (event == NETCHESSZX_SESSION_EVENT_GAME_START) {
         (void)netchesszx_session_direct_apply_start_side(payload);
         (void)netchesszx_session_send_ack_game_start();
@@ -1450,11 +1733,11 @@ void net_poll_once(void) {
     status = netchesszx_session_poll(&net_ping, payload,
                                      SPECTRUM_LINK_PAYLOAD_MAX, &poll);
     if (status == NETCHESSZX_SESSION_POLL_DISCONNECTED) {
-        net_drop("Link down");
+        net_drop(net_link_down_why());
         return;
     }
     if (status == NETCHESSZX_SESSION_POLL_EVENT) {
-        net_handle_event((unsigned char)poll.event, payload);
+        net_handle_event((unsigned char)poll.event, payload, poll.retained);
     }
 }
 
@@ -1518,6 +1801,14 @@ static void menu_network(void) {
 
     if (net_active) {
         (void)spectrum_link_send_text(NETCHESS_PROTO_BYE);
+        /* MQTT: the BYE reaches the peer over the game topic, but the seat
+           we are leaving is a RETAINED presence -- without this it keeps
+           claiming the seat after we are gone, and the next client to try
+           that side reports BUSY against nobody. */
+        if (netchesszx_transport_is_mqtt()) {
+            (void)spectrum_link_mqtt_publish_offline(
+                SPECTRUM_LINK_ROUTE_PRESENCE);
+        }
         net_drop("Disconnected");
         return;
     }
@@ -1545,6 +1836,7 @@ static void menu_network(void) {
     netchesszx_session_peer_reset();
     net_peer_known = 0u;
     net_hello_wait = 0u;
+    mqtt_seat_probed = 0u;
     net_active = 1u;
 
     spectrum_gui_set_connected(netchesszx_transport_is_mqtt() ? 1u : 2u);

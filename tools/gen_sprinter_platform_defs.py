@@ -325,6 +325,50 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
     return "\n".join(lines)
 
 
+# Curated fixture list for tests/sprinter/z80/t_net_mqtt_read.asm, which
+# INCBINs the SHIPPED spliced resident image and stubs uNet out at exactly
+# these two entry points (patching a JP over each after the INCBIN), reading
+# and writing net_gate.asm's own result cells around them. Separate from
+# PLATFORM_SYMBOLS above for the same reason gen_sprinter_overlay_defs.py
+# keeps RESIDENT_TEST_SYMBOLS apart: that list is a shipping contract, this
+# one is a test fixture.
+PLATFORM_TEST_SYMBOLS = [
+    "ng_c_recv_poll",
+    "ng_c_send",
+    "ng_buf_rx",
+    "ng_c_recv_max",
+    "ng_c_send_ptr",
+    "ng_c_send_len",
+    "ng_v_call_status",
+    "ng_v_call_len",
+    "ng_v_call_flags",
+    "ng_v_call_cf",
+]
+
+
+def render_sjasmplus(symbols: dict[str, int], names: list[str]) -> str:
+    """Same addresses, sjasmplus EQU syntax, for the z80 test harness.
+
+    Only the handful of names the harness pokes, prefixed, rather than the
+    whole .sym file: sjasmplus rejects a duplicate EQU, and the .sym shares
+    plenty of names (CANARY_ADDR, STACK_TOP, ...) with fixed_layout.inc,
+    which the same test also includes.
+    """
+    missing = [name for name in names if name not in symbols]
+    if missing:
+        raise PlatformDefsError(
+            "missing platform symbol(s): " + ", ".join(missing)
+        )
+    lines = [f";; {GENERATED_BANNER}",
+             ";; sjasmplus syntax (consumed by tests/sprinter/z80/"
+             "t_net_mqtt_read.asm)",
+             ""]
+    for name in names:
+        lines.append(f"plat_{name}: EQU ${symbols[name]:04X}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _clean_fixture() -> str:
     return (
         "GFX_SLOT: EQU 0x00000010\n"
@@ -497,6 +541,16 @@ def self_test() -> None:
                 "[ERR] platform-defs self-test: missing symbol was not rejected"
             )
 
+        sj = render_sjasmplus(symbols, PLATFORM_TEST_SYMBOLS)
+        if "plat_ng_c_recv_poll: EQU $" not in sj:
+            raise SystemExit(
+                "[ERR] platform-defs self-test: sjasmplus mode missing a symbol"
+            )
+        if sj != render_sjasmplus(symbols, PLATFORM_TEST_SYMBOLS):
+            raise SystemExit(
+                "[ERR] platform-defs self-test: sjasmplus mode not deterministic"
+            )
+
     print("[OK] Sprinter platform-defs self-test")
 
 
@@ -505,6 +559,14 @@ def main() -> int:
     parser.add_argument("--sym", type=Path, help="sjasmplus --sym output to read")
     parser.add_argument("--out", type=Path, help="platform_defs.asm to write")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=["defc", "sjasmplus"],
+        default="defc",
+        help="output syntax: z88dk defc (the shipping builds, "
+             "PLATFORM_SYMBOLS) or sjasmplus EQU (the z80 resident test "
+             "harness, PLATFORM_TEST_SYMBOLS)",
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -518,7 +580,10 @@ def main() -> int:
 
     symbols = parse_sym(args.sym)
     try:
-        text = render(symbols, PLATFORM_SYMBOLS)
+        if args.mode == "sjasmplus":
+            text = render_sjasmplus(symbols, PLATFORM_TEST_SYMBOLS)
+        else:
+            text = render(symbols, PLATFORM_SYMBOLS)
     except PlatformDefsError as exc:
         print(f"[ERR] {args.sym}: {exc}", file=sys.stderr)
         return 1

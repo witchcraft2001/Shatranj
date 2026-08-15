@@ -63,6 +63,7 @@ extern void frame_wait(void);
  * portable-shaped matters more than avoiding two small literal copies). */
 #define NC_UNET_NERR_OK 0u
 #define NC_UNET_NERR_BUSY 13u
+#define NC_LINK_DOWN_RC (-2)
 
 /* docs/UNETRTL.md's documented recovery for a busy TCP channel: drain RX
  * (frees the receive queue SEND was blocked behind), wait a frame, retry.
@@ -109,6 +110,61 @@ static uint8_t net_peer_valid;
 static uint16_t net_mqtt_next_id = 1u;
 static uint8_t net_mqtt_tx_packet[SPECTRUM_MQTT_PACKET_MAX];
 static uint8_t net_mqtt_flags;
+static spectrum_mqtt_broker_keepalive_t net_mqtt_broker_keepalive;
+
+/* Which layer decided the MQTT link was down. NOT diagnostics for their own
+ * sake: netchesszx_session_poll() collapses four different failures into one
+ * NETCHESSZX_SESSION_POLL_DISCONNECTED return, and it is shared with
+ * ZX/Next so it cannot be taught to say more. Without this byte, "Link down"
+ * on screen is compatible with the socket having closed, the broker having
+ * stopped answering PINGREQ, uNet having refused a send, and the PEER having
+ * gone quiet -- four different bugs in four different places. Read by
+ * session_sprinter.c's net_poll_once and spelled out on the notice line. */
+uint8_t net_mqtt_down_reason;
+
+/* Which step of the NET overlay's MQTT sequence gave up, and what uNet made
+ * of it. Written by net_mqtt_ui_sprinter.c's mqtt_ovl_fail (see that file
+ * for what each step number means and why the ng_v_* snapshot matters), read
+ * by the NET screen AND, since the frame loop began dispatching
+ * activate_side/probe_seat, by session_sprinter.c. They live here rather
+ * than in the overlay's own BSS for exactly that second reader: the overlay
+ * page is not mapped once its entry returns, so its BSS is unreadable to
+ * every caller outside it. WIN1 is the only storage both can see. */
+uint8_t net_mqtt_fail_step;
+uint8_t net_mqtt_fail_cf;
+uint8_t net_mqtt_fail_status;
+/* Which subscribe within a multi-topic step, 1-based (0 = not a subscribe).
+   The step alone cannot separate "the channel was already unusable when
+   activate_side started" from "the first subscribe's own answer broke the
+   next one" -- and those are different bugs. */
+uint8_t net_mqtt_fail_detail;
+
+#define NET_MQTT_DOWN_NONE 0u
+#define NET_MQTT_DOWN_STREAM 1u     /* nc_mqtt_take latched: peer closed / RX lost */
+#define NET_MQTT_DOWN_KEEPALIVE 2u  /* broker missed SPECTRUM_MQTT_KEEPALIVE_MISSES_MAX */
+#define NET_MQTT_DOWN_PINGREQ 3u    /* uNet refused the PINGREQ send itself */
+
+/* Every per-link piece of MQTT state this file owns, cleared for a fresh
+ * broker session.
+ *
+ * The keepalive counters are the reason this exists. They are file statics,
+ * so they carry across connect attempts inside one run of the program: an
+ * attempt that ended with misses already at the limit makes the NEXT
+ * attempt's very first idle poll report SPECTRUM_MQTT_KEEPALIVE_LOST, which
+ * surfaces as "connected, then Link down immediately" on a link that has
+ * done nothing wrong. spectrum_net_mqtt_start() below could not cover this
+ * on its own: the NET screen (net_ui_sprinter.c's net_ui_mqtt_connect)
+ * dispatches net_mqtt_connect_start_ovl directly, so that path never runs
+ * spectrum_net_mqtt_start at all -- which is why the overlay calls this
+ * itself, right after the CONNACK is accepted. */
+void spectrum_net_mqtt_link_reset(void)
+{
+    spectrum_mqtt_broker_keepalive_reset(&net_mqtt_broker_keepalive);
+    net_mqtt_down_reason = NET_MQTT_DOWN_NONE;
+    net_mqtt_fail_detail = 0u;
+    net_mqtt_next_id = 1u;
+    net_mqtt_flags = 0u;
+}
 
 static uint16_t net_mqtt_alloc_id(void)
 {
@@ -133,6 +189,59 @@ static void net_mqtt_topic(char *out, const char *suffix)
     (void)spectrum_append_text(p, suffix);
 }
 
+/* One MQTT packet out of net_mqtt_tx_packet, with the SAME busy-retry ladder
+ * spectrum_net_send_text's DIRECT path already runs (docs/UNETRTL.md's
+ * documented recovery for a busy TCP channel: drain RX, wait a frame,
+ * retry).
+ *
+ * This path used to be a single ng_c_send() that reported NERR_BUSY as
+ * failure. That held while every MQTT publish happened at connect time,
+ * paced by the NET screen's own modal loop with an idle TX side. It stopped
+ * holding when S8 step 8f began publishing from the frame loop: presence and
+ * setup now go out immediately after four back-to-back SUBSCRIBEs, with the
+ * SUBACKs still streaming in, which is precisely when uNet reports BUSY. A
+ * transient BUSY then surfaced as "Activate side failed" -- a healthy link
+ * reported as a dead one.
+ *
+ * Spelled out rather than `(!cf && status == OK) ? 1u : 0u` -- sccz80
+ * miscompiles a ternary whose condition contains && or ||, always taking the
+ * false branch (tools/check_sccz80_codegen.py is the gate). */
+static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
+{
+    uint8_t retry;
+
+    for (retry = 0u; retry < NC_SEND_BUSY_RETRY_MAX; ++retry) {
+        /* Drain BEFORE the send, not only after a refusal. UNETRTL.md is
+         * explicit: "The consumer must drain pending data before another
+         * SEND on the same channel" -- the DLL retains a payload-bearing
+         * ACK in the channel's own 536-byte queue while SEND waits, and a
+         * SEND issued with that queue occupied cannot complete its
+         * stop-and-wait handshake. nc_mqtt_pump() IS that RECV: it polls
+         * until the gate stops reporting RXF_MORE. */
+        nc_mqtt_pump();
+        ng_c_send_ptr = (char *)packet;
+        ng_c_send_len = len;
+        ng_c_send();
+        if (ng_v_call_cf) {
+            return 0u;
+        }
+        if (ng_v_call_status == NC_UNET_NERR_OK) {
+            return 1u;
+        }
+        if (ng_v_call_status != NC_UNET_NERR_BUSY) {
+            /* Deliberately NOT retried, NERR_SEND above all. That one means
+             * the NIC already transmitted and the peer's cumulative ACK
+             * never came back (unetrtl.asm's MAP_TCP_SEND_FAIL) -- a fresh
+             * SEND would put the same MQTT bytes on the stream under a new
+             * TCP sequence number and corrupt the peer's parse. Only
+             * NERR_BUSY is a "nothing went out, try again" answer. */
+            return 0u;
+        }
+        frame_wait();
+    }
+    return 0u;
+}
+
 static uint8_t net_mqtt_publish_suffix(const char *suffix,
                                        const char *payload,
                                        uint8_t retain)
@@ -146,10 +255,7 @@ static uint8_t net_mqtt_publish_suffix(const char *suffix,
     if (len == 0u) {
         return 0u;
     }
-    ng_c_send_ptr = (char *)net_mqtt_tx_packet;
-    ng_c_send_len = len;
-    ng_c_send();
-    return (!ng_v_call_cf && ng_v_call_status == NC_UNET_NERR_OK) ? 1u : 0u;
+    return net_mqtt_send_raw(net_mqtt_tx_packet, len);
 }
 
 /* QoS1 PUBACK -- packet_id==0 (QoS0) is a deliberate no-op, matching
@@ -169,9 +275,42 @@ static void net_mqtt_puback(uint16_t packet_id)
     ack[1] = 0x02u;
     ack[2] = (uint8_t)(packet_id >> 8);
     ack[3] = (uint8_t)packet_id;
-    ng_c_send_ptr = (char *)ack;
-    ng_c_send_len = 4u;
+    /* Through the same ladder as every other send: this one runs from the
+     * frame loop right after a PUBLISH was consumed, which is exactly when
+     * the channel is most likely to still hold data the DLL needs drained
+     * before it will accept a SEND. It used to be a bare ng_c_send() whose
+     * result was not even looked at, so a PUBACK could silently never go
+     * out and the broker would redeliver forever. */
+    (void)net_mqtt_send_raw(ack, 4u);
+}
+
+static int16_t net_mqtt_keepalive_tick(void)
+{
+    uint8_t event = spectrum_mqtt_broker_keepalive_timeout(
+        &net_mqtt_broker_keepalive);
+    uint8_t ping[2];
+
+    if (event == SPECTRUM_MQTT_KEEPALIVE_NONE) {
+        return SPECTRUM_LINK_READ_TIMEOUT;
+    }
+    if (event == SPECTRUM_MQTT_KEEPALIVE_LOST) {
+        net_mqtt_down_reason = NET_MQTT_DOWN_KEEPALIVE;
+        return NC_LINK_DOWN_RC;
+    }
+    ping[0] = SPECTRUM_MQTT_PINGREQ_HEADER;
+    ping[1] = 0u;
+    ng_c_send_ptr = (char *)ping;
+    ng_c_send_len = 2u;
     ng_c_send();
+    if (ng_v_call_cf) {
+        net_mqtt_down_reason = NET_MQTT_DOWN_PINGREQ;
+        return NC_LINK_DOWN_RC;
+    }
+    if (ng_v_call_status != NC_UNET_NERR_OK) {
+        net_mqtt_down_reason = NET_MQTT_DOWN_PINGREQ;
+        return NC_LINK_DOWN_RC;
+    }
+    return SPECTRUM_LINK_READ_TIMEOUT;
 }
 
 /* Single non-blocking poll -- pump whatever uNet has queued into the
@@ -190,9 +329,15 @@ static int16_t net_mqtt_read_payload(char *payload, uint8_t payload_cap)
     net_mqtt_flags = 0u;
     nc_mqtt_pump();
     total = nc_mqtt_take();
-    if (total < 0) {
-        return SPECTRUM_LINK_READ_TIMEOUT;
+    if (total == (int16_t)NC_LINK_DOWN_RC) {
+        net_mqtt_down_reason = NET_MQTT_DOWN_STREAM;
+        return NC_LINK_DOWN_RC;
     }
+    if (total <= 0) {
+        return net_mqtt_keepalive_tick();
+    }
+    spectrum_mqtt_broker_keepalive_reset(&net_mqtt_broker_keepalive);
+    net_link_activity = 1u;
 
     if (spectrum_mqtt_type(nc_mqtt_packet(), (uint8_t)total) !=
         SPECTRUM_MQTT_PUBLISH) {
@@ -211,6 +356,7 @@ static int16_t net_mqtt_read_payload(char *payload, uint8_t payload_cap)
     net_mqtt_flags = flags;
     return 0;
 }
+
 
 static uint8_t net_mqtt_send_text(const char *text) NETCHESSZX_FASTCALL
 {
@@ -250,7 +396,15 @@ uint8_t spectrum_net_preflight_run(void)
 uint8_t spectrum_net_connect_host(void)
 {
     ng_c_connect();
-    return (!ng_v_call_cf && ng_v_call_status == NC_UNET_NERR_OK) ? 1u : 0u;
+    /* Same sccz80 &&-in-a-ternary miscompile as net_mqtt_publish_suffix
+     * above -- this one made a successful DIRECT connect report as failed. */
+    if (ng_v_call_cf) {
+        return 0u;
+    }
+    if (ng_v_call_status != NC_UNET_NERR_OK) {
+        return 0u;
+    }
+    return 1u;
 }
 
 void spectrum_net_direct_peer_mark_valid(void)
@@ -405,7 +559,7 @@ uint8_t spectrum_net_join_ui(void)
 uint8_t spectrum_net_mqtt_start(void)
 {
     nc_mqtt_reset();
-    net_mqtt_next_id = 1u;
+    spectrum_net_mqtt_link_reset();
     return spectrum_overlay_exec_cached(SPECTRUM_OVL_MQTT_CONNECT,
                                         SPECTRUM_OVL_MQTT_CONNECT_START);
 }

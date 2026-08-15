@@ -61,6 +61,36 @@ python3 "$repo_root/tools/gen_sprinter_cold_thunks.py" \
   --mode thunks-sjasmplus \
   --out "$generated_dir/cold_thunks_test.inc" >/dev/null
 
+# The real compiled net_frame.c blob's symbol addresses, in sjasmplus syntax,
+# for t_net_frame_blob.asm -- which INCBINs that blob and calls into it. The
+# point is to run the bytes that ship, not the same C rebuilt by gcc; see that
+# test's own banner. Skipped (with the test) when the blob has not been built.
+if [[ -f "$repo_root/build/sprinter/net_frame_c.map" ]]; then
+  python3 "$repo_root/tools/gen_sprinter_netframe_defs.py" \
+    --mode sjasmplus \
+    --map "$repo_root/build/sprinter/net_frame_c.map" \
+    --out "$generated_dir/netframe_blob_defs.inc" >/dev/null
+fi
+
+# Same idea one layer up, for t_net_mqtt_read.asm: that test INCBINs the
+# SPLICED resident image (build/sprinter/resident.bin -- WIN1 + WIN2 exactly
+# as SHATRANJ.EXE carries them, blob included) and drives its MQTT read path
+# through the shipped bytes. Needs both symbol tables: the resident C
+# entry points (resident_c.map) and net_gate.asm's own ng_* cells
+# (platform_primitives.sym, already sjasmplus-syntax, included directly).
+if [[ -f "$repo_root/build/sprinter/resident_c.map" ]]; then
+  python3 "$repo_root/tools/gen_sprinter_overlay_defs.py" \
+    --mode sjasmplus \
+    --map "$repo_root/build/sprinter/resident_c.map" \
+    --out "$generated_dir/resident_test_defs.inc" >/dev/null
+fi
+if [[ -f "$repo_root/build/sprinter/platform_primitives.sym" ]]; then
+  python3 "$repo_root/tools/gen_sprinter_platform_defs.py" \
+    --mode sjasmplus \
+    --sym "$repo_root/build/sprinter/platform_primitives.sym" \
+    --out "$generated_dir/platform_test_defs.inc" >/dev/null
+fi
+
 byte_at() { dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }
 
 fail=0
@@ -69,14 +99,43 @@ shopt -s nullglob
 for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
   ran=$((ran + 1))
   name="$(basename "$src" .asm)"
+  if [[ "$name" == "t_net_mqtt_read" ]] &&
+     { [[ ! -f "$generated_dir/resident_test_defs.inc" ]] ||
+       [[ ! -f "$generated_dir/platform_test_defs.inc" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/resident.bin" ]]; }; then
+    # Same "never built the target" guard t_net_frame_blob has below; the
+    # Makefile target depends on resident.bin, so `make sprinter-z80-test`
+    # always runs this test.
+    echo "SKIP $name: build/sprinter/resident.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
+  if [[ "$name" == "t_net_frame_blob" && ! -f "$generated_dir/netframe_blob_defs.inc" ]]; then
+    # Only reachable when the runner is invoked directly on a tree that has
+    # never built the blob; the Makefile target depends on it, so `make
+    # sprinter-z80-test` always runs this test.
+    echo "SKIP $name: build/sprinter/net_frame_c.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
   bin="$build_dir/$name.bin"
   dump="$build_dir/$name.out"
   rm -f "$dump"
   sjasmplus --nologo --fullpath \
     -I "$repo_root/asm/sprinter" -I "$generated_dir" -I "$harness_dir" \
+    -I "$repo_root/build/sprinter" \
     -I "$repo_root/extern/libman/libman" -I "$repo_root/extern/esp_net/src/include" \
     --raw="$bin" "$src"
-  "$ticks" -pc 0 -counter "${SPRINTER_Z80_TEST_CYCLES:-4000000}" \
+  # t_net_mqtt_read drives the real read path through three whole broker-
+  # keepalive windows (250 idle frames each), so it needs roughly an order
+  # of magnitude more cycles than every other test here. Raising the shared
+  # default instead would only make a hung test take that much longer to be
+  # reported as hung.
+  cycles="${SPRINTER_Z80_TEST_CYCLES:-4000000}"
+  if [[ -z "${SPRINTER_Z80_TEST_CYCLES:-}" && "$name" == "t_net_mqtt_read" ]]; then
+    cycles=20000000
+  fi
+  "$ticks" -pc 0 -counter "$cycles" \
     -output "$dump" "$bin" >/dev/null 2>&1 || true
   if [[ ! -f "$dump" ]]; then
     echo "FAIL $name: no memory dump" >&2

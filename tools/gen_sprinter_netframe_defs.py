@@ -169,6 +169,33 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
     return "\n".join(lines)
 
 
+def render_sjasmplus(symbols: dict[str, int], names: list[str]) -> str:
+    """Same addresses, sjasmplus EQU syntax, for the z80 test harness.
+
+    tests/sprinter/z80/t_net_frame_blob.asm INCBINs the REAL compiled blob
+    (build/sprinter/net_frame_c.bin) at its fixed ORG and calls into it by
+    address, so the reassembler that ships is the one under test. That
+    closes the gap this port has now been bitten by twice: the same source
+    passes tests/sprinter/host/test_net_frame.c under gcc while sccz80
+    emits something else for the target (2026-08-15, the &&-in-a-ternary
+    miscompile). Same precedent as gen_sprinter_cold_thunks.py's own
+    thunks-sjasmplus mode.
+    """
+    missing = [name for name in names if name not in symbols]
+    if missing:
+        raise NetframeDefsError(
+            "missing net_frame.c symbol(s): " + ", ".join(missing)
+        )
+    lines = [f";; {GENERATED_BANNER}",
+             ";; sjasmplus syntax (consumed by tests/sprinter/z80/"
+             "t_net_frame_blob.asm)",
+             ""]
+    for name in names:
+        lines.append(f"nc_blob_{name}: EQU ${symbols[name]:04X}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _clean_fixture() -> str:
     return (
         "_nc_smoke                       = $9D00 ; addr, public, , "
@@ -352,7 +379,17 @@ def self_test() -> None:
                 "[ERR] netframe-defs self-test: missing symbol was not rejected"
             )
 
-    print("[OK] Sprinter netframe-defs self-test")
+        sj = render_sjasmplus(symbols, NETFRAME_RESIDENT_SYMBOLS)
+        if "nc_blob_nc_mqtt_take: EQU $" not in sj:
+            raise SystemExit(
+                "[ERR] netframe-defs self-test: sjasmplus mode missing a symbol"
+            )
+        if sj != render_sjasmplus(symbols, NETFRAME_RESIDENT_SYMBOLS):
+            raise SystemExit(
+                "[ERR] netframe-defs self-test: sjasmplus mode not deterministic"
+            )
+
+        print("[OK] Sprinter netframe-defs self-test")
 
 
 def main() -> int:
@@ -360,6 +397,13 @@ def main() -> int:
     parser.add_argument("--map", type=Path, help="net_frame_c.map to read")
     parser.add_argument("--out", type=Path, help="netframe_defs.asm to write")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=["defc", "sjasmplus"],
+        default="defc",
+        help="output syntax: z88dk defc (the resident build) or sjasmplus "
+             "EQU (the z80 blob test harness)",
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -373,7 +417,10 @@ def main() -> int:
 
     symbols = parse_map(args.map)
     try:
-        text = render(symbols, NETFRAME_RESIDENT_SYMBOLS)
+        if args.mode == "sjasmplus":
+            text = render_sjasmplus(symbols, NETFRAME_RESIDENT_SYMBOLS)
+        else:
+            text = render(symbols, NETFRAME_RESIDENT_SYMBOLS)
     except NetframeDefsError as exc:
         print(f"[ERR] {args.map}: {exc}", file=sys.stderr)
         return 1

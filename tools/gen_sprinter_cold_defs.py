@@ -167,6 +167,31 @@ COLD_RESIDENT_SYMBOLS = [
     "spectrum_net_payload_scratch",
     "spectrum_net_start_uart",
     "spectrum_net_join_ui",
+    # --- S8 step 8f: the MQTT presence half of session_sprinter.c's own
+    # net_handle_event (a port of app.c's session_presence_handle_event --
+    # see that function's own header for why it had to be ported at all).
+    # Same homes as everything above: WIN1 C (session/event.c,
+    # config/session.c, unet_link.c, mqtt_session_wire.c). NOT here:
+    # netchess_mqtt_session_parse_host, which the same code calls -- it
+    # lives in the WIN2 blob, and the cold page links netframe_defs.asm
+    # directly, so listing it here is a duplicate definition, not a bridge.
+    "netchesszx_session_role",                 # src/spectrum/config/session.c
+    "netchesszx_mqtt_session_id",
+    "netchesszx_session_peer_ready_state",     # src/spectrum/session/event.c
+    "netchesszx_session_mqtt_host_flags",
+    "spectrum_net_mqtt_activate_side",         # src/sprinter/transport/unet_link.c
+    "spectrum_net_mqtt_probe_seat",
+    "spectrum_net_mqtt_publish_presence",
+    "spectrum_net_mqtt_publish_setup",
+    "spectrum_net_mqtt_publish_offline",       # src/spectrum/transport/mqtt_session_wire.c
+    # The two diagnostic groups this file's net_link_down_why/
+    # net_mqtt_fail_why turn into a notice line: which layer called the link
+    # down, and which MQTT overlay step gave up.
+    "net_mqtt_down_reason",                    # src/sprinter/transport/unet_link.c
+    "net_mqtt_fail_step",
+    "net_mqtt_fail_cf",
+    "net_mqtt_fail_status",
+    "net_mqtt_fail_detail",
 ]
 
 GENERATED_BANNER = (
@@ -231,6 +256,37 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
         lines.append(f"defc {name} = ${addr:04X}")
     lines.append("")
     return "\n".join(lines)
+
+
+def verify(defs_path: Path, map_path: Path) -> list[str]:
+    """Every address the cold page baked must match the resident that shipped.
+
+    The cold page calls WIN1 by absolute address through the defc bridge this
+    tool writes. If the bridge is generated from a stale resident_c.map --
+    which GNU make 3.81 managed to do, because the map's own rule carries no
+    recipe -- the page calls into the middle of whatever moved, and the
+    failure is a silent wrong jump, not a link error. On 2026-08-15 that
+    shipped: 42 of 78 symbols wrong, spectrum_net_join_ui among them, so
+    selecting DISCC jumped into the wrong WIN1 function and the network
+    screen never opened. Returns the list of disagreements (empty = clean).
+    """
+    resident = parse_map(map_path)
+    baked = dict(
+        (name, int(addr, 16))
+        for name, addr in re.findall(r"^defc _(\S+) = \$([0-9A-Fa-f]+)",
+                                     defs_path.read_text(encoding="ascii",
+                                                         errors="replace"),
+                                     re.MULTILINE)
+    )
+    problems = []
+    for name, addr in sorted(baked.items()):
+        if name not in resident:
+            problems.append(f"{name}: baked ${addr:04X}, absent from the resident")
+        elif resident[name] != addr:
+            problems.append(
+                f"{name}: cold page calls ${addr:04X}, resident has ${resident[name]:04X}"
+            )
+    return problems
 
 
 def _clean_fixture() -> str:
@@ -316,11 +372,28 @@ def main() -> int:
     parser.add_argument("--map", type=Path, help="resident_c.map to read")
     parser.add_argument("--out", type=Path, help="cold_defs.asm to write")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--verify", type=Path,
+                        help="cold_defs.asm to check against --map instead of writing")
     args = parser.parse_args()
 
     if args.self_test:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         self_test()
+        return 0
+
+    if args.verify:
+        if not args.map:
+            raise SystemExit("gen_sprinter_cold_defs: --verify needs --map")
+        problems = verify(args.verify, args.map)
+        if problems:
+            print(f"[ERR] {args.verify} disagrees with {args.map}:", file=sys.stderr)
+            for line in problems:
+                print(f"       {line}", file=sys.stderr)
+            print("       the cold page was built against a different resident "
+                  "layout -- it must be rebuilt AFTER the resident, never before",
+                  file=sys.stderr)
+            return 1
+        print(f"[OK] {args.verify}: cold-page bridge agrees with {args.map}")
         return 0
 
     if not args.map or not args.out:

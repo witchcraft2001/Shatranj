@@ -905,7 +905,8 @@ endif
         sprinter-hw-zip sprinter-layout-check sprinter-z80-test sprinter-resident-test \
         sprinter-host-test \
         sprinter-gates sprinter-section-gate sprinter-crt0-check sprinter-platform-defs-check \
-        sprinter-netframe-defs-check sprinter-cold-page-check \
+        sprinter-netframe-defs-check sprinter-sccz80-codegen-check \
+        sprinter-cold-page-check \
         sprinter-overlay-defs-check sprinter-overlay-control-check \
         sprinter-overlay-rules-check sprinter-overlay-board-check \
         sprinter-overlay-saveload-check sprinter-overlay-restore-check \
@@ -1391,6 +1392,18 @@ $(SPRINTER_NETFRAME_DEFS_ASM): tools/gen_sprinter_netframe_defs.py $(SPRINTER_NE
 sprinter-netframe-defs-check: tools/gen_sprinter_netframe_defs.py
 	$(PYTHON) tools/gen_sprinter_netframe_defs.py --self-test
 
+# sccz80 emits wrong code for a conditional expression whose condition
+# contains && or || -- the result is computed into HL and then tested in the
+# carry flag, so the false branch always wins. Silent at every other gate;
+# it cost three MAME rounds in S8 step 8 before it was found (a successful
+# MQTT CONNECT reported as a failed send). This recompiles every Sprinter C
+# source with the real build's flags and rejects the emitted shape.
+# ZX/Next are SDCC and unaffected -- this gate is Sprinter-only by design.
+.PHONY: sprinter-sccz80-codegen-check
+sprinter-sccz80-codegen-check: tools/check_sccz80_codegen.py $(SPRINTER_LAYOUT_H) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(PYTHON) tools/check_sccz80_codegen.py --self-test
+	ZCC=$(ZCC) $(PYTHON) tools/check_sccz80_codegen.py
+
 # WIN3 cold-code page. Same "independent zcc build at a fixed ORG, padded
 # to a whole 16 KiB asset page" shape as before, but since S7 step 5 the
 # dependency arrow points the OTHER way: this page is built AFTER
@@ -1421,7 +1434,17 @@ $(SPRINTER_COLD_ENTRY_TABLE): tools/gen_sprinter_cold_thunks.py \
 	$(PYTHON) tools/gen_sprinter_cold_thunks.py --mode entry-table \
 		--out $(SPRINTER_COLD_ENTRY_TABLE)
 
-$(SPRINTER_COLD_DEFS_ASM): tools/gen_sprinter_cold_defs.py $(SPRINTER_RESIDENT_C_MAP) \
+# Depends on the resident .bin, NOT the .map. The .map is written as a side
+# effect of the resident link and its own rule carries no recipe, and with
+# that shape GNU make 3.81 decided this target was up to date while the map
+# under it had moved -- so the cold page kept calling WIN1 addresses from a
+# previous layout. That is not a theoretical race: on 2026-08-15 it shipped
+# a build in which 42 of these 78 bridge symbols pointed at the wrong
+# resident address, including spectrum_net_join_ui, which is exactly why
+# the network screen "worked before and then stopped". The .bin has a real
+# recipe and a real timestamp; sprinter-cold-defs-check below is the belt
+# to this braces.
+$(SPRINTER_COLD_DEFS_ASM): tools/gen_sprinter_cold_defs.py $(SPRINTER_RESIDENT_C_BIN) \
                            | $(SPRINTER_GENERATED_DIR)
 	$(PYTHON) tools/gen_sprinter_cold_defs.py --map $(SPRINTER_RESIDENT_C_MAP) \
 		--out $(SPRINTER_COLD_DEFS_ASM)
@@ -1454,11 +1477,18 @@ $(SPRINTER_COLD_WIN3_PAGE): tools/make_sprinter_cold_page.py $(SPRINTER_COLD_IMA
 	$(PYTHON) tools/make_sprinter_cold_page.py --image $(SPRINTER_COLD_IMAGE_BIN) \
 		--output $(SPRINTER_COLD_WIN3_PAGE)
 
+# The last line is not a self-test: it checks the ARTEFACTS. The cold page
+# calls WIN1 by absolute address, so a bridge generated from a stale
+# resident_c.map makes the page jump into the middle of whatever moved --
+# a silent wrong jump, never a link error. That shipped on 2026-08-15 with
+# 42 of 78 symbols wrong (see gen_sprinter_cold_defs.py's verify()).
 sprinter-cold-page-check: tools/gen_sprinter_cold_thunks.py tools/gen_sprinter_cold_defs.py \
-                          tools/make_sprinter_cold_page.py
+                          tools/make_sprinter_cold_page.py $(SPRINTER_COLD_IMAGE_BIN)
 	$(PYTHON) tools/gen_sprinter_cold_thunks.py --self-test
 	$(PYTHON) tools/gen_sprinter_cold_defs.py --self-test
 	$(PYTHON) tools/make_sprinter_cold_page.py --self-test
+	$(PYTHON) tools/gen_sprinter_cold_defs.py --verify $(SPRINTER_COLD_DEFS_ASM) \
+		--map $(SPRINTER_RESIDENT_C_MAP)
 
 # game_protocol.c/mqtt_session_protocol.c (plan D7): portable common/
 # protocol source, no platform #ifdef of its own. Linked into the resident
@@ -1531,7 +1561,8 @@ $(SPRINTER_RESIDENT_C_MAP): $(SPRINTER_RESIDENT_C_BIN)
 
 SPRINTER_OVERLAY_DEFS_ASM := $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.asm
 
-$(SPRINTER_OVERLAY_DEFS_ASM): tools/gen_sprinter_overlay_defs.py $(SPRINTER_RESIDENT_C_MAP) \
+# Same .bin-not-.map dependency, for the same reason (see cold_defs above).
+$(SPRINTER_OVERLAY_DEFS_ASM): tools/gen_sprinter_overlay_defs.py $(SPRINTER_RESIDENT_C_BIN) \
                               | $(SPRINTER_GENERATED_DIR)
 	$(PYTHON) tools/gen_sprinter_overlay_defs.py --map $(SPRINTER_RESIDENT_C_MAP) \
 		--out $(SPRINTER_OVERLAY_DEFS_ASM)
@@ -1829,8 +1860,17 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 	$(PYTHON) tests/tools/test_sprinter_resident.py
 	$(PYTHON) tests/tools/test_sprinter_overlay_dispatch.py
 
+# Depends on the compiled blob: tests/sprinter/z80/t_net_frame_blob.asm
+# INCBINs build/sprinter/net_frame_c.bin and calls into it at the addresses
+# its own .map reports, so the MQTT reassembler under test is byte-identical
+# to the one in SHATRANJ.EXE (see that test's banner for why a gcc-built host
+# test was not enough).
+# $(SPRINTER_RESIDENT_BIN) is a dependency for t_net_mqtt_read.asm, which
+# INCBINs the spliced resident image and drives its MQTT read path through
+# the bytes that ship (that test's own banner has the why).
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
-                   $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC)
+                   $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC) \
+                   $(SPRINTER_NET_FRAME_C_BIN) $(SPRINTER_RESIDENT_BIN)
 	tools/run_sprinter_z80_tests.sh
 
 # net_frame.c (S7 step 2) builds and behaves identically under gcc: no
@@ -1898,6 +1938,7 @@ sprinter-about: tools/make_sprinter_about.py $(SPRINTER_ABOUT_PNG)
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-crt0-check \
                 sprinter-platform-defs-check sprinter-netframe-defs-check \
+                sprinter-sccz80-codegen-check \
                 sprinter-cold-page-check \
                 sprinter-overlay-defs-check \
                 sprinter-overlay-control-check sprinter-overlay-rules-check \

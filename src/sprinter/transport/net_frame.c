@@ -182,17 +182,26 @@ int16_t nc_mqtt_take(void)
         }
     }
     if (nc_mqtt_stream_len < 2u) {
-        return 0;
+        return nc_fatal ? (int16_t)NC_LINK_DOWN : 0;
     }
 
-    b = NC_MQTT_STREAM[1u];
+    /* *(P + k), NOT P[k]. sccz80 miscompiles a CONSTANT index on a
+     * cast-literal pointer macro: it folds the address and then assigns the
+     * folded LOW BYTE as the value instead of loading through it, so this
+     * line read the remaining-length as 7 -- the low byte of 0xB707 -- and
+     * the reassembler waited for a packet length no CONNACK ever has
+     * (2026-08-15 MAME finding; tests/sprinter/z80/t_net_frame_blob.asm
+     * runs the compiled blob so this cannot come back silently). A variable
+     * index compiles correctly, which is why only these two lines were hit.
+     * The form below is also correct for the host build's plain arrays. */
+    b = *(NC_MQTT_STREAM + 1u);
     remaining = (uint8_t)(b & 0x7fu);
     header_len = 2u;
     if ((b & 0x80u) != 0u) {
         if (nc_mqtt_stream_len < 3u) {
-            return 0;
+            return nc_fatal ? (int16_t)NC_LINK_DOWN : 0;
         }
-        b = NC_MQTT_STREAM[2u];
+        b = *(NC_MQTT_STREAM + 2u);   /* see the [1u] note above */
         if ((b & 0x80u) != 0u || b > 1u) {
             /* A third varint byte, or a second byte encoding more than
              * fits SPECTRUM_MQTT_PACKET_MAX two bytes in: not a length
@@ -211,7 +220,7 @@ int16_t nc_mqtt_take(void)
     }
     total = (uint8_t)(header_len + remaining);
     if (nc_mqtt_stream_len < total) {
-        return 0;
+        return nc_fatal ? (int16_t)NC_LINK_DOWN : 0;
     }
 
     for (i = 0u; i < total; ++i) {

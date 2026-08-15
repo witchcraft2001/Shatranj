@@ -146,16 +146,30 @@ void nc_mqtt_feed(const uint8_t *data, uint8_t len);
 
 /* Resyncs past leading garbage, decodes the fixed-header remaining-length
  * varint, and returns: 0 if the accumulator does not yet hold a complete
- * packet (keep feeding); -1 if the header was malformed (a 2-byte varint
- * continuation byte with its own top bit set, or too large a value) or
- * the decoded packet would exceed SPECTRUM_MQTT_PACKET_MAX -- either way
- * the WHOLE accumulator is discarded, matching mqtt_take_stream_packet()'s
- * "resync from nothing" recovery rather than trying to salvage a
- * corrupt length; otherwise the packet's total length (header + payload),
- * with that many bytes now sitting in the packet scratch buffer, valid
- * until the next nc_mqtt_take() call. Idempotent: calling it again before
- * nc_mqtt_consume() re-copies and re-returns the same packet, it does not
- * remove it from the accumulator. */
+ * packet and the link is not latched fatal (keep feeding); NC_LINK_DOWN if
+ * the accumulator does not hold a complete packet AND nc_mark_closed()/
+ * nc_mark_lost() was called (nc_mqtt_pump()'s own NERR_CLOSED/RXF_LOST
+ * handling) -- mirrors nc_line_pop()'s exact convention: a complete packet
+ * already sitting in the accumulator is still returned first (the "queue"
+ * drains before LINK_DOWN is reported), so a CONNACK that arrived in the
+ * same segment as the FIN is not lost; -1 if the header was malformed (a
+ * 2-byte varint continuation byte with its own top bit set, or too large a
+ * value) or the decoded packet would exceed SPECTRUM_MQTT_PACKET_MAX --
+ * either way the WHOLE accumulator is discarded, matching mqtt_take_
+ * stream_packet()'s "resync from nothing" recovery rather than trying to
+ * salvage a corrupt length; otherwise the packet's total length (header +
+ * payload), with that many bytes now sitting in the packet scratch buffer,
+ * valid until the next nc_mqtt_take() call. Idempotent: calling it again
+ * before nc_mqtt_consume() re-copies and re-returns the same packet, it
+ * does not remove it from the accumulator.
+ *
+ * A caller polling for a specific packet type in a wait loop (net_mqtt_ui_
+ * sprinter.c's mqtt_ovl_wait_type(), S8 step 8d) MUST check for NC_LINK_DOWN
+ * and stop immediately rather than keep polling until its own timeout --
+ * before this was added (2026-08-15 MAME finding against a real external
+ * broker), a broker that closed the TCP connection right after a rejected
+ * CONNECT instead of ever sending a CONNACK left the caller waiting out the
+ * full ~40s timeout with no way to tell "closed" from "still might arrive". */
 int16_t nc_mqtt_take(void);
 
 /* Pointer to the packet scratch buffer nc_mqtt_take() last copied a

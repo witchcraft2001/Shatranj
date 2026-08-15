@@ -48,6 +48,7 @@
 #include "spectrum/lowram_map.h"
 #include "spectrum/config/session.h"
 #include "spectrum/transport/link.h"
+#include "spectrum/platform/text.h"
 
 #include <string.h>
 
@@ -86,6 +87,10 @@ extern unsigned char ng_c_env_found;
    invocation compiles both .c files, then links them together), so this
    is a plain same-image call, no bridge needed. */
 extern unsigned char net_mqtt_connect_start_ovl(void);
+extern uint16_t net_mqtt_new_session_id(void);
+extern unsigned char net_mqtt_fail_step;
+extern unsigned char net_mqtt_fail_cf;
+extern unsigned char net_mqtt_fail_status;
 
 /* im2_s1.asm's frame tick and keyboard latch (WIN2). key_code is a latch,
    not a per-frame snapshot -- this loop clears it after acting, the same
@@ -129,6 +134,7 @@ extern unsigned char key_code;
 #define NET_UI_ROW_BACKEND 14u
 #define NET_UI_ROW_STATE 16u
 #define NET_UI_ROW_DETAIL 17u
+#define NET_UI_ROW_DETAIL2 18u
 #define NET_UI_ROW_FOOTER 20u
 #define NET_UI_COL 2u
 
@@ -291,9 +297,16 @@ static char net_ui_filter_broker(char c)
     return 0;
 }
 
+/* Spelled out as an if, not `(c >= '0' && c <= '9') ? c : 0` -- sccz80
+   miscompiles a ternary whose condition contains && or ||, always taking the
+   false branch, which here silently made the PORT field reject every digit
+   typed into it (2026-08-15; tools/check_sccz80_codegen.py is the gate). */
 static char net_ui_filter_port(char c)
 {
-    return (c >= '0' && c <= '9') ? c : 0;
+    if (c >= '0' && c <= '9') {
+        return c;
+    }
+    return 0;
 }
 
 static uint8_t net_ui_field_len(const char *field)
@@ -395,14 +408,81 @@ static const char *net_ui_backend_name(void)
     return "-- (SET NET=WIFI OR RTL)";
 }
 
-/* LASTERR is the DLL's own tail-of-last-response text. Empty is normal for
-   failures that never reached the wire, so say so rather than painting a
-   blank row that reads like a rendering bug. */
-static void net_ui_show_lasterr(void)
+/* LASTERR is the DLL's own diagnostic text. Empty is normal for failures
+   that never reached the wire, so say so rather than painting a blank row
+   that reads like a rendering bug.
+
+   IT IS SECONDARY INFORMATION, not a report of this attempt, and the row it
+   is painted on says so ("ADAPTER:"). The RTL backend formats it live out
+   of state that persists across calls (unetrtl.asm's STAGE/LAST_NERR/
+   TCP_LAST_FAIL/DIAG_*), and nothing updates it when a call fails before
+   the DLL is entered -- net_gate.asm's own argument checks and libman's
+   l_call both return without dispatching. A 2026-08-15 MAME round was spent
+   reading a previous successful call's line as if it described the failure
+   in front of it. net_ui_show_mqtt_failure() below is the authoritative
+   report; this stays because when it IS fresh it names the chip-level
+   cause, which nothing else here can. Painted without a label prefix on
+   purpose: the line already starts with its own "RTL "/"ESP " tag, and
+   net_ui_append's NET_UI_TEXT_MAX cap would eat the tail of the fixed
+   layout's high-value head fields if anything were put in front of it. */
+static void net_ui_show_lasterr(unsigned char row)
 {
     ng_lasterr_fetch();
-    net_ui_row(NET_UI_ROW_DETAIL, NET_UI_ATTR_DIM,
+    net_ui_row(row, NET_UI_ATTR_DIM,
                ng_buf_lasterr[0] != '\0' ? ng_buf_lasterr : "(no adapter detail)");
+}
+
+/* Keep in step with net_mqtt_ui_sprinter.c's MQTT_FAIL_* codes. */
+static const char *net_ui_mqtt_step_name(unsigned char step)
+{
+    switch (step) {
+    case 1u: return "PREFLIGHT";
+    case 2u: return "TCP CONNECT";
+    case 3u: return "BUILD CONNECT";
+    case 4u: return "SEND CONNECT";
+    case 5u: return "WAIT CONNACK";
+    case 6u: return "CONNACK REJECTED";
+    case 7u: return "SEND SUBSCRIBE";
+    case 8u: return "WAIT SUBACK";
+    case 9u: return "SUBACK REJECTED";
+    case 10u: return "PUBLISH PRESENCE";
+    default: return "NOT REACHED";
+    }
+}
+
+/* sccz80 rejects a plain `end - net_ui_spec` here ("Pointer addition ...
+   is invalid"): net_ui_spec is a cast-literal macro, not a real char*
+   object, so the two operands never become a valid pointer difference.
+   Subtracting the two addresses as integers is the same arithmetic and
+   compiles on both toolchains. */
+static unsigned char net_ui_append_u8(unsigned char at, unsigned char value)
+{
+    char *end = spectrum_append_u16(&net_ui_spec[at], (uint16_t)value);
+
+    return (unsigned char)((uint16_t)end - (uint16_t)net_ui_spec);
+}
+
+/* The authoritative failure report: which step of the connect sequence gave
+   up, and net_gate.asm's own per-call outcome (ng_v_call_cf/ng_v_call_status)
+   at that moment. Unlike LASTERR above, both are written by ng_c_store_result
+   on EVERY C-wrapper call -- including the ones that never reach the DLL --
+   so this row cannot show a stale stage from an earlier, unrelated call. */
+static void net_ui_show_mqtt_failure(void)
+{
+    unsigned char at;
+
+    net_ui_spec[0] = (char)NET_UI_ROW_DETAIL;
+    net_ui_spec[1] = (char)NET_UI_COL;
+    net_ui_spec[2] = (char)NET_UI_ATTR_BRIGHT;
+    at = net_ui_append(3u, "STEP ");
+    at = net_ui_append_u8(at, net_mqtt_fail_step);
+    at = net_ui_append(at, " ");
+    at = net_ui_append(at, net_ui_mqtt_step_name(net_mqtt_fail_step));
+    at = net_ui_append(at, "  CF=");
+    at = net_ui_append_u8(at, net_mqtt_fail_cf);
+    at = net_ui_append(at, " ST=");
+    (void)net_ui_append_u8(at, net_mqtt_fail_status);
+    spectrum_render_ikkle_at(net_ui_spec);
 }
 
 static uint8_t net_ui_max_focus(void)
@@ -534,6 +614,7 @@ static unsigned char net_ui_direct_connect(void)
 {
     for (;;) {
         net_ui_row(NET_UI_ROW_DETAIL, NET_UI_ATTR_DIM, "");
+        net_ui_row(NET_UI_ROW_DETAIL2, NET_UI_ATTR_DIM, "");
         net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM, "ESC CANCELS AT ANY STAGE");
         net_ui_state("PREFLIGHT: LOADING BACKEND...");
 
@@ -557,7 +638,7 @@ static unsigned char net_ui_direct_connect(void)
         ng_c_connect();
         if (ng_v_call_cf || ng_v_call_status != NET_UI_NERR_OK) {
             net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, "CONNECT FAILED");
-            net_ui_show_lasterr();
+            net_ui_show_lasterr(NET_UI_ROW_DETAIL);
             /* Leave the backend up but the channel shut, so a retry is a
                fresh CONNECT rather than a second library load. */
             ng_close();
@@ -585,6 +666,7 @@ static unsigned char net_ui_mqtt_connect(void)
 {
     for (;;) {
         net_ui_row(NET_UI_ROW_DETAIL, NET_UI_ATTR_DIM, "");
+        net_ui_row(NET_UI_ROW_DETAIL2, NET_UI_ATTR_DIM, "");
         net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM, "ESC CANCELS AT ANY STAGE");
         net_ui_state("CONNECTING TO BROKER...");
 
@@ -600,9 +682,27 @@ static unsigned char net_ui_mqtt_connect(void)
             net_ui_row(NET_UI_ROW_BACKEND, NET_UI_ATTR_DIM, net_ui_backend_name());
             net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT,
                       ng_up_reason != 0u ? "PREFLIGHT FAILED" : "CONNECT FAILED");
-            net_ui_row(NET_UI_ROW_DETAIL, NET_UI_ATTR_DIM,
-                      ng_up_reason != 0u ? net_ui_preflight_reason(ng_up_reason)
-                                          : "CHECK BROKER/PORT/ROOM");
+            if (ng_up_reason != 0u) {
+                net_ui_row(NET_UI_ROW_DETAIL, NET_UI_ATTR_DIM,
+                          net_ui_preflight_reason(ng_up_reason));
+                net_ui_row(NET_UI_ROW_DETAIL2, NET_UI_ATTR_DIM, "");
+            } else {
+                /* Backend loaded, so the failure is somewhere in TCP
+                   connect / MQTT CONNECT / CONNACK -- the DLL's own last
+                   AT/driver response tail (LASTERR) says which, the same
+                   diagnostic net_ui_direct_connect() already shows on its
+                   own CONNECT FAILED. A static "CHECK BROKER/PORT/ROOM"
+                   here was a 2026-08-15 MAME finding: a broker address
+                   that matched the Qt peer's own (and that Qt connected to
+                   successfully) still failed with zero information on
+                   which stage -- DNS, TCP, or the MQTT handshake itself --
+                   actually rejected it -- and 2026-08-15's follow-up round
+                   then showed WHY that was still not enough: LASTERR alone
+                   is not a report of the attempt at all (see net_ui_show_
+                   lasterr's own comment). The step/CF/status row is. */
+                net_ui_show_mqtt_failure();
+                net_ui_show_lasterr(NET_UI_ROW_DETAIL2);
+            }
             if (net_ui_wait_retry()) {
                 continue;
             }
@@ -663,6 +763,22 @@ static unsigned char net_ui_try_connect(void)
                                  NETCHESSZX_COLOR_WHITE);
     if (net_ui_role == NETCHESSZX_SESSION_ROLE_JOIN) {
         netchesszx_host_color_ready = 0u;
+    }
+    /* app.c's session_setup_start does exactly this, and skipping it was a
+       2026-08-15 MAME finding: an MQTT HOST announced "H W 0" and a guest
+       that adopted session id 0 could never reach GAME START (event.c's
+       netchesszx_session_mqtt_can_accept_game_start requires a non-zero id).
+       A JOIN must start at 0 for the opposite reason -- it learns the id
+       from the host's own H, and mqtt.c's apply_host_color treats a
+       DIFFERENT non-zero id as "a new live session" and resets peer state,
+       which a leftover id from a previous room would trigger spuriously. */
+    /* Spelled as an if, not a ternary: sccz80 miscompiles an &&/|| inside a
+       conditional expression (tools/check_sccz80_codegen.py gates exactly
+       this, and caught the first draft of these four lines). */
+    netchesszx_mqtt_session_id = 0u;
+    if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT &&
+        net_ui_role == NETCHESSZX_SESSION_ROLE_HOST) {
+        netchesszx_mqtt_session_id = net_mqtt_new_session_id();
     }
 
     return net_ui_transport == NETCHESSZX_TRANSPORT_MQTT

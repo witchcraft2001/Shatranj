@@ -116,6 +116,14 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "nc_mqtt_take",
     "nc_mqtt_packet",
     "nc_mqtt_consume",
+    # nc_mqtt_reset is needed here for a reason the other four are not:
+    # unet_link.c's spectrum_net_mqtt_start() (WIN1) calls it before
+    # dispatching this overlay, but the NET screen calls net_mqtt_connect_
+    # start_ovl() DIRECTLY (same overlay image, no WIN1 round trip), so that
+    # wrapper -- and therefore the only reset of the accumulator and of the
+    # nc_fatal latch SHARED with the DIRECT line splitter -- was skipped on
+    # the screen's own path entirely (2026-08-15).
+    "nc_mqtt_reset",
     # mqtt_session_wire.c's topic-suffix builders and unet_link.c's own
     # publish_presence/publish_setup (both WIN1 resident since S8 step 8c)
     # -- the NET overlay's connect flow needs all six for subscribe/publish
@@ -126,6 +134,42 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "spectrum_net_mqtt_presence_suffix",
     "spectrum_net_mqtt_publish_presence",
     "spectrum_net_mqtt_publish_setup",
+    # Clears WIN1's per-link MQTT state (broker-keepalive counters above all)
+    # for a fresh broker session. Called from the overlay rather than only
+    # from spectrum_net_mqtt_start because the NET screen dispatches
+    # net_mqtt_connect_start_ovl directly and never runs that function.
+    "spectrum_net_mqtt_link_reset",
+    # The connect flow's own failure cells. They live in WIN1 (unet_link.c),
+    # not in this overlay's BSS, because session_sprinter.c has to read them
+    # too now that the frame loop dispatches activate_side/probe_seat -- and
+    # an overlay's BSS is unreadable the moment its page is swapped out.
+    "net_mqtt_fail_step",
+    "net_mqtt_fail_cf",
+    "net_mqtt_fail_status",
+    "net_mqtt_fail_detail",
+]
+
+# Second, independent allowlist -- the entry points tests/sprinter/z80/
+# t_net_mqtt_read.asm calls in the SHIPPED resident image (it INCBINs
+# build/sprinter/resident.bin at $4000 and calls in by .map address, exactly
+# as t_net_frame_blob.asm already does for the WIN2 blob). Kept apart from
+# OVERLAY_RESIDENT_SYMBOLS above because the two lists answer different
+# questions: that one is "what may an overlay link against" (a shipping
+# contract), this one is "what does the harness poke at" (a test fixture).
+# Adding a name here costs nothing at runtime and must never be taken as
+# permission for overlay code to call it.
+RESIDENT_TEST_SYMBOLS = [
+    "spectrum_net_read_payload",
+    "spectrum_net_payload_flags",
+    "spectrum_net_background_drain",
+    "netchesszx_transport",
+    "netchesszx_session_role",
+    "netchesszx_local_color",
+    "netchesszx_mqtt_code",
+    "netchesszx_session_poll",
+    "netchesszx_session_peer_ready_state",
+    "netchesszx_host_color_ready",
+    "netchesszx_mqtt_session_id",
 ]
 
 GENERATED_BANNER = (
@@ -173,8 +217,48 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
     return "\n".join(lines)
 
 
+def render_sjasmplus(symbols: dict[str, int], names: list[str]) -> str:
+    """Same addresses, sjasmplus EQU syntax, for the z80 test harness.
+
+    tests/sprinter/z80/t_net_mqtt_read.asm INCBINs the REAL spliced resident
+    image (build/sprinter/resident.bin, WIN1+WIN2 exactly as SHATRANJ.EXE
+    carries it) and drives its MQTT read path by calling these addresses.
+    Same reasoning as gen_sprinter_netframe_defs.py's own sjasmplus mode:
+    host gcc tests prove the algorithm, not the bytes that ship, and this
+    port has now lost several MAME rounds to that gap.
+    """
+    missing = [name for name in names if name not in symbols]
+    if missing:
+        raise OverlayDefsError(
+            "missing resident symbol(s): " + ", ".join(missing)
+        )
+    lines = [f";; {GENERATED_BANNER}",
+             ";; sjasmplus syntax (consumed by tests/sprinter/z80/"
+             "t_net_mqtt_read.asm)",
+             ""]
+    for name in names:
+        lines.append(f"res_{name}: EQU ${symbols[name]:04X}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _clean_fixture() -> str:
     return (
+        "_spectrum_net_read_payload      = $6D67 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_read_payload::0::0:6\n"
+        "_spectrum_net_payload_flags     = $6EA4 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_payload_flags::0::0:6\n"
+        "_netchesszx_transport           = $78D2 ; addr, public, , "
+        "src_spectrum_config_session_c, data_compiler, "
+        "src/spectrum/config/session.c:6\n"
+        "_netchesszx_session_poll        = $5F98 ; addr, public, , "
+        "src_spectrum_session_poll_c, code_compiler, "
+        "src/spectrum/session/poll.c::netchesszx_session_poll::0::0:82\n"
+        "_netchesszx_session_peer_ready_state = $78D5 ; addr, public, , "
+        "src_spectrum_config_session_c, bss_compiler, "
+        "src/spectrum/config/session.c:9\n"
         "_netchess_after_prefix          = $4259 ; addr, public, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"
@@ -296,6 +380,9 @@ def _clean_fixture() -> str:
         "_nc_mqtt_consume                = $9FD0 ; addr, public, , "
         "asm_sprinter_zcc_netframe_defs_asm, code_user, "
         "build/sprinter/generated/netframe_defs.asm:1\n"
+        "_nc_mqtt_reset                  = $9FE0 ; addr, public, , "
+        "asm_sprinter_zcc_netframe_defs_asm, code_user, "
+        "build/sprinter/generated/netframe_defs.asm:1\n"
         "_spectrum_net_mqtt_in_suffix    = $4BF0 ; addr, public, , "
         "src_spectrum_transport_mqtt_session_wire_c, code_compiler, "
         "src/spectrum/transport/mqtt_session_wire.c::spectrum_net_mqtt_in_suffix::0::0:6\n"
@@ -308,6 +395,21 @@ def _clean_fixture() -> str:
         "_spectrum_net_mqtt_presence_suffix = $4C20 ; addr, public, , "
         "src_spectrum_transport_mqtt_session_wire_c, code_compiler, "
         "src/spectrum/transport/mqtt_session_wire.c::spectrum_net_mqtt_presence_suffix::0::0:6\n"
+        "_spectrum_net_mqtt_link_reset   = $4C28 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_mqtt_link_reset::0::0:6\n"
+        "_net_mqtt_fail_step             = $4C50 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, bss_compiler, "
+        "src/sprinter/transport/unet_link.c::net_mqtt_fail_step::0::0:6\n"
+        "_net_mqtt_fail_cf               = $4C51 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, bss_compiler, "
+        "src/sprinter/transport/unet_link.c::net_mqtt_fail_cf::0::0:6\n"
+        "_net_mqtt_fail_status           = $4C52 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, bss_compiler, "
+        "src/sprinter/transport/unet_link.c::net_mqtt_fail_status::0::0:6\n"
+        "_net_mqtt_fail_detail           = $4C53 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, bss_compiler, "
+        "src/sprinter/transport/unet_link.c::net_mqtt_fail_detail::0::0:6\n"
         "_spectrum_net_mqtt_publish_presence = $4C30 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_mqtt_publish_presence::0::0:6\n"
@@ -360,6 +462,16 @@ def self_test() -> None:
                 "[ERR] overlay-defs self-test: missing symbol was not rejected"
             )
 
+        sj = render_sjasmplus(symbols, RESIDENT_TEST_SYMBOLS)
+        if "res_spectrum_net_read_payload: EQU $6D67" not in sj:
+            raise SystemExit(
+                "[ERR] overlay-defs self-test: sjasmplus mode address mismatch"
+            )
+        if sj != render_sjasmplus(symbols, RESIDENT_TEST_SYMBOLS):
+            raise SystemExit(
+                "[ERR] overlay-defs self-test: sjasmplus mode not deterministic"
+            )
+
     print("[OK] Sprinter overlay-defs self-test")
 
 
@@ -368,6 +480,14 @@ def main() -> int:
     parser.add_argument("--map", type=Path, help="resident_c.map to read")
     parser.add_argument("--out", type=Path, help="overlay_defs.asm to write")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=["defc", "sjasmplus"],
+        default="defc",
+        help="output syntax: z88dk defc (the overlay builds, "
+             "OVERLAY_RESIDENT_SYMBOLS) or sjasmplus EQU (the z80 resident "
+             "test harness, RESIDENT_TEST_SYMBOLS)",
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -381,7 +501,10 @@ def main() -> int:
 
     symbols = parse_map(args.map)
     try:
-        text = render(symbols, OVERLAY_RESIDENT_SYMBOLS)
+        if args.mode == "sjasmplus":
+            text = render_sjasmplus(symbols, RESIDENT_TEST_SYMBOLS)
+        else:
+            text = render(symbols, OVERLAY_RESIDENT_SYMBOLS)
     except OverlayDefsError as exc:
         print(f"[ERR] {args.map}: {exc}", file=sys.stderr)
         return 1

@@ -70,8 +70,29 @@ uint8_t spectrum_fileui_send_key(uint8_t key)
         }
         picked = fileui_exec(SPECTRUM_OVL_FILEUI_PICK, 0u);
         if (picked == 1u) {
+#if defined(NETCHESSZX_SPRINTER)
+            /* Sprinter only, and preprocessor-split rather than rewritten in
+             * place precisely so ZX/Next keep byte-identical artifacts (the
+             * S8 plan's own rule for touching a shared file). sccz80 -- the
+             * z88dk classic compiler this port uses, unlike ZX/Next's SDCC --
+             * miscompiles a conditional expression whose CONDITION contains
+             * && or ||: it computes the result into HL and then tests the
+             * carry flag, which the computation left clear, so the false
+             * branch always wins. Here that turned every ERASE pick into a
+             * LOAD. Hoisting the || into a variable leaves a plain value as
+             * the ternary's condition, which compiles correctly.
+             * tools/check_sccz80_codegen.py is the gate for the whole class;
+             * see its header for the emitted-code signature. */
+            {
+                uint8_t erase = (uint8_t)(key == 'e' || key == 'E');
+
+                return erase ? SPECTRUM_FILEUI_ACT_ERASE
+                             : SPECTRUM_FILEUI_ACT_LOAD;
+            }
+#else
             return (key == 'e' || key == 'E') ? SPECTRUM_FILEUI_ACT_ERASE
                                               : SPECTRUM_FILEUI_ACT_LOAD;
+#endif
         }
         if (picked == 2u) {
             return SPECTRUM_FILEUI_ACT_SAVE;

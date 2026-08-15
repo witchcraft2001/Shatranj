@@ -355,6 +355,59 @@ static void test_mqtt_round_trip_with_real_codec(void)
     check(packet_id_out == 7u, "mqtt round trip: packet id");
 }
 
+/* nc_mqtt_take()'s NC_LINK_DOWN reporting (2026-08-15 MAME finding: a real
+ * broker that closes the TCP connection right after a rejected CONNECT,
+ * instead of ever sending a CONNACK, used to leave mqtt_ovl_wait_type()
+ * polling out its own ~40s timeout with no way to tell "closed" from
+ * "might still arrive" -- see net_frame.h's own comment on nc_mqtt_take()).
+ * Mirrors test_closed_drains_queue_then_link_down()/test_rxf_lost_is_fatal_
+ * after_drain() above for the DIRECT reassembler; nc_fatal is the same
+ * shared latch, nc_mqtt_reset() clears it same as nc_init(). */
+static void test_mqtt_closed_drains_packet_then_link_down(void)
+{
+    static const uint8_t packet[] = {0x20, 2, 0x00, 0x00};
+
+    nc_mqtt_reset();
+    nc_mqtt_feed(packet, (uint8_t)sizeof(packet));
+    nc_mark_closed();
+
+    check_mqtt_packet("mqtt closed: complete packet still returned first",
+                       nc_mqtt_take(), packet, (uint8_t)sizeof(packet));
+    nc_mqtt_consume((uint8_t)sizeof(packet));
+    check(nc_mqtt_take() == NC_LINK_DOWN,
+          "mqtt closed: LINK_DOWN once the accumulator is empty");
+    check(nc_mqtt_take() == NC_LINK_DOWN,
+          "mqtt closed: LINK_DOWN is sticky, not one-shot");
+}
+
+static void test_mqtt_rxf_lost_is_fatal_after_drain(void)
+{
+    static const uint8_t packet[] = {0x40, 1, 0x99};
+
+    nc_mqtt_reset();
+    nc_mqtt_feed(packet, (uint8_t)sizeof(packet));
+    nc_mark_lost();
+
+    check_mqtt_packet("mqtt rxf_lost: complete packet still returned first",
+                       nc_mqtt_take(), packet, (uint8_t)sizeof(packet));
+    nc_mqtt_consume((uint8_t)sizeof(packet));
+    check(nc_mqtt_take() == NC_LINK_DOWN,
+          "mqtt rxf_lost: LINK_DOWN once drained, same as CLOSED");
+}
+
+/* The exact real-world shape the MAME finding hit: nothing was ever
+ * buffered (no CONNACK, not even a partial one) before the broker closed
+ * the connection -- must report LINK_DOWN immediately, not "0, keep
+ * waiting". */
+static void test_mqtt_closed_with_no_data_is_immediate_link_down(void)
+{
+    nc_mqtt_reset();
+    nc_mark_closed();
+
+    check(nc_mqtt_take() == NC_LINK_DOWN,
+          "mqtt closed: LINK_DOWN immediately when nothing was ever buffered");
+}
+
 int main(void)
 {
     test_single_line();
@@ -374,6 +427,9 @@ int main(void)
     test_mqtt_stream_overflow_drops_excess();
     test_mqtt_lone_header_byte_is_not_discarded();
     test_mqtt_round_trip_with_real_codec();
+    test_mqtt_closed_drains_packet_then_link_down();
+    test_mqtt_rxf_lost_is_fatal_after_drain();
+    test_mqtt_closed_with_no_data_is_immediate_link_down();
 
     if (failures != 0) {
         printf("net_frame tests failed: %d\n", failures);
