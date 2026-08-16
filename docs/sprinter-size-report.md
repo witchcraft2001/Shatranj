@@ -31,8 +31,13 @@ What it reports:
   about yet is reported as `unclassified` rather than silently guessing —
   see `HOT_COLD_TIERS` in the tool.
 - **Overlay slot usage**: the 2 KiB `OVL_SLOT` copy path (mode 0, currently
-  just CONTROL) and the 16 KiB WIN3-mapped page (mode 1, plan D7-bis:
-  RULES/BOARD/GUI_LOG/INPUT_EDIT, 4 KiB/slot).
+  just CONTROL) and the two 16 KiB WIN3-mapped pages (mode 1, plan D7-bis):
+  page 1 is RULES/BOARD/SAVELOAD/RESTORE/FILEUI (variable-size slots, not a
+  uniform 4 KiB one -- `tools/make_sprinter_overlay_page.py`'s own `LAYOUT`),
+  page 2 is NET (8 KiB) + INPUT_EDIT (4 KiB, S9 chat pass) + a 4 KiB
+  reserve (`LAYOUT2`). GUI_LOG has no WIN3 slot on this port at all -- its
+  Sprinter-native replacement (`src/sprinter/gui_log_sprinter.c`) is
+  WIN1-resident, not an overlay.
 
 This is a reporting tool, not a growth gate: it fails the build only on an
 actual C-image overrun, not on a tier estimate looking large. There is no

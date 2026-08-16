@@ -86,6 +86,11 @@ extern void render_cursor_marker(void);
 extern void render_select_marker(void);
 extern void render_square_marked(unsigned char index) __z88dk_fastcall;
 extern void spectrum_gui_reset_move_log(void);
+/* S9 chat pass: gui_log_sprinter.c's own dispatcher onto chat_sprinter.c
+   (SPECTRUM_OVL_INPUT_EDIT=9u). gui.h declares spectrum_gui_add_chat
+   itself (shared with ZX/Next), but reset_chat has no shared-header home
+   since it is Sprinter-only -- see gui_log_sprinter.c's own comment. */
+extern void spectrum_gui_reset_chat(void);
 extern uint16_t spectrum_gui_log_ply_get(void);
 extern void spectrum_gui_log_ply_set(uint16_t ply);
 extern unsigned char key_code;
@@ -281,6 +286,21 @@ unsigned char net_op_busy(void) {
         restore_prompt_pending);
 }
 
+/* S9 chat pass: a strictly narrower guard than net_op_busy above. CHAT is
+   not a control operation (docs/session-core-contract.md:315-318) -- it
+   stays available while a RESET/DRAW/RESIGN/TAKEBACK is pending, unlike
+   every other local trigger net_op_busy above gates. Only a pending local
+   MOVE (its numeric ACK not back yet) or an in-progress RESTORE exchange
+   block it: both share the retry workspace CHAT would otherwise race.
+   Bridged to WIN1 the same way net_op_busy is (tools/gen_sprinter_cold_
+   thunks.py's COLD_THUNK_SYMBOLS) -- checked by main.c before opening the
+   chat line, and again by chat_sprinter.c itself (a different WIN3 page)
+   at submit time, since either state can change while the player types. */
+unsigned char net_chat_blocked(void) {
+    return (unsigned char)(pending_local_ply != 0u ||
+        restore_rx_mask != 0u || restore_prompt_pending);
+}
+
 /* Repeated at every "a move just landed" site (7 of them across S8 steps
    3/5/6) -- one shared call instead of the same three-line ternary each
    time. */
@@ -411,6 +431,27 @@ void board_select_or_move(void) {
             uint16_t ply = (uint16_t)(spectrum_gui_log_ply_get() + 1u);
             unsigned char from = square_index(selected_row, selected_col);
 
+            /* Notice and selection-highlight clear happen BEFORE the wire
+               call, matching app.c's own send_local_move ordering (notice
+               set, then send_move_wire) -- not after, as this block used to
+               read. net_send_move_wire can block for a while on Sprinter
+               (net_mqtt_send_raw's drain-then-retry ladder, up to
+               NC_SEND_BUSY_RETRY_MAX attempts): with the notice update
+               deferred until after that call returned, the screen showed no
+               feedback at all for the whole blocking window and only
+               changed once the reply -- ACK or Link down -- was already in
+               hand, which read as the game having hung (human tester,
+               2026-08-16). Showing the move immediately gives the same
+               "your input was taken" signal ZX/Next gives at this same
+               point, before either platform's own send blocks on anything. */
+            selected_row = NO_SQUARE;
+            selected_col = NO_SQUARE;
+            render_square_marked(from);    /* clears the selection highlight
+                                               only -- board content at
+                                               `from` is unchanged until the
+                                               move is actually applied */
+            spectrum_gui_notify_persistent(move);
+
             if (!net_send_move_wire(ply, move)) {
                 net_drop("Link down");
                 return;
@@ -419,14 +460,6 @@ void board_select_or_move(void) {
             (void)spectrum_append_text(pending_local_move, move);
             pending_retry_timer = PENDING_RETRY_TICKS;
             control_retry_count = 0u;
-
-            selected_row = NO_SQUARE;
-            selected_col = NO_SQUARE;
-            render_square_marked(from);    /* clears the selection highlight
-                                               only -- board content at
-                                               `from` is unchanged until the
-                                               move is actually applied */
-            spectrum_gui_notify_persistent(move);
         }
         return;
     }
@@ -660,6 +693,12 @@ void net_drop(const char *why) {
     netchesszx_session_peer_reset();
     ng_close();
     net_status_idle();
+    /* S9 chat pass: there is no peer left for the chat panel's own
+       content to mean anything to on the NEXT session -- same reasoning
+       as pending_local_clear/control_pending_clear/takeback_clear/
+       restore_net_clear just above, none of which survive a dropped
+       link either. */
+    spectrum_gui_reset_chat();
     spectrum_gui_notify(why, 1u);
 }
 
@@ -923,7 +962,17 @@ static void net_session_begin(void) {
     net_set_turn_label_from_side();
     spectrum_gui_set_connected(2u);
     spectrum_gui_set_status(netchesszx_local_side_name());
-    spectrum_gui_notify_success("Opponent ready");
+    /* S9 chat pass: chat has no menu entry and no static HUD label (render_
+       core.asm's _spectrum_info_show_game explains why the divider carries
+       no "Chat" title -- no pixel budget for it); ENTER is the only way in,
+       and it is not discoverable without a hint. The moment the peer goes
+       ready is the first point ENTER actually does anything (net_chat_
+       blocked() aside), so that is where the hint belongs -- one-shot, not
+       a persistent HUD fixture, same as every other transition notice on
+       this line. 24 chars, under the 25-char high-water mark already
+       proven on this notice line ("Peer sent an illegal move") and inside
+       NETCHESSZX_NOTICE_TEXT_SIZE's 28-usable-char cap (layout.h). */
+    spectrum_gui_notify_success("Ready - ENTER opens chat");
 }
 
 /* The peer's HELLO is what settles which colour this side plays, so the
@@ -1009,6 +1058,9 @@ extern unsigned char net_mqtt_fail_step;
 extern unsigned char net_mqtt_fail_cf;
 extern unsigned char net_mqtt_fail_status;
 extern unsigned char net_mqtt_fail_detail;
+extern unsigned char net_mqtt_rx_count;
+extern unsigned char net_mqtt_rx_game_count;
+extern unsigned char net_mqtt_ovl_dropped;
 
 /* "Activate side failed" names the CALLER, not the step that gave up --
    which is the same shortfall that cost the previous round, one layer in.
@@ -1056,7 +1108,26 @@ static const char *net_link_down_why(void) {
     if (net_mqtt_down_reason == 3u) {
         return "Link down: send";
     }
-    return "Link down: peer ping";
+    if (net_mqtt_down_reason == 4u) {
+        return "Link down: publish";
+    }
+    /* poll.c decided this on its own app-level PING ladder, so the transport
+       is healthy and nothing arrived from the peer for ~12s. Which is two
+       different bugs wearing the same face, and the receive counters are
+       what tell them apart -- see unet_link.c's own comment on them.
+       "peer rN/M" = N PUBLISHes accepted since link-up, M of them on the
+       game pair. M stuck at 0 with N rising means we are deaf on w2b/b2w,
+       not that the peer went quiet. */
+    {
+        char *p = spectrum_append_text(net_mqtt_fail_text, "Link down: peer r");
+
+        p = spectrum_append_u16(p, net_mqtt_rx_count);
+        p = spectrum_append_text(p, "/");
+        p = spectrum_append_u16(p, net_mqtt_rx_game_count);
+        p = spectrum_append_text(p, " d");
+        (void)spectrum_append_u16(p, net_mqtt_ovl_dropped);
+    }
+    return net_mqtt_fail_text;
 }
 
 /* app.c's mqtt_peer_reset_wait_state + mqtt_peer_disconnected_wait, reduced
@@ -1322,10 +1393,14 @@ static void net_handle_event(unsigned char event, const char *payload,
                 "Opponent wants takeback: Y/N", 0u);
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_CHAT) {
+        /* S9 chat pass: lands in the chat panel now, byte-for-byte app.c's
+           own incoming-CHAT handling (netchess_proto_parse_chat in place,
+           spectrum_gui_add_chat with the REMOTE side's char) -- not the
+           notice line any more, which ZX/Next never used for this either. */
         char text[SPECTRUM_LINK_PAYLOAD_MAX];
 
         if (netchess_proto_parse_chat(payload, text, (unsigned char)sizeof(text))) {
-            spectrum_gui_notify_persistent(text);
+            spectrum_gui_add_chat(netchesszx_remote_side_char(), text);
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESET) {
         /* S8 step 4 (app.c's own guard order): a RESET crossed with our own
@@ -1552,13 +1627,18 @@ static void net_handle_event(unsigned char event, const char *payload,
 /* S8 step 4: local triggers for RESET/DRAW confirmation. No portable menu
    tab exists for "offer draw"/"accept draw" (gui.h's SPECTRUM_GUI_KEY_
    MENU_* set has no such entries -- on ZX these are typed text commands,
-   SPECTRUM_INPUT_CMD_DRAW/_RESIGN via INPUT_EDIT, which this port has not
-   built, see net_ui_sprinter.c/S8's editor scope). Rather than build a
-   typed-command line for three letters, this port dedicates plain ASCII
-   hotkeys -- Sprinter-native, not a port of anything, deliberately not
-   touching the shared gui.c/gui.h menu surface ZX/Next also use. 'd' offers
-   a draw; 'y'/'n' answer an incoming offer. There is no local resign
-   trigger yet (S8 does not add one -- see this section's own header). */
+   SPECTRUM_INPUT_CMD_DRAW/_RESIGN via the same input line INPUT_EDIT owns.
+   S9 gave this port INPUT_EDIT for chat (src/sprinter/chat_sprinter.c),
+   but not slash-command routing -- chat_submit() sends everything typed
+   there as a CHAT message, unconditionally). Rather than build that
+   parsing for three letters, this port dedicates plain ASCII hotkeys
+   instead -- Sprinter-native, not a port of anything, deliberately not
+   touching the shared gui.c/gui.h menu surface ZX/Next also use, and not
+   the chat input line either (typing 'd' while chat is open adds a
+   literal 'd' to the message, see main.c's own chat_input_mode routing).
+   'd' offers a draw; 'y'/'n' answer an incoming offer. There is no local
+   resign trigger yet (S8 does not add one -- see this section's own
+   header). */
 static void net_draw_offer(void) {
     if (net_op_busy()) {
         spectrum_gui_notify("Waiting for ACK", 0u);

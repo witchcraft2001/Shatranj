@@ -58,10 +58,15 @@
 ; 2026-08-14 recon). This is the point the loader's own header called out:
 ; ovl_win3_page stops being the single global every mode-1 id reads and
 ; becomes ovl_atlas_page_table below -- one cell ADDRESS per id, so ids on
-; page 1 keep reading ovl_win3_page and NET reads ovl_win3_page2 instead,
-; with no change to any other id's behaviour.
-;     #C000  NET       (id 3, page 2)   8192 bytes
-;     #E000  reserved  (page 2)         8192 bytes
+; page 1 keep reading ovl_win3_page and NET/INPUT_EDIT read ovl_win3_page2
+; instead, with no change to any other id's behaviour.
+;
+; S9 chat pass: INPUT_EDIT (id 9) lands on the same page 2, in what used to
+; be RESERVE2's own slot (tools/make_sprinter_overlay_page.py's LAYOUT2) --
+; the only unfragmented room left, see that tool's own header.
+;     #C000  NET         (id 3, page 2)   8192 bytes
+;     #E000  INPUT_EDIT  (id 9, page 2)   4096 bytes
+;     #F000  reserved    (page 2)         4096 bytes
 ;
 ; Id 14 (CONTROL) stays mode 0: src/spectrum/overlay/control_ovl.c, embedded
 ; at assets-page slot 36 (tools/make_sprinter_assets_page.py's OVERLAY_SLOT),
@@ -90,6 +95,7 @@ OVL_WIN3_SAVELOAD_ORG EQU 0xD400
 OVL_WIN3_RESTORE_ORG  EQU 0xDE00
 OVL_WIN3_FILEUI_ORG   EQU 0xEA00
 OVL_WIN3_NET_ORG      EQU 0xC000  ; page 2's own first slot, restarts at WIN3_BASE
+OVL_WIN3_INPUT_EDIT_ORG EQU 0xE000 ; page 2's second slot (S9 chat pass)
 
 ovl_atlas_table:
     defw OVL_WIN3_RULES_ORG       ; id 0  (RULES)
@@ -101,7 +107,7 @@ ovl_atlas_table:
     defw 0x0000   ; id 6  (MENU_CONFIG) -- S9 scope
     defw 0x0000   ; id 7  (STATUS)      -- not ported (native resident C)
     defw 0x0000   ; id 8  (SETUP)       -- S9 scope
-    defw 0x0000   ; id 9  (INPUT_EDIT)  -- not yet ported (needs render_core)
+    defw OVL_WIN3_INPUT_EDIT_ORG  ; id 9  (INPUT_EDIT)  -- S9 chat pass, page 2
     defw OVL_WIN3_SAVELOAD_ORG    ; id 10 (SAVELOAD)    -- S6, not yet linked
     defw OVL_WIN3_RESTORE_ORG     ; id 11 (RESTORE)     -- S6, not yet linked
     defw 0x0000   ; id 12 (ABOUT)       -- S9 scope
@@ -124,7 +130,7 @@ ovl_atlas_mode_table:
     defb OVL_MODE_COPY   ; id 6  (MENU_CONFIG) -- placeholder
     defb OVL_MODE_COPY   ; id 7  (STATUS)      -- placeholder
     defb OVL_MODE_COPY   ; id 8  (SETUP)       -- placeholder
-    defb OVL_MODE_COPY   ; id 9  (INPUT_EDIT)  -- placeholder
+    defb OVL_MODE_WIN3   ; id 9  (INPUT_EDIT)  -- S9 chat pass, page 2
     defb OVL_MODE_WIN3   ; id 10 (SAVELOAD)    -- S6, slot not yet linked
     defb OVL_MODE_WIN3   ; id 11 (RESTORE)     -- S6, slot not yet linked
     defb OVL_MODE_COPY   ; id 12 (ABOUT)       -- placeholder
@@ -148,7 +154,7 @@ ovl_atlas_page_table:
     defw ovl_win3_page    ; id 6  (MENU_CONFIG) -- unused (mode 0)
     defw ovl_win3_page    ; id 7  (STATUS)      -- unused (mode 0)
     defw ovl_win3_page    ; id 8  (SETUP)       -- unused (mode 0)
-    defw ovl_win3_page    ; id 9  (INPUT_EDIT)  -- unused (mode 0)
+    defw ovl_win3_page2   ; id 9  (INPUT_EDIT)  -- page 2 (S9 chat pass)
     defw ovl_win3_page    ; id 10 (SAVELOAD)
     defw ovl_win3_page    ; id 11 (RESTORE)
     defw ovl_win3_page    ; id 12 (ABOUT)       -- unused (mode 0)

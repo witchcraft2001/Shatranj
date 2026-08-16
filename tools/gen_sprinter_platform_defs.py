@@ -101,6 +101,11 @@ PLATFORM_SYMBOLS = [
     # Sprinter branch already reserves for it (src/sprinter/fixed_
     # layout.json's LOWRAM_MOVE_LOG region).
     "LOWRAM_MOVE_LOG_ADDR",
+    # Chat panel low-RAM ring (S9 chat pass): render_chat_row (render_core.
+    # asm) needs the same fixed address chat_sprinter.c (INPUT_EDIT
+    # overlay, WIN3 page 2) writes through, the same bridging reason
+    # LOWRAM_MOVE_LOG_ADDR above already has.
+    "LOWRAM_CHAT_LOG_ADDR",
     # Overlay call context (S5 substep 3b): the ONE buffer both sides of the
     # overlay ABI must agree on. Portable resident C reaches it by the
     # cross-platform name (src/spectrum/overlay/overlay_context.h's
@@ -409,6 +414,7 @@ def _clean_fixture() -> str:
         "BOARD_CELL_H: EQU 0x00000018\n"
         "LOWRAM_CHESS_BOARD_ADDR: EQU 0x0000B2AF\n"
         "LOWRAM_MOVE_LOG_ADDR: EQU 0x0000B36F\n"
+        "LOWRAM_CHAT_LOG_ADDR: EQU 0x0000B0E0\n"
         "LOWRAM_OVERLAY_CONTEXT_ADDR: EQU 0x0000B32F\n"
         "LOWRAM_OVERLAY_SCRATCH_ADDR: EQU 0x0000B33F\n"
         "MOVE_Y: EQU 0x0000001C\n"

@@ -12,11 +12,20 @@
  * NETCHESSZX_MOVE_* constants) gui.h's own declared contract already
  * assumes, and painting through the same render_core.asm entry points
  * (spectrum_render_move_at/spectrum_render_moves) gui.c's own (unused, ZX-
- * side) callers would use. spectrum_gui_add_chat is still not implemented
- * here -- nothing in this port calls it yet (no chat input/network); gui.h
- * still declares it, but a C link only requires a definition for a symbol
- * something actually calls. spectrum_gui_remove_last_move IS implemented
+ * side) callers would use. spectrum_gui_remove_last_move IS implemented
  * (S8 step 5, takeback) -- see its own comment below.
+ *
+ * spectrum_gui_add_chat/spectrum_gui_reset_chat (S9 chat pass): unlike the
+ * move list, the chat panel's own storage and word-wrap live on the
+ * INPUT_EDIT overlay itself (src/sprinter/chat_sprinter.c, SPECTRUM_OVL_
+ * INPUT_EDIT=9u, WIN3 page 2) -- these two are thin dispatchers, the same
+ * ctx-write-then-exec shape ZX's overlay.c uses for its own spectrum_gui_
+ * add_chat, just targeting chat_sprinter.h's Sprinter-only ADD_CHAT/
+ * RESET_CHAT entry ids instead of GUI_LOG's. spectrum_gui_reset_chat is
+ * called directly from the WIN3 cold page (session_sprinter.c's net_drop)
+ * -- resident C calling another resident C function needs no dispatch of
+ * its own, only the eventual ovl_exec_cached call inside it crosses a
+ * window.
  *
  * spectrum_gui_log_ply_get/_set (S6, port.md section 5/S6): save/load needs
  * the true half-move count for netchesszx_save_meta_t.ply, and gui_log_ply
@@ -30,13 +39,23 @@
 
 #include "spectrum/ui/render.h"
 #include "spectrum/ui/layout.h"
+#include "spectrum/ui/gui.h"
 #include "spectrum/lowram_map.h"
+#include "spectrum/overlay/overlay.h"
+#include "spectrum/overlay/overlay_context.h"
+#include "sprinter/chat_sprinter.h"
 
 #include <string.h>
 
 #define move_lines ((char *)NETCHESSZX_LOWRAM_MOVE_LOG_ADDR)
 #define MOVE_TEXT_MAX 7u        /* same field width ZX's own gui_log_ovl.c
                                     copies a move into (gui_log_copy_move) */
+
+/* asm/sprinter/zcc/overlay_loader_sprinter.asm's dispatcher, resolved
+ * within this same resident C image -- board.c already calls this exact
+ * function for RULES/BOARD, no bridging needed between two files linked
+ * into the same resident_c.bin. */
+extern uint8_t spectrum_overlay_exec_cached(uint8_t ovl_id, uint8_t entry_id);
 
 static uint16_t gui_log_ply;
 static uint8_t gui_log_row;
@@ -137,4 +156,33 @@ uint16_t spectrum_gui_log_ply_get(void)
 void spectrum_gui_log_ply_set(uint16_t ply)
 {
     gui_log_ply = ply;
+}
+
+/* S9 chat pass. who/text land in the shared overlay context and INPUT_EDIT
+ * (SPECTRUM_OVL_INPUT_EDIT=9u)'s own ADD_CHAT entry (chat_sprinter.c) does
+ * the actual word-wrap/storage/repaint -- see that file's own header for
+ * why the chat log lives there rather than here alongside the move list.
+ * `text` must point at WIN1-resident memory (a C stack local or a
+ * resident static, never a WIN3-page pointer): the callee dereferences it
+ * only after this dispatch has already mapped WIN3 to page 2. */
+void spectrum_gui_add_chat(char who, const char *text)
+{
+    uint16_t text_addr = (uint16_t)text;
+
+    spectrum_overlay_context[SPECTRUM_OVL_CTX_GUI_CHAT_WHO] = (uint8_t)who;
+    spectrum_overlay_context[SPECTRUM_OVL_CTX_GUI_CHAT_TEXT_LO] =
+        (uint8_t)text_addr;
+    spectrum_overlay_context[SPECTRUM_OVL_CTX_GUI_CHAT_TEXT_HI] =
+        (uint8_t)(text_addr >> 8);
+    (void)spectrum_overlay_exec_cached(SPECTRUM_OVL_INPUT_EDIT,
+                                       SPECTRUM_OVL_INPUT_EDIT_ADD_CHAT);
+}
+
+/* Clears the chat panel and repaints it empty -- the net_drop (link torn
+ * down) counterpart of spectrum_gui_reset_move_log above, called directly
+ * from the WIN3 cold page (session_sprinter.c), same as that function. */
+void spectrum_gui_reset_chat(void)
+{
+    (void)spectrum_overlay_exec_cached(SPECTRUM_OVL_INPUT_EDIT,
+                                       SPECTRUM_OVL_INPUT_EDIT_RESET_CHAT);
 }

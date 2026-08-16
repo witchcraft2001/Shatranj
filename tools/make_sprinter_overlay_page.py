@@ -38,6 +38,15 @@ map -- asm/sprinter/buffers.asm's ovl_win3_page2 cell and
 overlay_atlas_table_sprinter.asm's per-id page table (not a single global)
 are what make this possible; see that table's own header.
 
+S9 chat pass adds INPUT_EDIT (SPECTRUM_OVL_INPUT_EDIT=9u) into page 2's own
+RESERVE2 slot -- the only unfragmented room left anywhere on either page
+(page 1's own margin is spoken for by S9's other UI overlays; see this
+file's own LAYOUT comment). RESERVE2 was 8192 bytes, entirely free; half of
+it (4096) is generous for a compiled C overlay this size (the editor plus
+the chat log's word-wrap, no per-cell cursor rendering -- see chat_
+sprinter.c's own header), leaving a second RESERVE2 half still free for
+whatever S9 UI work needs page 2 room next.
+
 Both pages map into the SAME #C000-#FFFF hardware window (WIN3), just via a
 different physical bank OUT -- so page 2's own slot orgs restart at #C000
 exactly like page 1's, they are never both mapped at once.
@@ -54,8 +63,9 @@ this_packing pins the two together):
     #FE00  reserved                                 512 bytes
 
 Slot layout, page 2:
-    #C000  NET       (SPECTRUM_OVL_NET_CONNECT=3u) 8192 bytes
-    #E000  reserved (RESERVE2)                     8192 bytes
+    #C000  NET         (SPECTRUM_OVL_NET_CONNECT=3u)  8192 bytes
+    #E000  INPUT_EDIT  (SPECTRUM_OVL_INPUT_EDIT=9u)   4096 bytes
+    #F000  reserved (RESERVE2)                        4096 bytes
 
 Page 1 is published to HDR as the fourth asset page
 (HDR_ASSET_PAGE0_OFFSET+3); page 2 as the sixth
@@ -93,7 +103,8 @@ LAYOUT = [
 
 LAYOUT2 = [
     ("NET", 8192),
-    ("RESERVE2", 8192),
+    ("INPUT_EDIT", 4096),
+    ("RESERVE2", 4096),
 ]
 
 # Page number -> that page's LAYOUT. Order of this dict is not significant;

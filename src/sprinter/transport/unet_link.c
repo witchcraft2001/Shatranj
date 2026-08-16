@@ -51,11 +51,22 @@ extern char *ng_c_connect_port;
  * nothing on Sprinter) -- same "short, portable-shaped #include list"
  * reasoning as the net_gate.asm externs above. */
 extern const char *spectrum_net_mqtt_out_suffix(void);
+extern const char *spectrum_net_mqtt_out_ack_suffix(void);
 extern const char *spectrum_net_mqtt_presence_suffix(void);
 extern const char *spectrum_net_mqtt_presence_payload(void);
 extern void spectrum_net_mqtt_setup_payload(char *out) NETCHESSZX_FASTCALL;
 
 extern void frame_wait(void);
+/* platform_defs.asm (always-mapped WIN2 primitive), same one main.c's own
+ * frame loop calls -- see this file's busy-retry loops below for why a
+ * second caller needs it. Deliberately NOT bridged into the cold page or
+ * any WIN3 overlay (tools/gen_sprinter_cold_thunks.py's own comment: "NOT
+ * in this list, deliberately: spectrum_frame_wait, spectrum_key_poll") --
+ * DSS_SCANKEY can remap WIN3 without restoring it, which would corrupt a
+ * WIN3-resident caller's own code page out from under it. This file is
+ * WIN1-resident (always mapped), so it is safe here the same way main.c is
+ * safe. */
+extern void key_poll(void);
 
 /* unet.inc's NERR_OK/NERR_BUSY, needed numerically here (see net_frame.c's
  * own NC_UNET_* comment for why these are duplicated rather than shared
@@ -143,6 +154,34 @@ uint8_t net_mqtt_fail_detail;
 #define NET_MQTT_DOWN_STREAM 1u     /* nc_mqtt_take latched: peer closed / RX lost */
 #define NET_MQTT_DOWN_KEEPALIVE 2u  /* broker missed SPECTRUM_MQTT_KEEPALIVE_MISSES_MAX */
 #define NET_MQTT_DOWN_PINGREQ 3u    /* uNet refused the PINGREQ send itself */
+#define NET_MQTT_DOWN_PUBLISH 4u    /* a PUBLISH could not be sent at all */
+
+/* Inbound PUBLISHes accepted since the link came up, and how many of those
+ * were on the game pair (w2b/b2w). Saturating, so a long game does not wrap
+ * them back to a number that reads like silence.
+ *
+ * These two answer the one question the ping ladder cannot: when the session
+ * layer reports the peer lost, is the PEER quiet, or are WE deaf on the game
+ * topics? Both look identical from poll.c -- nothing arrived -- but they are
+ * different bugs. A rising total with a game count stuck at zero means meta
+ * and presence are flowing while the w2b/b2w subscriptions are not; a total
+ * stuck at zero means nothing is reaching us at all; both rising means the
+ * peer really did go quiet. */
+uint8_t net_mqtt_rx_count;
+uint8_t net_mqtt_rx_game_count;
+
+/* Session PUBLISHes thrown away by the NET overlay's SUBACK wait
+ * (net_mqtt_ui_sprinter.c's mqtt_ovl_wait_type), which discards every packet
+ * that is not the type it is waiting for. That helper's own banner states
+ * the assumption it was written under -- "no game session is live at any
+ * point this helper is used" -- and S8 step 8f broke it by dispatching
+ * activate_side/probe_seat from the frame loop. Those discards are not
+ * recoverable: the helper never PUBACKs them, and this client connects with
+ * a clean session, so the broker has no obligation to redeliver before a
+ * reconnect. A non-zero count here means real session traffic was eaten
+ * during a subscribe -- exactly the kind of loss that looks from above like
+ * a peer that never spoke. Measured rather than assumed. */
+uint8_t net_mqtt_ovl_dropped;
 
 /* Every per-link piece of MQTT state this file owns, cleared for a fresh
  * broker session.
@@ -162,6 +201,9 @@ void spectrum_net_mqtt_link_reset(void)
     spectrum_mqtt_broker_keepalive_reset(&net_mqtt_broker_keepalive);
     net_mqtt_down_reason = NET_MQTT_DOWN_NONE;
     net_mqtt_fail_detail = 0u;
+    net_mqtt_rx_count = 0u;
+    net_mqtt_rx_game_count = 0u;
+    net_mqtt_ovl_dropped = 0u;
     net_mqtt_next_id = 1u;
     net_mqtt_flags = 0u;
 }
@@ -228,6 +270,10 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
         if (ng_v_call_status == NC_UNET_NERR_OK) {
             return 1u;
         }
+        /* A send that never went out is why the session layer will decide
+         * the peer is gone a few seconds later; without this the notice
+         * blames the peer for our own failure to speak. */
+        net_mqtt_down_reason = NET_MQTT_DOWN_PUBLISH;
         if (ng_v_call_status != NC_UNET_NERR_BUSY) {
             /* Deliberately NOT retried, NERR_SEND above all. That one means
              * the NIC already transmitted and the peer's cumulative ACK
@@ -237,6 +283,24 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
              * NERR_BUSY is a "nothing went out, try again" answer. */
             return 0u;
         }
+        /* 2026-08-16 MAME finding: a BUSY stretch can run several retries
+         * (up to NC_SEND_BUSY_RETRY_MAX frames) with the main loop never
+         * back at key_poll() in between -- every send site on this port
+         * funnels through here or the DIRECT loop below. DSS's own keyboard
+         * ISR keeps queuing scancodes into its 64-byte SBUF the whole time
+         * (interrupts stay enabled through a blocking DLL call --
+         * docs/UNETRTL.md's "Interrupt and window state on return"), but
+         * nothing drains it until this function returns, and a long enough
+         * stretch (fast typing, a held cursor key) can overflow that queue
+         * and lose keys -- reported as chat swallowing characters and
+         * unresponsive board cursor movement while a session is live. Safe
+         * from WIN1 (see this file's own key_poll extern comment); draining
+         * here every retry keeps key_code's single-slot latch current
+         * instead of stale. Does NOT cover the DLL's own internal NERR_SEND
+         * retransmit wait (unetrtl.asm, up to ~4s, entirely inside one
+         * ng_c_send() call this code cannot see into) -- a severely lossy
+         * link can still cost keystrokes during that window. */
+        key_poll();
         frame_wait();
     }
     return 0u;
@@ -354,12 +418,51 @@ static int16_t net_mqtt_read_payload(char *payload, uint8_t payload_cap)
         return SPECTRUM_LINK_READ_TIMEOUT;
     }
     net_mqtt_flags = flags;
+    if (net_mqtt_rx_count != 255u) {
+        ++net_mqtt_rx_count;
+    }
+    if ((flags & SPECTRUM_LINK_PAYLOAD_GAME_ROUTE) &&
+        net_mqtt_rx_game_count != 255u) {
+        ++net_mqtt_rx_game_count;
+    }
     return 0;
 }
 
 
+/* Outbound routing, byte-for-byte the same four-way split ZX/Next make in
+ * mqtt_tx_ovl.c's mqtt_tx_send_text_ovl -- and the reason this port's first
+ * live MQTT game never started.
+ *
+ * Everything used to go to the game topic (w2b/b2w). On DIRECT that is
+ * correct by construction, since there is only one channel; on MQTT the
+ * room has four, and which one a message goes to IS the protocol
+ * (docs/wire-contract.md's topic table). Two consequences, both seen in
+ * MAME on 2026-08-15:
+ *
+ *   - "ACK GAME START" belongs on `meta`, where the host waits for it. Sent
+ *     to the game topic it is simply never seen: the host sat on "waiting
+ *     opponent ACK" forever with a healthy link and a guest that had already
+ *     answered.
+ *   - every other "ACK ..." belongs on the ack topic, which is what the peer
+ *     subscribes to for replies. Sent to the game topic, ACK MOVE / ACK PING
+ *     vanish the same way -- which is also why the session's own PING ladder
+ *     eventually reported the peer lost ("Link down: peer ping") on a link
+ *     that was carrying our packets perfectly well.
+ *
+ * NACK deliberately does NOT match the "ACK " test (the prefix compare is
+ * anchored at the start) and goes to the game topic -- same as ZX. */
 static uint8_t net_mqtt_send_text(const char *text) NETCHESSZX_FASTCALL
 {
+    if (netchess_after_prefix(text, "ACK GAME START")) {
+        return net_mqtt_publish_suffix("meta", text, 0u);
+    }
+    if (netchess_after_prefix(text, "ACK ")) {
+        return net_mqtt_publish_suffix(spectrum_net_mqtt_out_ack_suffix(),
+                                       text, 0u);
+    }
+    if (netchess_after_prefix(text, netchesszx_text_game_start)) {
+        return net_mqtt_publish_suffix("meta", text, 0u);
+    }
     return net_mqtt_publish_suffix(spectrum_net_mqtt_out_suffix(), text, 0u);
 }
 
@@ -455,8 +558,17 @@ uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
         return net_mqtt_send_text(text);
     }
 
+    /* SPECTRUM_LINK_PAYLOAD_MAX-1 (47), not -2 (46): net_tx_line is
+       SPECTRUM_LINK_PAYLOAD_MAX (48) bytes, and the loop below always
+       appends one '\n' after the copied text, so up to 47 copied chars +
+       1 '\n' = 48 fits exactly. The -2 bound silently dropped a maximal
+       CHAT message's last character on DIRECT (only) -- "CHAT " + the
+       42-char NETCHESSZX_CHAT_MESSAGE_TEXT_MAX is 47 chars, one past the
+       old 46-char ceiling (S9 chat pass, 2026-08-16). Nothing else this
+       port sends is longer than 46 (the RESTORE chunk header+payload is
+       35), so this was unreachable before CHAT existed. */
     len = 0u;
-    while (text[len] != '\0' && len < (SPECTRUM_LINK_PAYLOAD_MAX - 2u)) {
+    while (text[len] != '\0' && len < (SPECTRUM_LINK_PAYLOAD_MAX - 1u)) {
         net_tx_line[len] = text[len];
         ++len;
     }
@@ -475,6 +587,10 @@ uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
             return (ng_v_call_status == NC_UNET_NERR_OK) ? 1u : 0u;
         }
         nc_pump();
+        /* Same reasoning as net_mqtt_send_raw's own key_poll() call above:
+         * a BUSY stretch here blocks the main loop from polling the
+         * keyboard for as long as it runs. */
+        key_poll();
         frame_wait();
     }
     return 0u;

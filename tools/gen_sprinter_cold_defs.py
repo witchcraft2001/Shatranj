@@ -192,6 +192,14 @@ COLD_RESIDENT_SYMBOLS = [
     "net_mqtt_fail_cf",
     "net_mqtt_fail_status",
     "net_mqtt_fail_detail",
+    "net_mqtt_rx_count",
+    "net_mqtt_rx_game_count",
+    "net_mqtt_ovl_dropped",
+    # S9 chat pass: session_sprinter.c's own CHAT event branch and net_drop
+    # reach gui_log_sprinter.c's chat dispatchers directly, same shape as
+    # spectrum_gui_reset_move_log already had (this file, S8 relief pass).
+    "spectrum_gui_add_chat",
+    "spectrum_gui_reset_chat",
 ]
 
 GENERATED_BANNER = (

@@ -236,6 +236,8 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
         overlay_win3["rules"] = args.ovl_rules_bin.stat().st_size
     if args.ovl_board_bin and args.ovl_board_bin.exists():
         overlay_win3["board"] = args.ovl_board_bin.stat().st_size
+    if args.ovl_input_edit_bin and args.ovl_input_edit_bin.exists():
+        overlay_win3["input_edit"] = args.ovl_input_edit_bin.stat().st_size
     if args.ovl_win3_page and args.ovl_win3_page.exists():
         overlay_win3["page_bytes"] = args.ovl_win3_page.stat().st_size
 
@@ -351,6 +353,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ovl-control-bin", type=Path)
     parser.add_argument("--ovl-rules-bin", type=Path)
     parser.add_argument("--ovl-board-bin", type=Path)
+    parser.add_argument("--ovl-input-edit-bin", type=Path)
     parser.add_argument("--ovl-win3-page", type=Path)
     parser.add_argument("--c-image-base", type=lambda v: int(v, 0))
     parser.add_argument("--win1-end", type=lambda v: int(v, 0))

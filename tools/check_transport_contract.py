@@ -114,6 +114,59 @@ def check_sprinter(root: Path) -> None:
     if "net_link_activity = 0u" not in activity_body:
         fail("Sprinter link_activity() must be consume-on-read")
 
+    check_sprinter_mqtt_routing(root, link)
+
+
+def check_sprinter_mqtt_routing(root: Path, link: str) -> None:
+    """Which MQTT topic an outbound message goes to IS the protocol.
+
+    docs/wire-contract.md gives a room four topics, and ZX/Next's
+    mqtt_tx_ovl.c splits outbound text four ways between them. Sprinter has
+    to make the identical split -- architecture decision #0006: a divergence
+    means one implementation is wrong, never that a target is special.
+
+    This is not a hypothetical. Until 2026-08-15 Sprinter published
+    EVERYTHING to the game topic, which is correct by construction on DIRECT
+    (one channel) and silently wrong on MQTT. "ACK GAME START" never reached
+    the host's `meta` subscription, so a host that had a healthy link and a
+    guest already answering sat on "waiting opponent ACK" forever; every
+    other ACK missed the ack topic the same way, and the session's own PING
+    ladder then reported the peer lost. Nothing failed, nothing logged --
+    the packets simply went somewhere nobody was listening.
+
+    Compared as decisions, not as text: each rule is (what the payload is
+    tested for, which topic expression it must be published to), read out of
+    both files and required to agree in content and in ORDER -- "ACK GAME
+    START" has to be tested before the broader "ACK " or it would never be
+    reached.
+    """
+    tx_ovl = (root / "src/spectrum/overlay/mqtt_tx_ovl.c").read_text(encoding="utf-8")
+
+    def routing(source: str, name: str) -> list[tuple[str, str]]:
+        body = fn_body(source, name)
+        rules: list[tuple[str, str]] = []
+        for test, topic in re.findall(
+            r'netchess_after_prefix\(text,\s*([^)]+?)\)\)\s*\{\s*return\s+'
+            r'\w+\(\s*([^,]+?),',
+            body,
+            re.S,
+        ):
+            rules.append((test.strip(), topic.strip()))
+        tail = re.search(r"return\s+\w+\(\s*([^,]+?),\s*text", body[body.rfind("}"):], re.S)
+        if not tail:
+            fail(f"{name}() must end with a default topic route")
+        rules.append(("<default>", tail.group(1).strip()))
+        return rules
+
+    zx = routing(tx_ovl, "mqtt_tx_send_text_ovl")
+    sprinter = routing(link, "net_mqtt_send_text")
+    if zx != sprinter:
+        fail(
+            "Sprinter MQTT topic routing diverges from ZX/Next.\n"
+            f"       ZX (mqtt_tx_ovl.c):       {zx}\n"
+            f"       Sprinter (unet_link.c):   {sprinter}"
+        )
+
 
 if __name__ == "__main__":
     main()

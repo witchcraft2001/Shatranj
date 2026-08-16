@@ -58,6 +58,7 @@ extern char *ng_c_connect_port;
    with the session (no game traffic exists yet). */
 extern void nc_mqtt_reset(void);
 extern void nc_mqtt_pump(void);
+extern void nc_mqtt_feed(const unsigned char *data, unsigned char len);
 extern int16_t nc_mqtt_take(void);
 extern const unsigned char *nc_mqtt_packet(void);
 extern void nc_mqtt_consume(unsigned char total);
@@ -124,6 +125,7 @@ extern unsigned char net_mqtt_fail_step;
 extern unsigned char net_mqtt_fail_cf;
 extern unsigned char net_mqtt_fail_status;
 extern unsigned char net_mqtt_fail_detail;
+extern unsigned char net_mqtt_ovl_dropped;
 
 /* net_mqtt_fail_step values -- kept as plain numbers rather than an enum so
  * the wire between this file and net_ui_sprinter.c's step-name table is one
@@ -188,6 +190,42 @@ static uint8_t mqtt_ovl_hex_digit(uint8_t nibble)
    lifetime. */
 static uint16_t mqtt_ovl_next_id = 1u;
 static uint8_t mqtt_ovl_packet[SPECTRUM_MQTT_PACKET_MAX];
+
+/* One-slot holding area for a session PUBLISH that arrives while this
+ * overlay is waiting for a CONNACK/SUBACK.
+ *
+ * WHY. mqtt_ovl_wait_type used to simply throw such packets away, under the
+ * assumption its own banner states -- "no game session is live at any point
+ * this helper is used". S8 step 8f ended that by dispatching activate_side/
+ * probe_seat from the frame loop, and the connect-time `meta` subscribe was
+ * never safe either: a broker delivers a topic's RETAINED message the
+ * instant the subscription lands, which is exactly while this code is still
+ * waiting for the SUBACK. The discard is permanent -- the helper never
+ * PUBACKs, and this client connects with a clean session, so the broker owes
+ * no redelivery before a reconnect.
+ *
+ * Measured, not assumed: the 2026-08-15 MAME round reported `d1`, one
+ * session PUBLISH destroyed, and the guest correspondingly never saw the
+ * host's retained H (it recovered only because the host re-announces on a
+ * timer).
+ *
+ * So: hold it instead, and feed it back into the reassembler when the entry
+ * returns, where the normal frame-loop read path picks it up. Re-injection
+ * puts it after anything that arrived meanwhile -- these are independent
+ * MQTT packets, and nothing in this protocol depends on their relative
+ * order. A second one while the slot is full is still counted as lost, so
+ * net_mqtt_ovl_dropped keeps reporting real loss rather than becoming a
+ * number that is always zero. */
+static uint8_t mqtt_ovl_defer[SPECTRUM_MQTT_PACKET_MAX];
+static uint8_t mqtt_ovl_defer_len;
+
+static void mqtt_ovl_defer_flush(void)
+{
+    if (mqtt_ovl_defer_len != 0u) {
+        nc_mqtt_feed(mqtt_ovl_defer, mqtt_ovl_defer_len);
+        mqtt_ovl_defer_len = 0u;
+    }
+}
 
 static uint16_t mqtt_ovl_alloc_id(void)
 {
@@ -289,6 +327,30 @@ static uint8_t mqtt_ovl_wait_type(uint8_t wanted, uint16_t frames)
                 }
                 nc_mqtt_consume((uint8_t)total);
                 return 1u;
+            }
+            /* Not what we are waiting for. A PUBLISH is session traffic and
+               must survive (see mqtt_ovl_defer above); anything else --
+               PUBACK, a stale SUBACK, PINGRESP -- carries nothing this
+               session needs and is dropped as before. */
+            if (type == SPECTRUM_MQTT_PUBLISH) {
+                if ((uint16_t)(mqtt_ovl_defer_len + total) <=
+                        SPECTRUM_MQTT_PACKET_MAX) {
+                    const uint8_t *src = nc_mqtt_packet();
+                    uint8_t j;
+
+                    /* Appended, not one-slot: activate_side runs FOUR
+                       subscribes and each one's retained snapshot arrives
+                       inside the next one's SUBACK wait, so a single slot
+                       would still lose three of them. The buffer is a byte
+                       stream exactly like the accumulator it feeds back
+                       into, so packets simply stack. */
+                    for (j = 0u; j < (uint8_t)total; ++j) {
+                        mqtt_ovl_defer[mqtt_ovl_defer_len + j] = src[j];
+                    }
+                    mqtt_ovl_defer_len = (uint8_t)(mqtt_ovl_defer_len + total);
+                } else if (net_mqtt_ovl_dropped != 255u) {
+                    ++net_mqtt_ovl_dropped;
+                }
             }
             nc_mqtt_consume((uint8_t)total);
         }
@@ -536,6 +598,9 @@ unsigned char net_mqtt_connect_start_ovl(void)
                 ? SPECTRUM_LINK_MQTT_SETUP_RETAINED
                 : SPECTRUM_LINK_MQTT_SETUP_LIVE);
     }
+    /* Hand back anything the SUBACK waits above had to hold -- the retained
+       `meta` announcement lands during exactly that window. */
+    mqtt_ovl_defer_flush();
     return 1u;
 }
 
@@ -543,12 +608,16 @@ unsigned char net_mqtt_connect_start_ovl(void)
 unsigned char net_mqtt_activate_side_ovl(void)
 {
     if (!mqtt_ovl_activate_side()) {
+        mqtt_ovl_defer_flush();
         return 0u;
     }
     (void)spectrum_net_mqtt_publish_setup(
         netchesszx_session_is_host()
             ? SPECTRUM_LINK_MQTT_SETUP_RETAINED
             : SPECTRUM_LINK_MQTT_SETUP_LIVE);
+    /* Four subscriptions land here, and each one's retained snapshot
+       arrives while the NEXT one is still waiting for its SUBACK. */
+    mqtt_ovl_defer_flush();
     return 1u;
 }
 
@@ -572,5 +641,12 @@ unsigned char net_preflight_ovl(void)
    ovl. */
 unsigned char net_mqtt_probe_seat_ovl(void)
 {
-    return mqtt_ovl_subscribe_suffix(spectrum_net_mqtt_presence_suffix());
+    unsigned char ok = mqtt_ovl_subscribe_suffix(
+        spectrum_net_mqtt_presence_suffix());
+
+    /* The whole point of the probe is the retained O this subscription
+       delivers -- and it arrives inside the SUBACK wait. Dropping it made
+       the probe unable to ever see an occupied seat. */
+    mqtt_ovl_defer_flush();
+    return ok;
 }

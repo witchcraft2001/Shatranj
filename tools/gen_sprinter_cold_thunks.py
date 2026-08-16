@@ -95,7 +95,6 @@ COLD_THUNK_SYMBOLS = [
     "render_status_clock",
     "render_status_text",
     "render_input_line",
-    "render_input_key_echo",
     "render_square",
     "render_square_marked",
     "render_cursor_marker",
@@ -208,6 +207,13 @@ COLD_THUNK_SYMBOLS = [
     "pending_local_clear",
     "takeback_snapshot_save",
     "square_index",
+    # --- S9 chat pass --------------------------------------------------------
+    # Checked twice per CHAT send: once by main.c before opening the input
+    # line (WIN1), once more by chat_sprinter.c itself at submit time (a
+    # DIFFERENT WIN3 page -- session_sprinter.c's own header explains why
+    # state can change between the two checks). Appended, not inserted, per
+    # this list's own ordering rule above.
+    "net_chat_blocked",
 ]
 
 GENERATED_BANNER = (

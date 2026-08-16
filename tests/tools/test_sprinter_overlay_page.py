@@ -86,17 +86,17 @@ class SprinterOverlayPageTests(unittest.TestCase):
             self.assertIsNotNone(match, f"OVL_WIN3_{name}_ORG missing from the atlas table")
             self.assertEqual(int(match.group(1), 16), msop.slot_org(name))
 
-        # RULES/BOARD/SAVELOAD/RESTORE/FILEUI/NET must be declared mode 1
-        # (mapped), not mode 0 (copied): a 2772-byte BOARD silently
-        # truncated into a 2 KiB copy slot is exactly the failure this pass
-        # exists to avoid.
+        # RULES/BOARD/SAVELOAD/RESTORE/FILEUI/NET/INPUT_EDIT must be
+        # declared mode 1 (mapped), not mode 0 (copied): a 2772-byte BOARD
+        # silently truncated into a 2 KiB copy slot is exactly the failure
+        # this pass exists to avoid.
         modes = re.search(r"^ovl_atlas_mode_table:\n((?:\s+defb.*\n)+)",
                           text, re.M)
         self.assertIsNotNone(modes, "ovl_atlas_mode_table missing")
         entries = re.findall(r"defb\s+(OVL_MODE_\w+)", modes.group(1))
         self.assertEqual(len(entries), 15, "mode table must cover ids 0-14")
-        win3_ids = {0: "RULES", 1: "BOARD", 3: "NET", 10: "SAVELOAD",
-                    11: "RESTORE", 13: "FILEUI"}
+        win3_ids = {0: "RULES", 1: "BOARD", 3: "NET", 9: "INPUT_EDIT",
+                    10: "SAVELOAD", 11: "RESTORE", 13: "FILEUI"}
         for idx, name in win3_ids.items():
             self.assertEqual(entries[idx], "OVL_MODE_WIN3", name)
         self.assertEqual(entries[14], "OVL_MODE_COPY")  # CONTROL, unchanged
@@ -120,6 +120,18 @@ class SprinterOverlayPageTests(unittest.TestCase):
         # one is ever mapped at a time -- so page 2's own first slot must
         # restart at WIN3_BASE exactly like page 1's RULES does.
         self.assertEqual(msop.slot_org("NET"), 0xC000)
+
+    def test_input_edit_lands_at_its_own_slot_on_page_2(self) -> None:
+        data = b"\x2au" * (msop.slot_budget("INPUT_EDIT") // 2)
+        page = msop.build_overlay_page(page=2, input_edit=data)
+        offset = msop.slot_org("INPUT_EDIT") - msop.WIN3_BASE
+        self.assertEqual(page[offset:offset + len(data)], data)
+
+    def test_input_edit_org_follows_net(self) -> None:
+        # INPUT_EDIT is the second slot on page 2 (S9 chat pass), right
+        # after NET's own 8192 bytes.
+        self.assertEqual(msop.slot_org("INPUT_EDIT"),
+                         msop.slot_org("NET") + msop.slot_budget("NET"))
 
     def test_page2_oversized_overlay_is_rejected(self) -> None:
         too_big = b"\x00" * (msop.slot_budget("NET") + 1)

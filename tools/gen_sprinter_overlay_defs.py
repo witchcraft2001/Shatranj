@@ -116,6 +116,7 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "nc_mqtt_take",
     "nc_mqtt_packet",
     "nc_mqtt_consume",
+    "nc_mqtt_feed",
     # nc_mqtt_reset is needed here for a reason the other four are not:
     # unet_link.c's spectrum_net_mqtt_start() (WIN1) calls it before
     # dispatching this overlay, but the NET screen calls net_mqtt_connect_
@@ -147,6 +148,29 @@ OVERLAY_RESIDENT_SYMBOLS = [
     "net_mqtt_fail_cf",
     "net_mqtt_fail_status",
     "net_mqtt_fail_detail",
+    "net_mqtt_ovl_dropped",
+    # S9 chat pass: chat_sprinter.c (INPUT_EDIT, SPECTRUM_OVL_INPUT_EDIT=
+    # 9u, WIN3 page 2) reaches the same rendering/transport primitives
+    # every other overlay on this bridge already does. spectrum_render_
+    # input/_chat/_chat_at are cold-page routines (render_core.asm) whose
+    # WIN1 stub tools/gen_sprinter_cold_thunks.py already publishes under
+    # these exact names -- resident_c.map has the STUB's address here, not
+    # the cold page's, same as spectrum_render_fileui_frame above.
+    # spectrum_net_payload_scratch/_send_text are genuinely WIN1-resident
+    # (unet_link.c, S8 step 8a) -- no thunk involved, direct link. net_
+    # chat_blocked is session_sprinter.c's own (WIN3 cold page), reached
+    # through its own new cold-thunk stub (tools/gen_sprinter_cold_
+    # thunks.py's COLD_THUNK_SYMBOLS) the same way net_op_busy already is
+    # for other overlays' callers. netchesszx_local_color (already listed
+    # above) is what chat_sprinter.c's own netchesszx_local_side_char()
+    # call needs -- no new symbol required for that one.
+    "spectrum_render_input",
+    "spectrum_render_chat",
+    "spectrum_render_chat_at",
+    "spectrum_render_chat_scroll",
+    "spectrum_net_payload_scratch",
+    "spectrum_net_send_text",
+    "net_chat_blocked",
 ]
 
 # Second, independent allowlist -- the entry points tests/sprinter/z80/
@@ -380,6 +404,9 @@ def _clean_fixture() -> str:
         "_nc_mqtt_consume                = $9FD0 ; addr, public, , "
         "asm_sprinter_zcc_netframe_defs_asm, code_user, "
         "build/sprinter/generated/netframe_defs.asm:1\n"
+        "_nc_mqtt_feed                   = $9FD8 ; addr, public, , "
+        "asm_sprinter_zcc_netframe_defs_asm, code_user, "
+        "build/sprinter/generated/netframe_defs.asm:1\n"
         "_nc_mqtt_reset                  = $9FE0 ; addr, public, , "
         "asm_sprinter_zcc_netframe_defs_asm, code_user, "
         "build/sprinter/generated/netframe_defs.asm:1\n"
@@ -410,12 +437,36 @@ def _clean_fixture() -> str:
         "_net_mqtt_fail_detail           = $4C53 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, bss_compiler, "
         "src/sprinter/transport/unet_link.c::net_mqtt_fail_detail::0::0:6\n"
+        "_net_mqtt_ovl_dropped           = $4C54 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, bss_compiler, "
+        "src/sprinter/transport/unet_link.c::net_mqtt_ovl_dropped::0::0:6\n"
         "_spectrum_net_mqtt_publish_presence = $4C30 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_mqtt_publish_presence::0::0:6\n"
         "_spectrum_net_mqtt_publish_setup = $4C40 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_mqtt_publish_setup::0::0:6\n"
+        "_spectrum_render_input          = $4C60 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_render_chat           = $4C70 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_render_chat_at        = $4C80 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_render_chat_scroll    = $4C85 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_spectrum_net_payload_scratch   = $4C90 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_payload_scratch::0::0:6\n"
+        "_spectrum_net_send_text         = $4CA0 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_send_text::0::0:6\n"
+        "_net_chat_blocked               = $4CB0 ; addr, public, , "
+        "asm_sprinter_zcc_cold_thunks_asm, code_user, "
+        "build/sprinter/generated/cold_thunks.asm:1\n"
         "i_15                            = $4259 ; addr, local, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"

@@ -129,6 +129,7 @@
     EXTERN PANEL_MOVES_Y
     EXTERN PANEL_CHAT_Y
     EXTERN LOWRAM_MOVE_LOG_ADDR
+    EXTERN LOWRAM_CHAT_LOG_ADDR
 
 ; dss.inc's own values (port.md section 3.3), hardcoded here rather than
 ; bridged through gen_sprinter_platform_defs.py: fixed hardware constants,
@@ -432,8 +433,8 @@ draw_square_into:
 ; and visibly repainted content (every cursor move repaints two squares
 ; through this, via render_square_marked below). F1 (2026-08-12) then
 ; migrated every other LIVE/event-driven routine in this file the same
-; way (game_timer_paint, render_input_key_echo, the clock/turn-label/
-; status/notice/input-text routines below); the move-list painter,
+; way (game_timer_paint, the clock/turn-label/status/notice/input-text
+; routines below); the move-list painter,
 ; render_board_full (menu RESET needs a live full-board repaint) and the
 ; menu bar itself (open/close/focus needed a visible signal, human tester
 ; feedback -- render_menu_tabs's own comment) joined them (S5-finish plan
@@ -877,9 +878,10 @@ render_status_text:
 ;
 ; ">" prompt at the left of the INPUT band -- S4's own proven position
 ; (scene_s4.asm's scene_draw_input, commit 2bf4680). Painted once at boot,
-; same static baseline as the rest of this file's HUD chrome; the raw-
-; key-code debug echo just right of it (render_input_key_echo, below) is
-; what the frame loop actually repaints.
+; same static baseline as the rest of this file's HUD chrome; the typed
+; text just right of it (_spectrum_render_input, below) is what the chat
+; overlay (SPECTRUM_OVL_INPUT_EDIT=9u, src/sprinter/chat_sprinter.c)
+; actually repaints, on ENTER/each keystroke rather than every frame.
 INPUT_COLOR EQU $01
 INPUT_PROMPT_X EQU 8
 INPUT_PROMPT_Y EQU INPUT_Y+2
@@ -905,114 +907,6 @@ render_input_line:
     ld hl,(@dest_base)
     jp text_print
 @dest_base: dw 0
-
-; --- input: raw key-code echo (S5 substep 3, input handling's first
-; slice) -----------------------------------------------------------------
-;
-; A=byte. DE=dest (2 bytes: high nibble hex digit then low nibble hex
-; digit, uppercase, no NUL -- caller owns the byte after). Clobbers AF,
-; BC, DE.
-format2hex:
-    ld c,a
-    srl a
-    srl a
-    srl a
-    srl a
-    call @digit
-    ld a,c
-    and $0F
-    call @digit
-    ret
-@digit:
-    and $0F
-    cp 10
-    jr c,@digit_num
-    add a,'A'-10
-    jr @digit_store
-@digit_num:
-    add a,'0'
-@digit_store:
-    ld (de),a
-    inc de
-    ret
-
-; Same box-colour reasoning as every other routine in this file: bg=0
-; blends into real black once clear_bg_signal runs.
-INPUT_KEY_ECHO_COLOR EQU $01
-INPUT_KEY_ECHO_X EQU INPUT_PROMPT_X+24 ; just right of the "> " prompt
-INPUT_KEY_ECHO_Y EQU INPUT_PROMPT_Y
-
-; No arguments. Reads key_code (im2_s1.asm's key_poll, polled every frame
-; from main()'s frame loop) and repaints it as two hex digits just right
-; of the "> " prompt, into both VRAM buffers -- a debug echo proving the
-; DSS keyboard-input path reaches the screen end to end, and that key_
-; poll's DSS-code-to-semantic-code translation (0x81/0x82/0x83/0x84 up/
-; down/left/right, 0x8A cancel, 0x08 backspace, printable ASCII) produces
-; the values a real input handler will eventually consume. key_code is a
-; LATCH (see key_poll's own comment): it holds the last recognised key
-; until the next one arrives, not just whatever happened this exact
-; frame, specifically so a human reading this echo has more than one
-; ~20ms frame to read it (human tester feedback, 2026-08-11 -- the first
-; version reset to "00" every frame with nothing newly queued and was
-; unreadable).
-;
-; board_cursor_move (below, added right after this routine was confirmed
-; working) is now a real consumer of the 0x81-0x84 arrow codes: it clears
-; key_code itself once it recognises and acts on one (edge-triggered for
-; those four codes only), so this echo will flash back to "00" the frame
-; after an arrow move lands -- expected, not a regression, once there is
-; something else on screen (the cursor marker moving) confirming the key
-; landed. Every other code (ASCII, cancel, backspace) still has no
-; consumer and keeps latching/displaying exactly as before.
-;
-; S5-finish plan D11 (buffer flip): main.c's frame loop calls this every
-; single frame, unconditionally -- the one call site in this port that
-; painted (via text_print) on every frame even before the flip existed.
-; Now that text_print/gfx_fill_rect log every paint into buffers.asm's
-; dirty-rect ring (needed for the routines that DO paint conditionally),
-; an unconditional every-frame repaint here would keep the ring non-empty
-; forever, forcing frame_wait to request -- and get -- a flip every
-; single frame, and once the ring's 16 slots fill (within seconds) every
-; one of those flips syncs the WHOLE buffer. Confirmed on real hardware
-; (human tester, 2026-08-11, first P15 MAME run): constant screen
-; switching, the never-actually-pixel-cleared second buffer's garbage
-; exposed, breakdown after sustained load. Fixed by only repainting when
-; key_code has actually changed since the last echo -- @last_echoed is a
-; local latch of what is currently ON SCREEN (distinct from key_code
-; itself, which board_cursor_move/board_select_or_move consume/clear
-; elsewhere); #FF is never a real key_code value (see key_poll's own
-; comment for the full code set), so it forces the very first call to
-; always paint.
-;
-; F1 (2026-08-12): migrated the paint itself to single-pass (back_base
-; only), same as render_square/game_timer_paint -- the storm gate above
-; only stopped the ring from overflowing every frame, it did not stop
-; this call site's own two-pass write from tearing on whichever buffer
-; happened to be live at the moment a key changed. Clobbers everything.
-    PUBLIC render_input_key_echo
-render_input_key_echo:
-    PUBLIC _render_input_key_echo
-    defc _render_input_key_echo = render_input_key_echo
-    ld a,(key_code)
-    ld hl,@last_echoed
-    cp (hl)
-    ret z                       ; unchanged since the last paint -- nothing
-                                 ; to redraw, and nothing to log
-    ld (hl),a
-
-    ld de,@buf
-    call format2hex
-    xor a
-    ld (@buf+2),a
-
-    ld de,@buf
-    ld ix,INPUT_KEY_ECHO_X
-    ld c,INPUT_KEY_ECHO_Y
-    ld a,INPUT_KEY_ECHO_COLOR
-    ld hl,(back_base)
-    jp text_print
-@buf: defb 0,0,0
-@last_echoed: defb $FF
 
 ; --- board cursor and selection (S5 substep 3/3c) --------------------------
 ;
@@ -1231,9 +1125,10 @@ render_square_marked:
 ; key_code itself the instant it recognises an arrow code -- edge-
 ; triggered, read-and-clear, the "proper poll-and-clear semantics for a
 ; real input consumer" this port's own S5 testnotes flagged as still
-; missing after the raw-echo probe shipped. This is the first thing in
-; the port that does so; render_input_key_echo (above) and every other
-; still-unconsumed code keep the plain latch behaviour.
+; missing after the raw-echo probe shipped (S5) and later removed once
+; something real (chat, S9) consumed key_code instead -- main.c's own
+; frame loop now zeroes key_code itself for every key the menu/chat/
+; control layers consume, ahead of this routine ever seeing it.
 ;
 ; Repaints exactly the two squares that change -- the one being left and
 ; the one being entered -- through render_square_marked, so the cursor
@@ -1917,11 +1812,13 @@ _spectrum_render_input_cell:
 ; reasoning as this file's own VRAM_ALIAS_KEY (a fixed manifest constant,
 ; not shared address state).
 ;
-; The chat panel has no content-producing path at all this pass (no
-; INPUT_EDIT, no network) -- port.md's own S5 DoD only asks for a
-; placeholder ("чат-заглушка"), painted once at boot as part of
-; _spectrum_info_show_game below. spectrum_render_chat/_chat_at/
-; _chat_scroll stay honest no-op stubs -- nothing calls them.
+; The chat panel (S9 chat pass) is real now: src/sprinter/chat_sprinter.c
+; (INPUT_EDIT overlay, WIN3 page 2) owns the storage and word-wrap, into
+; the SAME LOWRAM_CHAT_LOG_ADDR low-RAM layout (src/spectrum/ui/layout.h's
+; NETCHESSZX_CHAT_* constants) render_chat_row below reads -- the same
+; split as the move list just above, just with the producer on a WIN3
+; overlay page instead of WIN1 C, since chat needs the line editor too
+; (chat_sprinter.c's own header explains why both live together there).
 MOVE_ROWS EQU 7                    ; layout.h NETCHESSZX_MOVE_ROWS
 MOVE_SLOT_SIZE EQU 32               ; layout.h NETCHESSZX_MOVE_SLOT_SIZE
 MOVE_BLACK_OFFSET EQU 18            ; layout.h NETCHESSZX_MOVE_BLACK_OFFSET
@@ -2032,15 +1929,151 @@ _spectrum_render_move_at:
     PUBLIC _spectrum_render_moves_scroll
 _spectrum_render_moves_scroll:
     ret
+
+; --- chat log (S9 chat pass) -------------------------------------------
+;
+; CHAT_ROWS/_SLOT_SIZE mirror layout.h's NETCHESSZX_CHAT_ROWS/_SLOT_SIZE,
+; same hardcoding reasoning as MOVE_ROWS/_SLOT_SIZE above. Row layout
+; (chat_sprinter.c's own chat_add_line, ported from ZX's gui_log_ovl.c):
+; byte 0 is the side marker ('W'/'B'/0-for-continuation-line, bit 7 a
+; "control event" flag this row masks off exactly like ZX's own renderer
+; does -- and 0x7f), bytes 1.. are the text ("HH:MM text" on a row's own
+; first line, plain continuation text otherwise -- both start at the same
+; +1 offset so this routine never needs to know which shape it is).
+CHAT_ROWS EQU 9                     ; layout.h NETCHESSZX_CHAT_ROWS
+CHAT_SLOT_SIZE EQU 28                ; layout.h NETCHESSZX_CHAT_SLOT_SIZE
+CHAT_ROW_H EQU 8                     ; 9*8 = 72px, the whole CHAT band
+CHAT_TEXT_X EQU PANEL_X+8            ; matches PANEL_HEADER_WHITE_X below
+CHAT_ERASE_X_BYTE EQU PANEL_X/2
+CHAT_ERASE_W_BYTES EQU 116           ; PANEL_W(232)/2 -- the whole row width
+CHAT_MARKER_W_BYTES EQU 2            ; 4px side-colour marker at the left edge
+CHAT_COLOR_WHITE EQU 1               ; palette 1 (text)
+CHAT_COLOR_BLACK EQU 13              ; palette 13 (hud_muted)
+
+CHAT_ROW_Y_TABLE:
+    defb 0,8,16,24,32,40,48,56,64   ; row*CHAT_ROW_H
+
+; A=row(0-8). Erases and repaints one chat-log row from LOWRAM_CHAT_LOG_
+; ADDR+row*CHAT_SLOT_SIZE. Single-pass (back_base): reachable live (every
+; incoming/outgoing chat line, plus a RESET_CHAT full clear), not
+; boot-only. Clobbers everything.
+render_chat_row:
+    ld (@row),a
+    ld l,a
+    ld h,0
+    ld d,h
+    ld e,l                          ; DE = row
+    add hl,hl
+    add hl,hl                       ; HL = row*4
+    ex de,hl                        ; DE = row*4, HL = row
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl                       ; HL = row*32
+    or a
+    sbc hl,de                       ; HL = row*32 - row*4 = row*28
+    ld de,LOWRAM_CHAT_LOG_ADDR
+    add hl,de
+    ld (@line),hl
+
+    ld a,(@row)
+    ld hl,CHAT_ROW_Y_TABLE
+    ld e,a
+    ld d,0
+    add hl,de
+    ld a,(hl)
+    add a,PANEL_CHAT_Y
+    ld (@y),a
+
+    ld hl,(back_base)
+    ld (@dest_base),hl
+    ld b,CHAT_ERASE_X_BYTE
+    ld a,(@y)
+    ld c,a
+    ld d,CHAT_ERASE_W_BYTES
+    ld e,CHAT_ROW_H
+    xor a
+    ld hl,(@dest_base)
+    call gfx_fill_rect
+
+    ld hl,(@line)
+    ld a,(hl)
+    and $7F                         ; NETCHESSZX_CHAT_EVENT_SIDE_FLAG mask
+    ld (@who),a
+    jr z,@marker_done                ; 0 = continuation line, no marker
+
+    ld b,CHAT_ERASE_X_BYTE
+    ld a,(@y)
+    ld c,a
+    ld d,CHAT_MARKER_W_BYTES
+    ld e,CHAT_ROW_H
+    ld a,(@who)
+    cp 'W'
+    jr nz,@marker_black
+    ld a,CHAT_COLOR_WHITE
+    jr @marker_draw
+@marker_black:
+    ld a,CHAT_COLOR_BLACK
+@marker_draw:
+    ld hl,(@dest_base)
+    call gfx_fill_rect
+@marker_done:
+
+    ld hl,(@line)
+    inc hl
+    ex de,hl
+    ld ix,CHAT_TEXT_X
+    ld a,(@y)
+    ld c,a
+    ld a,STATUS_COLOR
+    ld hl,(@dest_base)
+    jp text_print
+@row: defb 0
+@line: dw 0
+@y: defb 0
+@who: defb 0
+@dest_base: dw 0
+
+; HL=chat (__z88dk_fastcall) -- ALWAYS ignored, same reasoning as
+; _spectrum_render_moves above. Full repaint of every row.
     PUBLIC _spectrum_render_chat
 _spectrum_render_chat:
+    xor a
+@loop:
+    push af
+    call render_chat_row
+    pop af
+    inc a
+    cp CHAT_ROWS
+    jr c,@loop
     ret
+
+; HL=line (__z88dk_fastcall): a row-BASE pointer into LOWRAM_CHAT_LOG_ADDR
+; (chat_sprinter.c always passes chat_lines+row*CHAT_SLOT_SIZE). Repaints
+; just that one row. CHAT_SLOT_SIZE (28) is not a power of two, unlike
+; MOVE_SLOT_SIZE (32) above -- a subtraction loop finds the row instead of
+; a shift (at most 9 iterations, the log is 252 bytes).
     PUBLIC _spectrum_render_chat_at
 _spectrum_render_chat_at:
-    ret
+    ld de,LOWRAM_CHAT_LOG_ADDR
+    or a
+    sbc hl,de
+    ld a,l                          ; offset fits one byte (log is 252B)
+    ld b,0
+@div_loop:
+    cp CHAT_SLOT_SIZE
+    jr c,@div_done
+    sub CHAT_SLOT_SIZE
+    inc b
+    jr @div_loop
+@div_done:
+    ld a,b
+    jp render_chat_row
+
     PUBLIC _spectrum_render_chat_scroll
 _spectrum_render_chat_scroll:
-    ret
+    jp _spectrum_render_chat
 
 ; --- info panel chrome (S5-finish step 1) -----------------------------------
 ;
@@ -2062,14 +2095,13 @@ PANEL_RULE_X_BYTE EQU PANEL_X/2
 PANEL_RULE_W_BYTES EQU 108        ; ~216px, inside the panel's 232px width
 PANEL_RULE_COLOR EQU 13           ; hud_muted
 
-PANEL_CHAT_TEXT_Y EQU PANEL_CHAT_Y+2
-
-; No arguments. Paints the move-list column headers, the two panel
-; dividers (header/moves and moves/chat), and the chat panel's one static
-; placeholder line (port.md's own S5 DoD only asks for a "чат-заглушка" --
-; no INPUT_EDIT, no network, nothing to show yet -- see this file's own
-; move-list section header for the fuller reasoning). Boot-only, two-pass
-; on purpose: nothing repaints this again after boot (S5-finish plan D12).
+; No arguments. Paints the move-list column headers and the two panel
+; dividers (header/moves and moves/chat) -- the chat panel's own content
+; is INPUT_EDIT's (SPECTRUM_OVL_INPUT_EDIT=9u, src/sprinter/chat_
+; sprinter.c): a boot-time RESET_CHAT/RENDER_CHAT paints the (empty)
+; panel itself, this routine only owns the static chrome around it, same
+; as it always did for the move-list headers. Boot-only, two-pass on
+; purpose: nothing repaints this again after boot (S5-finish plan D12).
 ; Clobbers everything.
     PUBLIC _spectrum_info_show_game
 _spectrum_info_show_game:
@@ -2107,18 +2139,10 @@ _spectrum_info_show_game:
     ld e,1
     ld a,PANEL_RULE_COLOR
     ld hl,(@dest_base)
-    call gfx_fill_rect
-
-    ld de,@chat_msg
-    ld ix,PANEL_HEADER_WHITE_X
-    ld c,PANEL_CHAT_TEXT_Y
-    ld a,STATUS_COLOR
-    ld hl,(@dest_base)
-    jp text_print
+    jp gfx_fill_rect
 @dest_base: dw 0
 @white_msg: defb "White",0
 @black_msg: defb "Black",0
-@chat_msg: defb "Chat: n/a (hot-seat)",0
 
 ; --- menu bar visibility (S5-finish step 1/3, plan D12 fix) -----------------
 ;

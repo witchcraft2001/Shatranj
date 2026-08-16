@@ -56,10 +56,15 @@
  * gui.c's own spectrum_gui_handle_menu_key -- see the frame loop and
  * handle_menu_action below). RESET, THEME and (real FLIP, added after
  * P17) are real menu actions; FILE/DISCONNECT/ABOUT are honest "not
- * available" stubs (S6/S7/S9 scope). The chat panel is a static
- * placeholder line (_spectrum_info_show_game, render_core.asm) -- no
- * INPUT_EDIT, no network, nothing to show yet. See docs/sprinter-
- * testnotes/S5.md for the full checkpoint history.
+ * available" stubs (S6/S7/S9 scope). See docs/sprinter-testnotes/S5.md for
+ * the full checkpoint history.
+ *
+ * S9 chat pass: the chat panel is real now (INPUT_EDIT, SPECTRUM_OVL_
+ * INPUT_EDIT=9u, src/sprinter/chat_sprinter.c, WIN3 page 2) -- ENTER opens
+ * the input line below the "> " prompt, chat_input_mode routes subsequent
+ * keys to it instead of the board/menu, and incoming CHAT lands in the
+ * panel instead of the notice line (session_sprinter.c's own CHAT event
+ * branch). See the frame loop below and chat_sprinter.c's own header.
  */
 
 #include "spectrum/config/session.h"
@@ -72,7 +77,9 @@
 #include "common/protocol/game_protocol.h"
 #include "common/protocol/mqtt_session_protocol.h"
 #include "spectrum/board/board.h"
+#include "spectrum/overlay/overlay.h"
 #include "spectrum/overlay/overlay_context.h"
+#include "sprinter/chat_sprinter.h"
 #include "common/chess/rules_compact.h"
 #include "spectrum/ui/gui.h"
 #include "spectrum/ui/info_panel.h"
@@ -123,7 +130,6 @@ extern void render_menu_bar(void);
 extern void render_status_text(void);
 extern void render_input_line(void);
 extern void key_poll(void);
-extern void render_input_key_echo(void);
 extern void render_cursor_marker(void);
 extern void render_select_marker(void);
 /* __z88dk_fastcall, spelled out rather than left to the classic default:
@@ -146,6 +152,15 @@ extern void board_cursor_move(void);
    theme_set_squares comment). */
 extern void spectrum_gui_reset_move_log(void);
 extern void theme_set_squares(unsigned char index);
+/* S9 chat pass: src/sprinter/gui_log_sprinter.c -- Sprinter-only, no ZX/
+   Next equivalent (gui.h's own spectrum_gui_add_chat is declared there
+   and used for incoming chat, session_sprinter.c's own CHAT event branch;
+   this one has no shared-header home since it is not part of ZX/Next's
+   own gui.h API). Declared here, ahead of every caller (net_apply_loaded_
+   snapshot below, main()'s own boot init, the frame loop) -- sccz80 has
+   no forward-declaration recovery, an implicit-int call site ahead of
+   this would conflict with the real prototype. */
+extern void spectrum_gui_reset_chat(void);
 
 /* S6 (save/load + file browser, port.md section 5): gui_log_sprinter.c's
    own move-count is the true ply source (that file's own header) -- these
@@ -270,6 +285,17 @@ extern void net_set_turn_label_from_side(void);
    mapped elsewhere. */
 static unsigned char net_active;
 
+/* S9 chat pass: set while the chat input line (INPUT_EDIT overlay,
+   SPECTRUM_OVL_INPUT_EDIT=9u, src/sprinter/chat_sprinter.c) owns the
+   keyboard -- checked ahead of net_control_key below so a chat line in
+   progress is never mistaken for a 'd'/'y'/'n' control-key answer, and
+   ahead of board_cursor_move/board_select_or_move (via key_code, which
+   every consuming branch below zeroes) so typing never moves the cursor
+   or picks up a piece. WIN1-local only: chat_sprinter.c's own overlay
+   page has no notion of this flag, it just answers whatever entry WIN1
+   dispatches. */
+static unsigned char chat_input_mode;
+
 
 /* S8 relief pass, second cut: the cold page's own overrun (18190/16384
  * bytes with the whole session driver moved there in one piece) forced a
@@ -318,6 +344,13 @@ extern unsigned char net_op_busy(void);
  * needs the same one-line "link's dead, make WIN1's own state honest
  * again" cleanup a failed RESTORE_RQ send hits. */
 extern void net_drop(const char *why);
+/* Bridged the same way (S9 chat pass): a stricter subset of net_op_busy --
+ * only a pending local MOVE or an in-progress RESTORE exchange blocks
+ * CHAT (docs/session-core-contract.md:315-318), not a pending RESET/DRAW/
+ * RESIGN/TAKEBACK the way net_op_busy's own callers require. Checked both
+ * before opening the chat line (below) and again at submit time inside
+ * the overlay itself (chat_sprinter.c's own header explains why). */
+extern unsigned char net_chat_blocked(void);
 /* Bridged the same way: net_apply_loaded_snapshot (below) clears the
  * board-cursor highlight before repainting, exactly like every other
  * "the board just changed under us" site in session_sprinter.c. */
@@ -586,6 +619,13 @@ static void net_apply_loaded_snapshot(const netchesszx_save_meta_t *meta) {
     selection_clear();
     saveload_full_redraw();
     spectrum_gui_reset_move_log();
+    /* app.c's own net_apply_loaded_snapshot equivalent clears BOTH logs
+       here (spectrum_gui_reset_logs, app.c:1121) -- a loaded/restored
+       position has no relationship to whatever chat happened before it.
+       Unlike RESET (session_sprinter.c's menu_reset_game/net_apply_reset,
+       app.c's own game_start_state), which keeps chat across a rematch
+       with the same still-connected peer. */
+    spectrum_gui_reset_chat();
     spectrum_gui_log_ply_set(meta->ply);
     spectrum_gui_game_timer_start();
     spectrum_gui_move_timer_reset();
@@ -780,6 +820,33 @@ static void menu_not_available(void) {
     spectrum_gui_notify("Not available", 0u);
 }
 
+/* --- chat (S9 chat pass) ----------------------------------------------
+ *
+ * Thin dispatchers onto INPUT_EDIT's own entries (chat_sprinter.c, WIN3
+ * page 2) -- overlay_loader_sprinter.asm's spectrum_overlay_exec_cached is
+ * already resolved within this resident C image (board.c calls it the
+ * same way for RULES/BOARD), so no bridge of its own is needed. */
+extern unsigned char spectrum_overlay_exec_cached(unsigned char ovl_id,
+                                                    unsigned char entry_id);
+
+static unsigned char chat_key(unsigned char key) {
+    spectrum_overlay_context[SPECTRUM_OVL_CTX_INPUT_KEY] = key;
+    return spectrum_overlay_exec_cached(SPECTRUM_OVL_INPUT_EDIT,
+                                        SPECTRUM_OVL_INPUT_EDIT_KEY);
+}
+
+static void chat_open(void) {
+    (void)spectrum_overlay_exec_cached(SPECTRUM_OVL_INPUT_EDIT,
+                                       SPECTRUM_OVL_INPUT_EDIT_BEGIN_EMPTY);
+}
+
+static void chat_stop_clear(void) {
+    (void)spectrum_overlay_exec_cached(SPECTRUM_OVL_INPUT_EDIT,
+                                       SPECTRUM_OVL_INPUT_EDIT_STOP_CLEAR);
+}
+
+#define CHAT_OPEN_KEY 0x0du   /* ENTER, im2_s1.asm's key_poll */
+
 void main(void) {
     unsigned char pass;
 
@@ -935,19 +1002,23 @@ void main(void) {
        an over-long path just loses its tail, not a crash. */
     spectrum_gui_notify_persistent(spectrum_platform_save_dir());
 
+    /* S9 chat pass: the chat panel's own LOWRAM buffer is not zeroed by
+       the loader (only C BSS is, and this buffer is a fixed low-RAM
+       region shared with the INPUT_EDIT overlay, not linker-owned
+       storage) -- without this, the very first RENDER/repaint would
+       paint whatever garbage happened to be there at boot. One-time,
+       same reasoning as the LOWRAM_RENDER_SHARED seeding at the top of
+       this function. */
+    spectrum_gui_reset_chat();
+
     /* First slice of real input handling (S5 substep 3): key_poll()
        (im2_s1.asm) does a non-blocking DSS keyboard poll every frame,
        translates the result into this port's own semantic key codes
        (0x81-0x84 arrows, 0x8A cancel, matching ZX/Next's own gui.h/
        screen.asm convention -- key_poll's own comment has the full
        mapping and how it was cross-checked against Estex-DSS's KEYINTER.
-       ASM), and latches it into key_code; render_input_key_echo()
-       (render_core.asm) paints that latched code as two hex digits next
-       to the "> " prompt. Not yet a real key handler -- see render_
-       input_key_echo's own comment for why: this exists to make the
-       whole DSS-to-semantic-code path checkable on screen before
-       anything acts on it. Safe to call gfx_*-family/text_print routines
-       here even though IM2 is now installed: the
+       ASM), and latches it into key_code. Safe to call gfx_*-family/
+       text_print routines here even though IM2 is now installed: the
        IM2 stub (resident_s1.asm) chains to DSS's own #0038 handler for
        anything that is not a frame tick, so nothing about this loop
        changes how DSS's keyboard FIFO or interrupt handling behaves
@@ -960,11 +1031,7 @@ void main(void) {
        board_cursor_move() (render_core.asm) is the first real consumer of
        key_code: it acts on the four arrow codes (moves the highlighted
        square, clamped to the board edges) and clears key_code itself once
-       it does, read-and-clear rather than key_poll's own plain latch --
-       see that routine's own comment for why this is deliberately
-       different from render_input_key_echo's behaviour. Runs before the
-       echo repaint so the echo reflects whatever key_code holds after
-       consumption, not before it.
+       it does, read-and-clear rather than key_poll's own plain latch.
 
        S5-finish plan D12: spectrum_gui_handle_menu_key (gui.c, portable)
        gets first look at key_code, ahead of board_cursor_move/board_
@@ -993,30 +1060,80 @@ void main(void) {
                     key_code = 0u;
                     fileui_process_key(key);
                 } else {
-                    unsigned char handled = spectrum_gui_handle_menu_key(key);
+                    /* S9 chat pass: TAB closes an open chat line before the
+                       menu toggle below runs -- gui.c's own spectrum_gui_
+                       handle_menu_key always consumes SPECTRUM_GUI_KEY_MENU
+                       itself (toggle_menu_bar), so this only cleans up the
+                       chat overlay's own state first; the menu still opens
+                       on the very same press, exactly as it would without
+                       chat involved. */
+                    if (chat_input_mode && key == SPECTRUM_GUI_KEY_MENU) {
+                        chat_stop_clear();
+                        chat_input_mode = 0u;
+                    }
 
-                    if (handled != key) {
-                        key_code = 0u;      /* menu consumed/transformed it --
-                                                don't let the cursor also see it */
-                        if (handled != 0u) {
-                            handle_menu_action(handled);
+                    {
+                        unsigned char handled = spectrum_gui_handle_menu_key(key);
+
+                        if (handled != key) {
+                            key_code = 0u;      /* menu consumed/transformed it --
+                                                    don't let the cursor also see it */
+                            if (handled != 0u) {
+                                handle_menu_action(handled);
+                            }
+                        } else if (chat_input_mode) {
+                            /* The line is open -- every key that reaches
+                               here (not fileui, not a menu key) belongs to
+                               it, not the board/control layer. chat_key's
+                               return code decides what happens next
+                               (chat_sprinter.h). */
+                            unsigned char rc = chat_key(key);
+
+                            key_code = 0u;
+                            if (rc == CHAT_SPRINTER_KEY_CLOSED) {
+                                chat_input_mode = 0u;
+                            } else if (rc == CHAT_SPRINTER_KEY_LINK_DOWN) {
+                                chat_input_mode = 0u;
+                                net_drop("Link down");
+                            } else if (rc == CHAT_SPRINTER_KEY_BLOCKED) {
+                                spectrum_gui_notify("Waiting for ACK", 0u);
+                            }
+                        } else if (key == CHAT_OPEN_KEY) {
+                            /* ENTER, chat closed: open the line unless
+                               there is no session/peer to talk to, or a
+                               local MOVE/RESTORE is in flight -- app.c's
+                               own send_local_chat guard, checked here
+                               instead since Sprinter has no separate
+                               input_submit dispatcher (net_chat_blocked,
+                               session_sprinter.c). */
+                            key_code = 0u;
+                            if (!net_active) {
+                                spectrum_gui_notify("Not connected", 0u);
+                            } else if (!netchesszx_session_peer_ready_state) {
+                                spectrum_gui_notify("Waiting for opponent", 0u);
+                            } else if (net_chat_blocked()) {
+                                spectrum_gui_notify("Waiting for ACK", 0u);
+                            } else {
+                                chat_open();
+                                chat_input_mode = 1u;
+                                spectrum_gui_notify("Type chat", 0u);
+                            }
+                        } else {
+                            /* S8 step 4: not a menu key -- gui.c returned it
+                               unchanged (menu closed or not one of its keys).
+                               net_control_key clears key_code itself only if
+                               it actually consumes 'd'/'y'/'n', so an ordinary
+                               board key (space, arrows) still reaches
+                               board_cursor_move/board_select_or_move below
+                               exactly as before. */
+                            net_control_key(key);
                         }
-                    } else {
-                        /* S8 step 4: not a menu key -- gui.c returned it
-                           unchanged (menu closed or not one of its keys).
-                           net_control_key clears key_code itself only if
-                           it actually consumes 'd'/'y'/'n', so an ordinary
-                           board key (space, arrows) still reaches
-                           board_cursor_move/board_select_or_move below
-                           exactly as before. */
-                        net_control_key(key);
                     }
                 }
             }
         }
         board_cursor_move();
         board_select_or_move();
-        render_input_key_echo();
 
         /* Wall clock (S5-finish step 1): sampled once a second, not every
            frame -- rtc_sample RSTs into DSS, and nothing here needs

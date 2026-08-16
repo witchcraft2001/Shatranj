@@ -911,6 +911,7 @@ endif
         sprinter-overlay-rules-check sprinter-overlay-board-check \
         sprinter-overlay-saveload-check sprinter-overlay-restore-check \
         sprinter-overlay-fileui-check sprinter-overlay-net-check \
+        sprinter-overlay-input-edit-check \
         sprinter-size-report \
         sprinter-about clean-sprinter
 
@@ -1077,6 +1078,7 @@ SPRINTER_OVL_SAVELOAD_BIN := $(SPRINTER_BUILD_DIR)/overlay_saveload_sprinter.bin
 SPRINTER_OVL_RESTORE_BIN := $(SPRINTER_BUILD_DIR)/overlay_restore_sprinter.bin
 SPRINTER_OVL_FILEUI_BIN := $(SPRINTER_BUILD_DIR)/overlay_fileui_sprinter.bin
 SPRINTER_OVL_NET_BIN := $(SPRINTER_BUILD_DIR)/overlay_net_sprinter.bin
+SPRINTER_OVL_INPUT_EDIT_BIN := $(SPRINTER_BUILD_DIR)/overlay_input_edit_sprinter.bin
 
 SPRINTER_PALETTE_JSON := assets/sprinter/palette.json
 SPRINTER_PALETTE_INC := $(SPRINTER_GENERATED_DIR)/palette_base.inc
@@ -1797,6 +1799,33 @@ $(SPRINTER_OVL_NET_BIN): $(SPRINTER_OVL_NET_ENTRY_ASM) src/sprinter/net_ui_sprin
 
 sprinter-overlay-net-check: $(SPRINTER_OVL_NET_BIN)
 
+# INPUT_EDIT (SPECTRUM_OVL_INPUT_EDIT=9u, S9 chat pass): the line editor and
+# the chat log both live here (src/sprinter/chat_sprinter.c's own header
+# explains why one overlay owns both). Lives on WIN3 overlay PAGE 2 (--page
+# 2 below), in what used to be RESERVE2's own slot -- tools/make_sprinter_
+# overlay_page.py's own header. Needs overlay_defs_sprinter.asm (chat_
+# sprinter.c reaches spectrum_render_input/_chat/_chat_at, spectrum_net_
+# payload_scratch/_send_text and net_chat_blocked through it, the same
+# bridge NET's own net_ui_sprinter.c uses above) but NOT platform_defs.asm
+# -- unlike net_ui_sprinter.c, this file never calls an ng_*/frame_wait/
+# key_poll primitive directly, only the resident-symbol bridge.
+SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_input_edit_sprinter.asm
+
+$(SPRINTER_OVL_INPUT_EDIT_BIN): $(SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM) src/sprinter/chat_sprinter.c \
+                         $(SPRINTER_OVERLAY_DEFS_ASM) \
+                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/chat_sprinter.c \
+		-o $(SPRINTER_BUILD_DIR)/chat_sprinter.o
+	$(Z80ASM) $(SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org INPUT_EDIT) \
+		-o=$(SPRINTER_OVL_INPUT_EDIT_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
+		$(SPRINTER_ASM_DIR)/zcc/entry_input_edit_sprinter.o $(SPRINTER_BUILD_DIR)/chat_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_input_edit_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o
+
+sprinter-overlay-input-edit-check: $(SPRINTER_OVL_INPUT_EDIT_BIN)
+
 # WIN3 overlay page 1 (tools/make_sprinter_overlay_page.py, plan D7-bis, S6
 # plan step 2): RULES/BOARD/SAVELOAD/RESTORE/FILEUI's own bytes, each linked
 # at its own ORG inside #C000-#FFFF and packed per that tool's declarative
@@ -1815,19 +1844,20 @@ $(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RU
 		--fileui-bin $(SPRINTER_OVL_FILEUI_BIN) \
 		--output $(SPRINTER_OVL_WIN3_PAGE)
 
-# WIN3 overlay page 2 (S8 step 8b): NET only, plus a hard reserve twice its
-# own size -- see tools/make_sprinter_overlay_page.py's LAYOUT2 for why this
-# page exists at all instead of squeezing NET into page 1's own slack.
-# Published to HDR as the SIXTH asset page (appended last -- see buffers.asm's
-# own bench_init comment for why this order matters) and read into
-# ovl_win3_page2; overlay_atlas_table_sprinter.asm's ovl_atlas_page_table is
-# what makes id 3 alone read this cell instead of ovl_win3_page.
+# WIN3 overlay page 2 (S8 step 8b, S9 chat pass): NET + INPUT_EDIT, plus a
+# hard reserve -- see tools/make_sprinter_overlay_page.py's LAYOUT2 for why
+# this page exists at all instead of squeezing NET/INPUT_EDIT into page 1's
+# own slack. Published to HDR as the SIXTH asset page (appended last -- see
+# buffers.asm's own bench_init comment for why this order matters) and read
+# into ovl_win3_page2; overlay_atlas_table_sprinter.asm's ovl_atlas_page_
+# table is what makes ids 3/9 alone read this cell instead of ovl_win3_page.
 SPRINTER_OVL_WIN3_PAGE2 := $(SPRINTER_BUILD_DIR)/ovl_win3_page2.bin
 
 $(SPRINTER_OVL_WIN3_PAGE2): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_NET_BIN) \
-                       | $(SPRINTER_BUILD_DIR)
+                       $(SPRINTER_OVL_INPUT_EDIT_BIN) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_overlay_page.py --page 2 \
 		--net-bin $(SPRINTER_OVL_NET_BIN) \
+		--input_edit-bin $(SPRINTER_OVL_INPUT_EDIT_BIN) \
 		--output $(SPRINTER_OVL_WIN3_PAGE2)
 
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) \
@@ -1901,7 +1931,8 @@ SPRINTER_SIZE_REPORT_MD := $(SPRINTER_BUILD_DIR)/size_report.md
 sprinter-size-report: exe tools/gen_sprinter_size_report.py $(SPRINTER_RESIDENT_C_BIN) \
                        $(SPRINTER_RESIDENT_BIN) $(SPRINTER_PLATFORM_PRIMITIVES_BIN) \
                        $(SPRINTER_OVL_CONTROL_BIN) $(SPRINTER_OVL_RULES_BIN) \
-                       $(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_WIN3_PAGE)
+                       $(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_INPUT_EDIT_BIN) \
+                       $(SPRINTER_OVL_WIN3_PAGE)
 	$(PYTHON) tools/gen_sprinter_size_report.py --self-test
 	$(PYTHON) tools/gen_sprinter_size_report.py \
 		--resident-c-map $(SPRINTER_RESIDENT_C_MAP) \
@@ -1911,6 +1942,7 @@ sprinter-size-report: exe tools/gen_sprinter_size_report.py $(SPRINTER_RESIDENT_
 		--ovl-control-bin $(SPRINTER_OVL_CONTROL_BIN) \
 		--ovl-rules-bin $(SPRINTER_OVL_RULES_BIN) \
 		--ovl-board-bin $(SPRINTER_OVL_BOARD_BIN) \
+		--ovl-input-edit-bin $(SPRINTER_OVL_INPUT_EDIT_BIN) \
 		--ovl-win3-page $(SPRINTER_OVL_WIN3_PAGE) \
 		--c-image-base $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol C_IMAGE_ENTRY_ADDR) \
 		--win1-end $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol WIN1_END) \
@@ -1944,7 +1976,7 @@ sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-overlay-control-check sprinter-overlay-rules-check \
                 sprinter-overlay-board-check sprinter-overlay-saveload-check \
                 sprinter-overlay-restore-check sprinter-overlay-fileui-check \
-                sprinter-overlay-net-check \
+                sprinter-overlay-net-check sprinter-overlay-input-edit-check \
                 sprinter-z80-test sprinter-resident-test sprinter-host-test \
                 sprinter-size-report sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
