@@ -58,6 +58,12 @@
         INCLUDE "dss.inc"
         INCLUDE "win0.inc"
         INCLUDE "accel.inc"
+        ; LOWRAM_TEXT_STAGE_ADDR (.stage's home, see below). INCLUDEd here
+        ; rather than relied on from platform_primitives.asm: a file must
+        ; not depend on whatever included it having pulled the anchors in
+        ; first -- buffers.asm's own comment on the same INCLUDE, and the
+        ; reason the z80 unit tests can assemble this file standalone.
+        INCLUDE "fixed_layout.inc"
 
 ; The font page is normally WIN0-resident at address 0 (win0_map_di maps
 ; WIN0's base to #0000, so table offsets are direct addresses). A z80 unit
@@ -72,6 +78,7 @@ FONT_BASE EQU 0
 
 TEXT_STAGE_MAX EQU 64           ; hard length cap: bounds how long this
                                  ; call can hold DI (port.md "Риски")
+TEXT_STAGE EQU LOWRAM_TEXT_STAGE_ADDR
 
 ; Set once by the caller (from the asset page's physical number published
 ; in HDR, HDR_ASSET_PAGE0_OFFSET) before any text_print call.
@@ -236,6 +243,26 @@ text_print:
 
 .char_done:
         pop     bc
+
+        ; Keyboard rescue: one interrupt admitted per glyph. gfx_core.asm's
+        ; irq_yield_vram (buffers.asm) carries the whole explanation (DSS's 3-byte
+        ; keyboard FIFO versus this routine's string-long DI span, which is
+        ; what made the chat line swallow characters while being typed
+        ; into). Placed HERE because this is the one point in the render
+        ; loop where the accelerator is off, the alternate register set is
+        ; not live, and only BC -- the staged-string pointer, which the
+        ; interrupt path preserves -- has to survive. WIN0 currently holds
+        ; the font page and the interrupt path ends in `jp #0038`, so it
+        ; goes back to the caller's page across the yield and returns to
+        ; the font afterwards. The accelerator's block size is latched once
+        ; for the whole string and no interrupt handler touches it.
+        acc_park_y                      ; no VRAM row selected across an EI
+        win0_restore                    ; WIN0 back to the caller's page, EI
+        ld      a,(text_font_page)      ; the interrupt lands after THIS
+        win0_map_di                     ; DI again, WIN0 back to the font
+        ld      a,VRAM_ALIAS_OPAQUE     ; DSS is documented to remap page 3
+        out     (WIN3_PORT),a           ; without restoring it
+
         ld      a,(bc)
         inc     bc
         or      a
@@ -251,7 +278,7 @@ text_print:
 .prescan:
         ld      hl,(.text_in)
         ld      (.stage_in),hl
-        ld      hl,.stage
+        ld      hl,TEXT_STAGE
         ld      (.stage_out),hl
         xor     a
         ld      (.staged),a
@@ -333,7 +360,7 @@ text_print:
         ld      (flip_arg_h),a          ; banner: 8 rows/glyph)
         call    flip_log_rect
 
-        ; --- render .stage (afnt640.asm text_out_640, from "read_page"
+        ; --- render the staged string (afnt640.asm text_out_640, from "read_page"
         ; through "text_out_640_exit" above) ------------------------------
         ld      a,VRAM_ALIAS_OPAQUE
         out     (WIN3_PORT),a
@@ -359,7 +386,7 @@ text_print:
         ld      de,background_buffer
         exx
 
-        ld      bc,.stage
+        ld      bc,TEXT_STAGE
 
         ld      a,(bg_pattern)
         or      a
@@ -425,7 +452,13 @@ text_print:
 .char_code:  DB 0
 .char_width: DB 0
 .saved_win3: DB 0
-.stage:      DS TEXT_STAGE_MAX+1,0
+; .stage does NOT live here any more: it is TEXT_STAGE_MAX+1 bytes of pure
+; scratch (written by the pre-scan, read by the render loop, dead between
+; calls) and it was sitting in the WIN2 code gap, the one pool in this port
+; with nothing left to give. It moved to the low-RAM map at S9's keyboard
+; fix, exactly the way net_gate.asm's ng_buf_* moved to LOWRAM_NET_GATE at
+; S8 step 1 -- see LOWRAM_TEXT_STAGE in src/sprinter/fixed_layout.json.
+        ASSERT  LOWRAM_TEXT_STAGE_SIZE >= TEXT_STAGE_MAX+1
 
 ; --- module-scope runtime state (small, initialised data) -----------------
 color_valid:        DB 0

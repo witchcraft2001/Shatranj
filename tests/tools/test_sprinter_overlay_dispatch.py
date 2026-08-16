@@ -201,8 +201,22 @@ class SprinterOverlayDispatchTests(unittest.TestCase):
         # No constant ever gets written to WIN3 by this module: an
         # "ld a,<imm> / out (#E2),a" would be exactly the R7 violation the
         # rule forbids (restoring to a constant instead of the saved value).
+        #
+        # Scanned over THIS module's own code span (ovl_exec .. ovl_fail_ret)
+        # rather than the whole resident image: an unanchored byte scan of
+        # 30 KiB of compiled C matches the four-byte pattern by accident
+        # sooner or later, and did -- an unrelated 2026-08-16 size change
+        # moved cold_v_sp to $783E, so the cold-page trampoline's
+        # "ld (cold_v_sp),hl / out (WIN3_PORT),a" pair (22 3E 78 D3 E2)
+        # matched at its operand boundary. Same rule, same strictness, just
+        # aimed at the module the rule is about; the cold thunks are
+        # generated code with their own self-test (tools/gen_sprinter_cold_
+        # thunks.py --self-test), not hand-written R7 surface.
+        span_start = _map_symbol(self.map_text, "ovl_exec") - self.base
+        span_end = _map_symbol(self.map_text, "ovl_fail_ret") - self.base + 4
+        module = self.data[span_start:span_end]
         for imm in range(256):
-            self.assertNotIn(bytes([0x3E, imm, 0xD3, win3_port]), self.data,
+            self.assertNotIn(bytes([0x3E, imm, 0xD3, win3_port]), module,
                              f"WIN3 restored to the constant {imm:#04x}")
 
     def test_atlas_bad_id_reports_bad_entry(self) -> None:

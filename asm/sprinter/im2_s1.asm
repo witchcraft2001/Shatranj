@@ -238,7 +238,23 @@ frame_wait:
 ; jumps to DSS's own #0038 handler for anything that is not a frame tick,
 ; so DSS's keyboard FIFO keeps filling exactly as it would under DSS's
 ; native interrupt mode (port.md's R6). Clobbers AF, BC, DE.
+;
+; NEVER consumes a second event while key_code still holds an undispatched
+; one (2026-08-16, second MAME round): the latch is one slot deep, so a
+; second SCANKEY would take the event out of DSS's own 16-entry SBUF and
+; then overwrite -- destroy -- the first. That is exactly what the busy-
+; retry ladders in src/sprinter/transport/unet_link.c did when they were
+; taught to "keep the latch current" during a blocking send: up to
+; NC_SEND_BUSY_RETRY_MAX calls, each swallowing one queued keypress and
+; keeping only the last. Leaving the event in SBUF instead costs nothing
+; (DSS keeps queueing while we are busy, 16 deep) and turns this routine
+; into what every caller already assumed it was: "fill the latch if it is
+; empty", never "drop what is already there".
 key_poll:
+        ld      a,(key_code)
+        or      a
+        ret     nz                      ; latch still full -- leave the event
+                                         ; queued in DSS's SBUF, do not eat it
         ld      c,DSS_TESTKEY
         rst     RST_DSS
         ret     z                       ; nothing queued -- key_code unchanged

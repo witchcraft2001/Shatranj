@@ -216,6 +216,44 @@ flip_ring_reset:
         ld      (flip_dirty_all),a
         ret
 
+; --- interrupt yield inside a long VRAM section ----------------------------
+
+; Admits exactly ONE pending interrupt from the middle of a DI-held VRAM
+; loop, then puts WIN3 back on the VRAM alias. Callers that also hold a
+; remapped WIN0 cannot use this at all -- text640.asm's text_print spells
+; the same sequence out inline around win0_restore/win0_map_di, since R1
+; allows nothing else to write WIN0_PORT. Clobbers AF.
+;
+; Why this exists at all: the DSS keyboard is a Z80 SIO channel with a
+; THREE-byte receive FIFO (KEYINTER.ASM's KEYBOARD_INIT programs WR4 for an
+; x1 clock, so bytes arrive at the PS/2 clock rate, roughly 0.7-1ms each).
+; A fourth byte arriving before the ISR has drained the FIFO does not queue
+; -- DSS's own overrun path (KEYINTER.ASM's KBD_Receiver_Overrun) empties
+; the FIFO, throws those scancodes away and resets KEYCTRL/KEY_FLG. So any
+; DI span longer than about two milliseconds silently eats keypresses, with
+; nothing on either side able to report it. Two spans in this port are that
+; long: text_print holds DI across a whole string (a chat line is 2-3ms,
+; and the chat line is repainted on every keystroke), and buffers.asm's
+; flip_sync holds it across a whole rectangle (a dirty_all sync is 320x256
+; bytes of LDIR, ~80ms). Both now call this between units of work. Reported
+; as chat swallowing characters and lost cursor/SPACE presses, second MAME
+; round, 2026-08-16.
+;
+; PORT_Y is parked first for the usual R3/R10 reason (no VRAM row selected
+; across an EI); callers re-select their row on the next iteration. DSS's
+; #0038 handler saves and restores AF/AF'/BC/DE/HL and the alternate set
+; plus IX/IY (DSS-MAIN.ASM's INTx38_Handler), so callers keep their live
+; registers across this call apart from AF.
+irq_yield_vram:
+        acc_park_y
+        ei
+        nop                             ; the Z80 accepts an interrupt only
+                                         ; AFTER the instruction following EI
+        di
+        ld      a,VRAM_ALIAS_OPAQUE     ; unconditional: DSS is documented to
+        out     (WIN3_PORT),a           ; remap page 3 without restoring it
+        ret
+
 ; Copies front_base -> back_base for every logged rect, or the whole
 ; buffer if dirty_all, so the buffer that just went into hiding behind a
 ; confirmed flip matches what is now on screen again. Call only after
@@ -326,8 +364,21 @@ flip_sync:
         inc     (hl)
         ld      hl,.rows_left
         dec     (hl)
-        jr      nz,.copy_row
+        jr      z,.copy_done
 
+        ; Keyboard rescue between rows (~0.3ms of DI each). See
+        ; irq_yield_vram just above: a dirty_all sync is 320x256 bytes
+        ; of LDIR, ~80ms with interrupts off, and DSS's keyboard FIFO is
+        ; three bytes deep before its overrun handler starts discarding
+        ; scancodes. Every register this loop needs is re-read from memory
+        ; at .copy_row, so only AF is at risk here. Safe against a mid-copy
+        ; flip: frame_wait only calls flip_sync once the ISR has already
+        ; consumed flip_request, so the interrupt admitted here has no
+        ; pending flip left to act on.
+        call    irq_yield_vram
+        jr      .copy_row
+
+.copy_done:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a

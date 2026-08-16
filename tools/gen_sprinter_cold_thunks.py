@@ -200,13 +200,15 @@ COLD_THUNK_SYMBOLS = [
     # The second cut alone still left the cold page 441 bytes over its
     # fixed ceiling once actually built; apply_takeback_snapshot and five
     # more functions (main.c, ahead of its own takeback_undo declaration)
-    # moved back too. These three are their shared cold-page helpers --
+    # moved back too. These two are their shared cold-page helpers --
     # each still has other callers here (board_select_or_move, net_apply_
     # reset, net_apply_remote_move, net_handle_event, ...) so they stayed
-    # put instead of moving a third time.
+    # put instead of moving a third time. (square_index used to be a third
+    # entry here, for main.c's own net_repaint_move -- removed along with
+    # that function in the S9 move-flash pass below, which replaced its one
+    # WIN1 call site with spectrum_gui_apply_move.)
     "pending_local_clear",
     "takeback_snapshot_save",
-    "square_index",
     # --- S9 chat pass --------------------------------------------------------
     # Checked twice per CHAT send: once by main.c before opening the input
     # line (WIN1), once more by chat_sprinter.c itself at submit time (a
@@ -214,6 +216,14 @@ COLD_THUNK_SYMBOLS = [
     # state can change between the two checks). Appended, not inserted, per
     # this list's own ordering rule above.
     "net_chat_blocked",
+    # --- S9 move-flash pass --------------------------------------------------
+    # gui.c entries (like the spectrum_gui_* block above), but added later:
+    # main.c's net_apply_pending_local_move is their only WIN1 call site
+    # (session_sprinter.c's own net_apply_remote_move/board_select_or_move
+    # call them directly -- same cold page as gui.c itself, no thunk
+    # needed). Appended per this list's own ordering rule.
+    "spectrum_gui_prepare_move",
+    "spectrum_gui_apply_move",
 ]
 
 GENERATED_BANNER = (

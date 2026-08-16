@@ -147,7 +147,10 @@ COLD_RESIDENT_SYMBOLS = [
     "net_status_idle",
     "net_send_move_wire",
     "net_send_nack_sync",
-    "net_repaint_move",
+    # net_repaint_move used to be here too -- removed in the S9 move-flash
+    # pass along with the function itself (main.c), which replaced its one
+    # call site with spectrum_gui_apply_move (gen_sprinter_cold_thunks.py's
+    # COLD_THUNK_SYMBOLS, the opposite direction of this bridge).
     "net_apply_pending_local_move",
     "net_send_takeback_wire",
     # --- S8 step 8a (MQTT relief pass): src/sprinter/transport/unet_link.c
@@ -188,6 +191,10 @@ COLD_RESIDENT_SYMBOLS = [
     # net_mqtt_fail_why turn into a notice line: which layer called the link
     # down, and which MQTT overlay step gave up.
     "net_mqtt_down_reason",                    # src/sprinter/transport/unet_link.c
+    # Not diagnostics: net_send_failed BRANCHES on this one -- a send that
+    # exhausted its busy-retry budget on NERR_BUSY did not fail, it did not
+    # happen. Same file as the group above.
+    "net_send_busy",
     "net_mqtt_fail_step",
     "net_mqtt_fail_cf",
     "net_mqtt_fail_status",

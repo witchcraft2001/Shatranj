@@ -90,6 +90,7 @@
     EXTERN gfx_draw_tile
     EXTERN gfx_clear_buffer
     EXTERN piece_page1
+    EXTERN piece_page2              ; S9 move-flash tiles (piece_slot_and_page)
     EXTERN back_base
     EXTERN tile_dest_base
     EXTERN tile_x_byte
@@ -207,6 +208,26 @@ cursor_col    EQU LOWRAM_RENDER_SHARED_ADDR+2
 selected_row  EQU LOWRAM_RENDER_SHARED_ADDR+3
 selected_col  EQU LOWRAM_RENDER_SHARED_ADDR+4
 
+; Move-flash highlight override (S9, gui.c's spectrum_gui_prepare_move/
+; apply_move wiring). Not a lowram-shared cell: only this module's own
+; draw_square_into reads it, and only _spectrum_render_square_attr below
+; ever sets it non-zero, both in this same cold-page build -- unlike
+; cursor_row/selected_row above, nothing on the WIN1 side needs to see it.
+; Zero means "no override, use the square's own board-colour (@bg)";
+; non-zero is a palette index painted as the square's fill colour instead,
+; without touching @bg itself (@bg still carries the square's real
+; light/dark board colour, which cell_bg's caller and the flipped-display
+; arithmetic both keep using).
+;
+; The flash covers the WHOLE cell, piece included: draw_square_into asks
+; piece_slot_and_page for the third, flash-background tile variant while
+; this is set, so the 32x16 piece tile's own precomposed background is the
+; flash colour too. Filling around an opaque light/dark tile (the first
+; version of this) left the piece sitting on an unchanged square with only
+; the 8px/4px margin flashing, which the human tester read as a rendering
+; glitch rather than an animation (S9 MAME run 2026-08-16).
+hilite_bg: defb 0
+
 ; gui.c (src/spectrum/ui/gui.c's spectrum_gui_draw_board/_restore_board_
 ; area) reads netchesszx_movement_hints; since S7 step 4, src/spectrum/
 ; config/session.c (the real owner, same as ZX/Next) is linked into the
@@ -269,18 +290,39 @@ cell_bg:
     add a,2
     ret
 
-; A=piece_index(0-11), B=bg_offset(0=light,1=dark). Returns A=slot,
+; A=piece_index(0-11), B=bg_offset(0=light,1=dark,2=flash). Returns A=slot,
 ; E=physical asset page. Always piece set 0 (slot_base 0): unlike
 ; scene_s4.asm's scene_piece_slot_and_page, there is no hotkey-driven set
 ; switch here -- PIECE_ORDER packs both colours of one set on one page, so
-; every piece_index 0-11 reads piece_page1. Clobbers AF, C.
+; every piece_index 0-11 reads piece_page1.
+;
+; bg_offset 2 (S9 move-flash) is the odd one out: the light/dark pair lives
+; in set 0's own 24-slot block on piece_page1, but the flash-background
+; tiles are packed as a separate 12-slot block on piece_page2, after the
+; last set's normal block (tools/build_sprinter_piece_tiles.py's own
+; layout comment). PIECE_FLASH_* below are that tool's published manifest
+; values for set 0 -- tests/tools/test_sprinter_piece_tiles.py parses them
+; straight out of this file and fails if the two ever drift apart, the
+; same "one hand-copied constant, one machine check" shape the cold-page
+; bridges use. Clobbers AF, C.
+PIECE_FLASH_BG_OFFSET EQU 2
+PIECE_FLASH_SLOT_BASE EQU 24    ; set 0's flash block, on piece_page2
 piece_slot_and_page:
     ld c,a
+    ld a,b
+    cp PIECE_FLASH_BG_OFFSET
+    jr z,@flash
     ld a,(piece_page1)
     ld e,a
     ld a,c
     add a,a                 ; *2
     add a,b                 ; + bg_offset
+    ret
+@flash:
+    ld a,(piece_page2)
+    ld e,a
+    ld a,c
+    add a,PIECE_FLASH_SLOT_BASE
     ret
 
 ; --- single square --------------------------------------------------------
@@ -290,6 +332,12 @@ piece_slot_and_page:
 ; VRAM buffer. No-op piece draw (background only) if piece_page1 is #FF
 ; (fewer than 3 asset pages published -- bench_init's own guard, buffers.
 ; asm). Clobbers everything.
+;
+; S9 (move-flash): when hilite_bg is non-zero, BOTH the fill colour and the
+; piece-tile variant come from it (flash colour, flash-background tile), so
+; the whole cell changes and not just the margin around the piece -- see
+; hilite_bg's own comment above. @bg itself is never overwritten: it stays
+; the square's real board colour for the unflashed path.
 ;
 ; S5-finish plan, real FLIP: row/col here are always MODEL coordinates
 ; (board.c's own indexing, row 0 = rank 8) -- every caller (render_square,
@@ -360,7 +408,11 @@ draw_square_into:
     ld d,CELL_W_BYTES
     ld e,BOARD_CELL_H
     ld hl,(@dest_base)
+    ld a,(hilite_bg)           ; move-flash override (0 = none)
+    or a
+    jr nz,@fill_ready
     ld a,(@bg)
+@fill_ready:
     call gfx_fill_rect
 
     ld a,(@row)
@@ -385,9 +437,14 @@ draw_square_into:
     cp $FF
     ret z                      ; no piece pages published -- skip silently
 
+    ld b,PIECE_FLASH_BG_OFFSET  ; move-flash: piece tile precomposed on the
+    ld a,(hilite_bg)             ; flash colour, so the WHOLE cell changes
+    or a                         ; (ld b,n leaves the or's flags alone)
+    jr nz,@bg_offset_ready
     ld a,(@bg)
     sub 2                       ; 2/3 -> 0/1 bg_offset
     ld b,a
+@bg_offset_ready:
     ld a,(@piece_index)
     call piece_slot_and_page
     ld (tile_src_slot),a
@@ -854,8 +911,42 @@ STATUS_TEXT_X EQU 8
 status_text_msg:
     defb "NO SESSION",0
 
-; No arguments. Paints the connection-status placeholder into both VRAM
-; buffers. Clobbers everything.
+; Erase width of the LIVE status text (_spectrum_render_status/_error,
+; this file's own status-bar section further down): generous, clear of
+; STATUS_CLOCK_X. Defined up here rather than next to its users so HINT_X
+; below can be derived from it without a forward EQU reference -- the two
+; must agree or a live status repaint would erase part of the hint.
+STATUS_TEXT_W_BYTES EQU 106
+
+; S9 (exit-to-DSS + chat discoverability): a static keybinding hint,
+; painted once here (boot-time, two-pass, same precedent as status_text_
+; msg above -- nothing ever repaints this cell again). Positioned past the
+; right edge of STATUS_TEXT_W_BYTES's erase zone (8 + 106*2 = 220px) plus
+; an 8px gap, even as text_print's IX requires, so a live spectrum_gui_
+; set_status()/_error() repaint never touches it, and well clear of
+; STATUS_CLOCK_X
+; (604px, hint end 228+160=388) with an AFNT640 proportional font averaging
+; under 6px/glyph for 30 characters. The STATUS band is full-width
+; (render_layout.json) -- the info panel (PANEL_X=408) only spans the MAIN
+; band, so a hint that runs past x=408 overlaps nothing. Dim/muted colour
+; (fg=13) so it reads as chrome, not a status message.
+;
+; The erase zone is only half the story: text_print paints the background
+; colour behind every glyph it stages, so what a live status repaint
+; actually blacks out is max(erase zone, printed string). gui.c used to
+; space-pad the status text to a fixed 53 characters, which ran 14px PAST
+; the erase zone and ate this hint's first two glyphs (human tester
+; screenshot, S9 MAME run 2026-08-16) -- fixed at the source (gui.c's
+; build_status_line no longer pads on Sprinter, where the renderer
+; pre-erases anyway), with this 8px gap as the belt-and-braces half.
+HINT_COLOR EQU $0D             ; bg=0, fg=13 (hud_muted)
+HINT_GAP EQU 8                 ; px between the erase zone and the hint
+HINT_X EQU STATUS_TEXT_X+STATUS_TEXT_W_BYTES*2+HINT_GAP
+hint_msg:
+    defb "TAB menu  ENTER chat  ESC exit",0
+
+; No arguments. Paints the connection-status placeholder and the static
+; keybinding hint into both VRAM buffers. Clobbers everything.
     PUBLIC render_status_text
 render_status_text:
     PUBLIC _render_status_text
@@ -870,6 +961,12 @@ render_status_text:
     ld ix,STATUS_TEXT_X
     ld c,STATUS_CLOCK_Y
     ld a,STATUS_TEXT_COLOR
+    ld hl,(@dest_base)
+    call text_print
+    ld de,hint_msg
+    ld ix,HINT_X
+    ld c,STATUS_CLOCK_Y
+    ld a,HINT_COLOR
     ld hl,(@dest_base)
     jp text_print
 @dest_base: dw 0
@@ -1333,20 +1430,41 @@ _spectrum_render_board_coords:
 _spectrum_render_board_coord_mark:
     ret
 
-; HL=spec (__z88dk_fastcall): spec[0]=row(display coord), spec[1]=col.
-; FLIP is not wired yet (Step 3 of the S5-finish plan), so display coord
-; == model coord for now; this reads spec[0]/[1] directly as row/col,
-; matching render_square/render_square_marked's own convention, and
-; repaints frame-safely. Shared body for every gui.c square-repaint call
-; below, since none of them (flash/hint/gui-cursor-model) are ported yet
-; -- see each PUBLIC entry's own comment for exactly what it is skipping.
+; HL=spec (__z88dk_fastcall): spec[0]=row, spec[1]=col, both DISPLAY
+; coordinates -- gui.c's own render_square_from_board/flash_square/
+; spectrum_gui_mark_cursor_coords all run every row/col through
+; display_coord (gui.c) before building spec, the same convention ZX's
+; screen.asm callers use. S9 un-flip: draw_square_into's board-content
+; lookup (LOWRAM_CHESS_BOARD_ADDR[row*8+col]) and render_square_marked's
+; index-of-cursor/selection compare both need MODEL coordinates (board.c's
+; own indexing), so when _spectrum_gui_board_flipped is set this converts
+; display back to model (index = 63 - (row*8+col), the same 7-x transform
+; draw_square_into/draw_frame_at already apply the other direction) before
+; computing the index render_square_marked expects. Unflipped, this is a
+; plain row*8+col like before. Shared body for every gui.c square-repaint
+; call below, since some of them (hint/gui-cursor-model) are still not
+; ported -- see each PUBLIC entry's own comment for exactly what it skips.
 gui_square_from_spec:
-    ld a,(hl)
+    ld a,(hl)                  ; spec[0] = display row
+    ld c,a
+    inc hl
+    ld a,(hl)                  ; spec[1] = display col
+    ld b,a
+    ld a,(_spectrum_gui_board_flipped)
+    or a
+    jr z,@model_same
+    ld a,7
+    sub c
+    ld c,a
+    ld a,7
+    sub b
+    ld b,a
+@model_same:
+    ld a,c                     ; model row
     add a,a
     add a,a
     add a,a                    ; row*8
-    inc hl
-    add a,(hl)
+    add a,b                    ; + model col
     ld l,a
     jp render_square_marked
 
@@ -1355,13 +1473,31 @@ _spectrum_render_square:
     jp gui_square_from_spec
 
 ; Flash-on-move attribute effect (ZX's ATTR_FLASH, spectrum_gui_prepare_
-; move's flash_square) is not ported -- no equivalent visual exists yet on
-; Sprinter's 4bpp linear framebuffer, and this port's own board_select_or_
-; move (S5 substep 3c) does not call spectrum_gui_prepare_move at all.
-; Repaints the square plainly (frame-safe) instead of flashing it.
+; move's flash_square): S9 wires this up for real via hilite_bg (see its
+; own comment above, and draw_square_into's fill/tile-variant override) --
+; paints the whole square, piece included, in palette 8 (hud_select)
+; instead of its own board-colour, through the same frame-safe render_
+; square_marked path gui_square_from_spec already uses, so the cursor/
+; selection frame rings survive a flash. spec[2] (ZX's own ATTR_FLASH
+; byte) is ignored -- gui.c's flash_square only ever passes that one
+; constant, so there is nothing to branch on.
+;
+; Yellow, not the hud_lastmove blue this first shipped with: ZX's own
+; ATTR_FLASH is 0x46, i.e. BRIGHT yellow ink -- yellow is what every other
+; client flashes with, and the human tester asked for the same here (S9
+; MAME run 2026-08-16). hud_select is the palette's one yellow; sharing it
+; with the selection frame is deliberate ("this square is what the UI is
+; talking about"), and the two never overlap in time anyway -- the
+; selection is cleared before the move that flashes is applied.
+HILITE_FLASH_COLOR EQU 8        ; hud_select (#FFD24A), palette.json
     PUBLIC _spectrum_render_square_attr
 _spectrum_render_square_attr:
-    jp gui_square_from_spec
+    ld a,HILITE_FLASH_COLOR
+    ld (hilite_bg),a
+    call gui_square_from_spec
+    xor a
+    ld (hilite_bg),a
+    ret
 
 ; Legal-move hints (RULES entries 2/3) are not ported -- see rules_stub_
 ; sprinter.asm's own header for why. Same plain frame-safe repaint as
@@ -1622,8 +1758,10 @@ _spectrum_render_turn_label:
 ; STATUS band over to spectrum_gui_set_status("HOT SEAT") instead of the
 ; boot-time "NO SESSION" text -- both routines paint the exact same cell
 ; (STATUS_TEXT_X, STATUS_CLOCK_Y), so only one is actually visible once
-; wired, same reasoning as the clock pair above.
-STATUS_TEXT_W_BYTES EQU 106      ; generous erase width, clear of STATUS_CLOCK_X
+; wired, same reasoning as the clock pair above. STATUS_TEXT_W_BYTES (the
+; erase width both routines below use) is defined up in the status-text
+; section next to STATUS_TEXT_X, because the S9 keybinding hint's own X is
+; derived from it there.
 
 ; HL=text (__z88dk_fastcall, ASCIIZ). Erases and redraws the STATUS band's
 ; left-hand text.

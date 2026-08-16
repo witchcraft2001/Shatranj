@@ -23,10 +23,31 @@ for the sibling font/UI page):
     page 1 (HDR asset page index 1): slots 0-23  = sets[0] (e.g. california)
                                       slots 24-47 = sets[1] (e.g. mpchess)
     page 2 (HDR asset page index 2): slots 0-23  = sets[2] (e.g. totoy)
+                                      slots 24-35 = sets[0] flash background
+                                      slots 36-47 = sets[1] flash background
+                                      slots 48-59 = sets[2] flash background
 
 Within a set's 24-slot span: slot = set_base + piece_index*2 + background,
 piece_index 0..11 in PIECE_ORDER (wK,wQ,wR,wB,wN,wP,bK,bQ,bR,bB,bN,bP),
 background 0 = light square (palette index 2), 1 = dark square (index 3).
+
+The flash block (S9 move animation) is a THIRD background for the same 12
+pieces -- palette index 8, hud_select -- but only one tile per piece, not a
+light/dark pair: the flash colour replaces the square colour outright, so
+which square the piece stands on stops mattering while it is up. It is
+packed as its own block after the last set's normal block rather than
+widening every set's span to 36, because 36-slot sets would need one page
+per set and the resident publishes exactly two piece pages (buffers.asm's
+bench_init). asm/sprinter/zcc/render_core.asm hand-copies set 0's page and
+slot base into PIECE_FLASH_SLOT_BASE; tests/tools/test_sprinter_piece_
+tiles.py parses that EQU back out of the .asm and fails if it drifts from
+the manifest this tool writes.
+
+Why a precomposed third variant at all, rather than one keyed (transparent)
+piece tile drawn over a filled square: VRAM_ALIAS_KEY skips whole #FF
+BYTES, i.e. transparency is 2-pixel granular, so any byte straddling a
+piece edge would have to be opaque -- the same "hardware-key pair problem"
+that made the light/dark pair the original design (port.md section 3.6).
 
 The output is a pure function of the inputs (committed PNGs + palette.json;
 no timestamps), so reruns are byte-identical.
@@ -63,8 +84,12 @@ BACKGROUND_ORDER = ["light", "dark"]  # -> palette indices 2, 3
 BACKGROUND_INDICES = [2, 3]
 PIECE_REF_INDICES = [4, 5, 6, 7]
 
+# S9 move-flash: one extra tile per piece, precomposed on hud_select.
+FLASH_BACKGROUND_INDEX = 8
+SLOTS_PER_PAGE = PAGE_SIZE // SLOT_SIZE                   # 64
 TILES_PER_SET = len(PIECE_ORDER) * len(BACKGROUND_ORDER)  # 24
-SETS_PER_PAGE = PAGE_SIZE // SLOT_SIZE // TILES_PER_SET   # 64 // 24 = 2
+FLASH_TILES_PER_SET = len(PIECE_ORDER)                    # 12
+SETS_PER_PAGE = SLOTS_PER_PAGE // TILES_PER_SET           # 64 // 24 = 2
 
 
 def fail(message: str) -> None:
@@ -164,11 +189,14 @@ def build_pages(pieces_root: Path, sets: list[str], palette: dict,
         next(rgb for rgb, idx in bg_ref.items() if idx == pi)
         for pi in BACKGROUND_INDICES
     ]
+    flash_ref = _rgb_set(palette, [FLASH_BACKGROUND_INDEX])
+    flash_rgb = next(iter(flash_ref))
 
     page_count = -(-len(sets) // SETS_PER_PAGE)
     pages = [bytearray(PAGE_SIZE) for _ in range(page_count)]
     manifest_sets = []
     input_shas: dict[str, str] = {}
+    piece_images_by_set: dict[str, dict[str, Image.Image]] = {}
 
     for set_index, set_name in enumerate(sets):
         page_no = set_index // SETS_PER_PAGE          # 0-based page index
@@ -200,11 +228,48 @@ def build_pages(pieces_root: Path, sets: list[str], palette: dict,
                          "a 0xFF byte in opaque tile data (would be "
                          "misread as the hardware transparency key)")
 
+        piece_images_by_set[set_name] = piece_images
         manifest_sets.append({
             "name": set_name,
             "asset_page_index": page_no + 1,  # 1-based: matches HDR order
             "slot_base": slot_base,
         })
+
+    # Flash blocks, packed after the last set's normal block and continuing
+    # across the same pages (see the module docstring's layout table). Kept
+    # out of the per-set loop above on purpose: every normal block's slot
+    # arithmetic stays exactly what it was before the flash tiles existed,
+    # so page 1's bytes are unchanged by this addition.
+    last_index = len(sets) - 1
+    cursor_page = last_index // SETS_PER_PAGE
+    cursor_slot = ((last_index % SETS_PER_PAGE) + 1) * TILES_PER_SET
+    for set_index, set_name in enumerate(sets):
+        if cursor_slot + FLASH_TILES_PER_SET > SLOTS_PER_PAGE:
+            cursor_page += 1
+            cursor_slot = 0
+        if cursor_page >= page_count:
+            fail(f"flash tiles for {set_name} do not fit: {len(sets)} sets need "
+                 f"{page_count} page(s) for their normal blocks and there is no "
+                 f"room left for a {FLASH_TILES_PER_SET}-slot flash block "
+                 "(asm/sprinter/buffers.asm's bench_init publishes exactly two "
+                 "piece pages -- adding a third is a resident change, not a "
+                 "tool change)")
+        page = pages[cursor_page]
+        for p_index, key in enumerate(PIECE_ORDER):
+            slot = cursor_slot + p_index
+            tile = precompose_tile(
+                piece_images_by_set[set_name][key], cell_w, cell_h,
+                flash_ref, flash_rgb, piece_ref
+            )
+            offset = slot * SLOT_SIZE
+            page[offset:offset + len(tile)] = tile
+            if 0xFF in tile:
+                fail(f"flash tile for {set_name}/{key} contains a 0xFF byte in "
+                     "opaque tile data (would be misread as the hardware "
+                     "transparency key)")
+        manifest_sets[set_index]["flash_asset_page_index"] = cursor_page + 1
+        manifest_sets[set_index]["flash_slot_base"] = cursor_slot
+        cursor_slot += FLASH_TILES_PER_SET
 
     return [bytes(p) for p in pages], {
         "sets": manifest_sets,
@@ -221,6 +286,8 @@ def build_manifest(sets_info: dict, cell_w: int, cell_h: int, stride: int,
         "stride": stride,
         "tile_bytes": stride * cell_h,
         "tiles_per_set": TILES_PER_SET,
+        "flash_tiles_per_set": FLASH_TILES_PER_SET,
+        "flash_background_palette_index": FLASH_BACKGROUND_INDEX,
         "piece_order": PIECE_ORDER,
         "background_order": BACKGROUND_ORDER,
         "background_palette_indices": BACKGROUND_INDICES,
@@ -242,17 +309,19 @@ def aspect_corrected(image: Image.Image, scale: int = 6) -> Image.Image:
 def build_preview(pieces_root: Path, set_name: str, palette: dict,
                    cell_w: int, cell_h: int, out_path: Path) -> None:
     piece_ref = _rgb_set(palette, PIECE_REF_INDICES)
-    bg_ref = _rgb_set(palette, BACKGROUND_INDICES)
+    # The flash background gets its own preview row, so the artist sees every
+    # variant the build actually ships, not just the light/dark pair.
+    bg_ref = _rgb_set(palette, BACKGROUND_INDICES + [FLASH_BACKGROUND_INDEX])
     bg_rgb_by_order = [
         next(rgb for rgb, idx in bg_ref.items() if idx == pi)
-        for pi in BACKGROUND_INDICES
+        for pi in BACKGROUND_INDICES + [FLASH_BACKGROUND_INDEX]
     ]
     cell_scaled = (cell_w * 6, cell_h * 6 * 2)
     pad = 4
     grid = Image.new(
         "RGB",
         (len(PIECE_ORDER) * (cell_scaled[0] + pad) + pad,
-         len(BACKGROUND_ORDER) * (cell_scaled[1] + pad) + pad),
+         len(bg_rgb_by_order) * (cell_scaled[1] + pad) + pad),
         (20, 20, 20),
     )
     for row, bg_rgb in enumerate(bg_rgb_by_order):

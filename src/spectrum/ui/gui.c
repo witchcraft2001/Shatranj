@@ -112,12 +112,25 @@ static void build_status_line(char *status_line, const char *text)
         status_line[i] = text[i];
         ++i;
     }
+#if !defined(NETCHESSZX_SPRINTER)
     /* Pad with spaces: ikkle rendering self-clears each cell, so a fixed
-       width draw replaces the old text without a destructive pre-clear. */
+       width draw replaces the old text without a destructive pre-clear.
+
+       Sprinter's renderer does the opposite (spectrum_render_status in
+       asm/sprinter/zcc/render_core.asm fills the band's whole text cell
+       before printing), so there the padding is not just redundant, it is
+       destructive: text_print paints the background colour behind EVERY
+       staged glyph, spaces included, so a 53-character padded line blacks
+       out 226px from STATUS_TEXT_X -- 14px past the erase zone the fixed
+       STATUS-band keybinding hint is positioned just outside of. That is
+       exactly how "TAB menu ..." lost its first two glyphs the moment the
+       first spectrum_gui_set_status("HOT SEAT") landed (human tester
+       screenshot, S9 MAME run 2026-08-16). */
     while (i < NETCHESSZX_STATUS_LEFT_TEXT_SIZE) {
         status_line[i] = ' ';
         ++i;
     }
+#endif
     status_line[i] = '\0';
 }
 
@@ -907,6 +920,18 @@ void spectrum_gui_restore_board_area(void)
     board_coords_dirty = 0u;
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 (move-flash) budget valve: Sprinter's cold page (render_core.asm +
+   this file + session_sprinter.c, one fixed 16 KiB WIN3 page, Makefile's
+   SPRINTER_COLD_PAGE_SRC) overran by 1 byte once spectrum_gui_prepare_
+   move/apply_move were wired up for real -- this function has no caller
+   on Sprinter (only app.c's game_start_state calls it, and app.c is not
+   linked here, D8) and is not in tools/gen_sprinter_cold_thunks.py's
+   COLD_THUNK_SYMBOLS, so it was always dead weight on this platform, just
+   never worth cutting until the page ran out of room. gui.h's own
+   prototype stays unguarded (ZX/Next's app.c needs it); only the body
+   compiled into the cold page goes away. ZX/Next/Qt sha256 unaffected --
+   NETCHESSZX_SPRINTER is never defined on those builds. */
 void spectrum_gui_animate_board_pieces(void)
 {
     uint8_t i;
@@ -933,6 +958,7 @@ void spectrum_gui_animate_board_pieces(void)
         wait_frames(5u);
     }
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_draw_status(void)
 {

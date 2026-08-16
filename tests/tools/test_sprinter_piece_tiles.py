@@ -108,10 +108,62 @@ class BuildPagesTests(PieceTilesTestBase):
         pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
                                      self.palette, 32, 16)
         page1 = pages[1]
-        # setC alone occupies slots 0-23 of page 1 (0-based index 1); the
-        # rest of the page (slots 24-63) must stay zero.
-        tail = page1[24 * bspt.SLOT_SIZE:]
+        # setC occupies slots 0-23 of page 1 (0-based index 1) and the three
+        # sets' flash blocks slots 24-59; the rest (slots 60-63) stays zero.
+        tail = page1[60 * bspt.SLOT_SIZE:]
         self.assertEqual(tail, bytes(len(tail)))
+
+    def test_flash_blocks_follow_the_last_normal_block(self) -> None:
+        _, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
+                                    self.palette, 32, 16)
+        by_name = {s["name"]: s for s in info["sets"]}
+        for name, base in (("setA", 24), ("setB", 36), ("setC", 48)):
+            self.assertEqual(by_name[name]["flash_asset_page_index"], 2)
+            self.assertEqual(by_name[name]["flash_slot_base"], base)
+
+    def test_flash_tile_is_the_piece_on_the_flash_background(self) -> None:
+        pages, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
+                                        self.palette, 32, 16)
+        base = next(s for s in info["sets"] if s["name"] == "setA")["flash_slot_base"]
+        # The fixture pieces are fully opaque, so a flash tile is solid piece
+        # colour; the fully-transparent-piece case below is what pins the
+        # flash BACKGROUND index itself.
+        slot = base + bspt.PIECE_ORDER.index("wK")
+        tile = pages[1][slot * bspt.SLOT_SIZE:(slot + 1) * bspt.SLOT_SIZE]
+        expected_byte = (4 << 4) | 4
+        self.assertTrue(all(b == expected_byte for b in tile[:16]))
+
+    def test_flash_background_is_the_hud_select_index(self) -> None:
+        # A fully transparent piece leaves nothing but background, which is
+        # what pins FLASH_BACKGROUND_INDEX into the packed bytes.
+        for key in bspt.PIECE_ORDER:
+            out_dir = self.pieces_root / "clear"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            Image.new("RGBA", (32, 16), (0, 0, 0, 0)).save(out_dir / f"{key}.png")
+        pages, info = bspt.build_pages(self.pieces_root, ["clear", "setB", "setC"],
+                                        self.palette, 32, 16)
+        base = next(s for s in info["sets"] if s["name"] == "clear")["flash_slot_base"]
+        tile = pages[1][base * bspt.SLOT_SIZE:(base + 1) * bspt.SLOT_SIZE]
+        idx = bspt.FLASH_BACKGROUND_INDEX
+        self.assertTrue(all(b == ((idx << 4) | idx) for b in tile[:16]))
+
+    def test_render_core_asm_flash_slot_base_matches_the_manifest(self) -> None:
+        # The resident hand-copies set 0's flash block position (there is no
+        # generated .inc between this tool and the .asm); this is the machine
+        # check that keeps the two honest -- a layout change here without the
+        # matching EQU edit would otherwise blit garbage tiles.
+        import re
+
+        source = (ROOT / "asm/sprinter/zcc/render_core.asm").read_text(encoding="utf-8")
+        match = re.search(r"^PIECE_FLASH_SLOT_BASE\s+EQU\s+(\d+)", source, re.M)
+        self.assertIsNotNone(match, "PIECE_FLASH_SLOT_BASE EQU not found")
+        _, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
+                                    self.palette, 32, 16)
+        set0 = info["sets"][0]
+        self.assertEqual(int(match.group(1)), set0["flash_slot_base"])
+        # ...and that the block really is on the page the .asm reads
+        # (piece_page2 = HDR asset page index 2).
+        self.assertEqual(set0["flash_asset_page_index"], 2)
 
     def test_no_0xff_byte_in_opaque_tiles(self) -> None:
         pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
@@ -235,6 +287,8 @@ class ManifestTests(PieceTilesTestBase):
         self.assertEqual(manifest["cell"], {"w": 32, "h": 16})
         self.assertEqual(manifest["tile_bytes"], 256)
         self.assertEqual(len(manifest["piece_order"]), 12)
+        self.assertEqual(manifest["flash_tiles_per_set"], 12)
+        self.assertEqual(manifest["flash_background_palette_index"], 8)
         self.assertEqual(len(manifest["sets"]), 3)
         self.assertEqual(len(manifest["sha256"]["pieces"]), 3 * 12)
         self.assertEqual(len(manifest["sha256"]["palette_json"]), 64)

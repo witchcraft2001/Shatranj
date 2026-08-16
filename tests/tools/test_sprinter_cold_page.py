@@ -250,7 +250,6 @@ class ColdPageSourceAgreementTest(unittest.TestCase):
         "net_set_turn_label_from_side",
         "pending_local_clear",
         "selection_clear",
-        "square_index",
         "takeback_snapshot_save",
     })
 

@@ -65,6 +65,21 @@
  * keys to it instead of the board/menu, and incoming CHAT lands in the
  * panel instead of the notice line (session_sprinter.c's own CHAT event
  * branch). See the frame loop below and chat_sprinter.c's own header.
+ *
+ * S9 exit + move-flash pass: ESC on the plain board screen arms a Y/N
+ * exit-to-DSS prompt (exit_confirm/exit_now below -- the first and only
+ * caller of im2_s1.asm's exit_stand; ZX/Next have no exit at all), and
+ * every move-apply site now runs gui.c's own spectrum_gui_prepare_move/
+ * apply_move (the ZX/Next from/to blink) instead of a bare two-square
+ * repaint -- see net_apply_pending_local_move below and session_
+ * sprinter.c's net_apply_remote_move/board_select_or_move.
+ *
+ * S9 follow-up (first MAME run of the two above): the frame loop now
+ * dispatches a bounded BURST of queued keys per frame instead of exactly
+ * one (fast chat typing was losing characters whenever a frame ran long),
+ * ESC no longer doubles as the prompt's "no" answer (auto-repeat made the
+ * prompt arm/cancel itself), and Y paints an acknowledgement and flips it
+ * to the screen before the teardown, which can take seconds.
  */
 
 #include "spectrum/config/session.h"
@@ -130,17 +145,25 @@ extern void render_menu_bar(void);
 extern void render_status_text(void);
 extern void render_input_line(void);
 extern void key_poll(void);
+/* im2_s1.asm's R11 exit discipline (ng_shutdown -> DI -> im2_uninstall ->
+   svmod_safe -> park RGMOD/PORT_Y -> DSS_EXIT B=0), already published like
+   every other platform primitive above (gen_sprinter_platform_defs.py's
+   PLATFORM_SYMBOLS) but never called until S9's exit-to-DSS pass (below,
+   exit_now). Does not return; ng_shutdown is idempotent (ret z on
+   ng_loaded), so calling it a second time from here after a session was
+   already torn down by something else is safe. */
+extern void exit_stand(void);
 extern void render_cursor_marker(void);
 extern void render_select_marker(void);
-/* __z88dk_fastcall, spelled out rather than left to the classic default:
-   render_square_marked reads its argument from L, and a plain declaration
-   makes sccz80 push it on the stack instead. That compiled and even
-   worked, purely because sccz80 happens to leave the value in HL right
-   before the push -- the same "it works by accident until it doesn't"
-   shape as this port's first two ABI bugs (overlay_loader_sprinter.asm's
-   SP+2 decode, the ovl_ctx address split). Checked in the disassembly:
-   the call site must be `ld l,<index>` + `call`, with nothing pushed. */
-extern void render_square_marked(unsigned char index) __z88dk_fastcall;
+/* render_square_marked used to be declared here too (__z88dk_fastcall,
+   spelled out rather than left to the classic default: it reads its
+   argument from L, and a plain declaration makes sccz80 push it on the
+   stack instead -- that compiled and even worked, purely because sccz80
+   happens to leave the value in HL right before the push, the same "it
+   works by accident until it doesn't" shape as this port's first two ABI
+   bugs). Its last WIN1 caller, net_repaint_move, went away in the S9
+   move-flash pass (spectrum_gui_apply_move repaints instead); the live
+   declaration, with the same fastcall lesson, is session_sprinter.c's. */
 extern void board_cursor_move(void);
 
 /* S5-finish plan D12 (menu actions): spectrum_gui_reset_move_log is this
@@ -285,6 +308,13 @@ extern void net_set_turn_label_from_side(void);
    mapped elsewhere. */
 static unsigned char net_active;
 
+/* unet_link.c (WIN1, so a plain link-time neighbour here -- no bridge): the
+   last send exhausted its busy-retry budget on uNet's NERR_BUSY. Nothing
+   went out, and nothing about the link is broken. See its definition there,
+   and session_sprinter.c's net_send_failed for the same discrimination on
+   the cold-page side. */
+extern unsigned char net_send_busy;
+
 /* S9 chat pass: set while the chat input line (INPUT_EDIT overlay,
    SPECTRUM_OVL_INPUT_EDIT=9u, src/sprinter/chat_sprinter.c) owns the
    keyboard -- checked ahead of net_control_key below so a chat line in
@@ -383,11 +413,6 @@ extern void pending_local_clear(void);
  * site (below) shares this exact "record a one-ply undo snapshot" helper
  * with net_apply_remote_move's remote-apply site, which stays cold. */
 extern void takeback_snapshot_save(uint16_t ply, unsigned char local_move);
-/* Bridged the same way: net_repaint_move (below) turns a coordinate move
- * string into the two board indices render_square_marked needs --
- * board_select_or_move (still cold) uses the same helper for the same
- * reason. */
-extern unsigned char square_index(unsigned char row, unsigned char col);
 
 static void apply_takeback_snapshot(void) {
     if (takeback_snapshot_ply == 0u) {
@@ -440,21 +465,6 @@ static unsigned char net_send_nack_sync(const char *ply) {
     return spectrum_link_send_text(payload);
 }
 
-/* A move has already been validated by RULES and applied by BOARD (locally
-   just now via net_apply_pending_local_move, or remotely by
-   net_apply_remote_move); this repaints exactly the two squares it
-   touched. Coordinates come back out of the move string rather than being
-   threaded through, so promotion suffixes ("e7e8q") cost nothing. */
-static void net_repaint_move(const char *move) {
-    unsigned char from = square_index((unsigned char)('8' - move[1]),
-                                      (unsigned char)(move[0] - 'a'));
-    unsigned char to = square_index((unsigned char)('8' - move[3]),
-                                    (unsigned char)(move[2] - 'a'));
-
-    render_square_marked(from);
-    render_square_marked(to);
-}
-
 /* S8 step 3 (app.c's apply_pending_local_move): the peer's numeric ACK for
    pending_local_ply has arrived (or, in net_apply_remote_move's crossed-
    move case, an incoming MOVE resolves it implicitly) -- only now does the
@@ -469,6 +479,11 @@ static void net_apply_pending_local_move(void) {
     if (pending_local_ply == 0u) {
         return;
     }
+    /* S9 (move-flash): flashes FROM (piece still on the board) before BOARD
+       applies the move, matching app.c's own ordering (spectrum_gui_
+       prepare_move ahead of spectrum_board_apply_trusted_move_with_undo,
+       app.c:1639-1640). */
+    spectrum_gui_prepare_move(pending_local_move);
     /* S8 step 5: capture the one-ply undo record here too -- a takeback
        request can only ever be offered for the move just applied, local
        or remote, and this is the local-apply site (net_apply_remote_move
@@ -480,7 +495,10 @@ static void net_apply_pending_local_move(void) {
         return;
     }
     applied_ply = pending_local_ply;
-    net_repaint_move(pending_local_move);
+    /* spectrum_gui_apply_move repaints from/to (plus castling rook / en-
+       passant capture squares) and flashes TO -- replaces net_repaint_
+       move's own bare two-square repaint. */
+    spectrum_gui_apply_move(pending_local_move);
     spectrum_gui_move_timer_reset();
     net_set_turn_label_from_side();
     spectrum_gui_notify_persistent(pending_local_move);
@@ -666,7 +684,20 @@ static void local_load_game(const char *name) {
             return;
         }
         if (!spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RQ)) {
-            net_drop("Link down");
+            /* net_send_busy: uNet refused for its whole retry budget with
+               NERR_BUSY, which means nothing went out and the link is fine
+               (unet_link.c). session_sprinter.c's net_send_failed does the
+               same discrimination for every send site on its side; this one
+               and the chat send below are the two that live in WIN1, where
+               net_send_busy is a plain neighbour symbol rather than a cold-
+               page bridge. Nothing is pending yet at this point, so there is
+               nothing to retransmit -- the honest answer is to say so and
+               leave the player to press it again. */
+            if (net_send_busy) {
+                spectrum_gui_notify("Link busy - try again", 1u);
+            } else {
+                net_drop("Link down");
+            }
             return;
         }
         restore_rx_mask = RESTORE_TX_PENDING;
@@ -846,6 +877,59 @@ static void chat_stop_clear(void) {
 }
 
 #define CHAT_OPEN_KEY 0x0du   /* ENTER, im2_s1.asm's key_poll */
+
+/* --- exit to DSS (S9) -------------------------------------------------
+ *
+ * ZX/Next have no exit at all (hard reset only) -- this is Sprinter-only,
+ * modelled on app.c's own confirm_action Y/N pattern (a persistent
+ * error-severity notice, 'y'/'n' answer it, everything else while it is
+ * pending is swallowed) rather than on anything ZX/Next actually do.
+ * KEY_CANCEL matches FILEUI_CLOSE_KEY's own value (im2_s1.asm's key_poll,
+ * ESC) -- named separately here since this file's ESC handling is no
+ * longer only about the file browser.
+ */
+#define KEY_CANCEL 0x8au
+
+/* How many queued keys one frame may dispatch (the frame loop's own
+   comment has the why). Four covers a burst of typing at any realistic
+   rate against a slow frame without letting a held key monopolise the
+   frame: the worst case is four consecutive board moves, each with its
+   own blocking flash animation. */
+#define KEY_BURST_MAX 4u
+
+static unsigned char exit_confirm;
+/* One copy, two call sites (arm + re-paint, both in the frame loop). */
+static const char exit_prompt_msg[] = "Exit to DSS? Y/N";
+
+static const char exit_going_msg[] = "Exiting to DSS...";
+
+static void exit_now(void) {
+    /* Acknowledge the Y on screen BEFORE the teardown, and give it two
+       frames to get there. Every painter in this port writes the BACK
+       buffer and frame_wait is what flips it, so one frame_wait makes the
+       message visible and the second leaves both buffers holding it.
+       Without this the tester presses Y and watches an unchanged board
+       with the prompt still up for as long as the teardown takes -- a live
+       session's BYE/offline presence goes through the busy-retry ladder,
+       ng_shutdown unloads the DLL, and DSS itself reloads its shell from
+       disk after DSS_EXIT ("по подтверждении ничего не происходит долгое
+       время", S9 MAME run 2026-08-16). The status band gets it too: it is
+       the widest, most obvious text cell on screen, and nothing repaints
+       it again before the video mode is restored. */
+    spectrum_gui_set_status("EXITING");
+    spectrum_gui_notify(exit_going_msg, 0u);
+    frame_wait();
+    frame_wait();
+    if (net_active) {
+        /* Same teardown menu DISCC already does while connected (BYE, MQTT
+           offline presence, net_drop) -- handle_menu_action's own DISCC
+           branch (session_sprinter.c's menu_network) returns immediately
+           after net_drop when net_active, it does not open the NET
+           screen. */
+        handle_menu_action(SPECTRUM_GUI_KEY_MENU_DISCC);
+    }
+    exit_stand();          /* does not return */
+}
 
 void main(void) {
     unsigned char pass;
@@ -1050,13 +1134,78 @@ void main(void) {
        browser is open it owns every keypress outright and neither the
        menu-tab layer nor the board cursor/select layer ever sees it. */
     for (;;) {
-        frame_wait();
-        key_poll();
-        {
-            unsigned char key = key_code;
+        /* One frame_wait per iteration, but as many queued keys as
+           the burst budget allows: key_poll() dequeues ONE DSS
+           keyboard event per call into a single latch, so a frame
+           that runs long (a network poll through the busy-retry
+           ladder, a blocking move animation, a chat repaint) used
+           to drop every keypress but the last one -- fast typing in
+           the chat line visibly lost characters (human tester, S9
+           MAME run 2026-08-16). Bounded rather than "drain until
+           empty" on purpose: each pass can start something
+           expensive (a move with its ~1s flash, a send), and an
+           unbounded loop would let a stuck-key repeat stream starve
+           the session poll at the bottom of the frame.
 
+           key_code is cleared at the end of each pass so the next
+           key_poll() can be told "nothing new" (it leaves the latch
+           untouched when the queue is empty) -- that also drops the
+           old "last key stays latched forever" behaviour, which no
+           consumer here ever wanted and which only existed for a
+           debug echo that is long gone. */
+        unsigned char keys_left = KEY_BURST_MAX;
+        unsigned char key;
+
+        frame_wait();
+        for (;;) {
+            key_poll();
+            key = key_code;
             if (key != 0u) {
-                if (spectrum_gui_fileui_visible()) {
+                if (exit_confirm) {
+                    /* Highest-priority layer, same as app.c's own confirm_
+                       action (CONFIRM > OVERLAY > MENU > GAME): swallows
+                       every key except the answer, so fileui/menu/chat/
+                       board can never see a press while this prompt is up
+                       -- exit_confirm can only ever have been set (below)
+                       from the plain board screen with nothing else open,
+                       so this can never itself interrupt one of those. */
+                    key_code = 0u;
+                    if (key == 'y' || key == 'Y') {
+                        exit_now();                /* does not return */
+                    } else if (key == 'n' || key == 'N') {
+                        exit_confirm = 0u;
+                        spectrum_gui_notify("", 0u);
+                    } else {
+                        /* ESC deliberately does NOT answer this prompt, even
+                           though it is the key that raised it and cancels
+                           every other overlay in this file. DSS's keyboard
+                           FIFO delivers auto-repeat, so one held ESC arrives
+                           as a burst -- with ESC meaning "cancel" here, the
+                           burst armed and cancelled the prompt over and over
+                           and the tester saw the notice line blink and clear
+                           itself ("нажатие на Esc приводит к скрытию
+                           сообщения", S9 MAME run 2026-08-16). Repeats now
+                           just re-paint the same prompt, which is stable
+                           whatever the repeat rate. Y or N answers it, as
+                           the prompt itself says. */
+                        /* Swallowed -- but re-paint the prompt rather than
+                           stay silent. The session keeps polling below
+                           while this is armed, so an incoming event
+                           (opponent's move, "Disconnected", a draw offer)
+                           can overwrite the notice text while the prompt
+                           state stays up; without this, the next key
+                           press would vanish into a screen that no longer
+                           shows any prompt at all -- the exact "invisible
+                           modal state reads as broken input" failure this
+                           port has already shipped once (S5 menu focus,
+                           docs/sprinter-testnotes/S5.md). ZX sidesteps it
+                           differently: its incoming-event paths check
+                           confirm_action and refuse to raise a competing
+                           notice, which this port's state-based net_
+                           control_key does not do. */
+                        spectrum_gui_notify(exit_prompt_msg, 1u);
+                    }
+                } else if (spectrum_gui_fileui_visible()) {
                     key_code = 0u;
                     fileui_process_key(key);
                 } else {
@@ -1094,7 +1243,18 @@ void main(void) {
                                 chat_input_mode = 0u;
                             } else if (rc == CHAT_SPRINTER_KEY_LINK_DOWN) {
                                 chat_input_mode = 0u;
-                                net_drop("Link down");
+                                if (net_send_busy) {
+                                    /* Transient BUSY, not a dead link -- see
+                                       the RESTORE_RQ send above. CHAT has no
+                                       retransmit ladder behind it (it is not
+                                       an ACKed operation), so the line is
+                                       genuinely lost; ending the session over
+                                       it would be far worse. */
+                                    spectrum_gui_notify("Link busy - not sent",
+                                                        1u);
+                                } else {
+                                    net_drop("Link down");
+                                }
                             } else if (rc == CHAT_SPRINTER_KEY_BLOCKED) {
                                 spectrum_gui_notify("Waiting for ACK", 0u);
                             }
@@ -1118,6 +1278,21 @@ void main(void) {
                                 chat_input_mode = 1u;
                                 spectrum_gui_notify("Type chat", 0u);
                             }
+                        } else if (key == KEY_CANCEL) {
+                            /* ESC on the plain board screen (fileui/chat/
+                               menu all intercept ESC themselves above, so
+                               this is only ever reached with none of them
+                               open): arm the exit prompt. is_error=1 makes
+                               it red and persistent (ticks=0), same as
+                               app.c's own notify_error_msg for a CONFIRM
+                               prompt -- it does not auto-expire, it waits
+                               for Y or N. A repeat of this same ESC lands
+                               in the exit_confirm branch above instead,
+                               which re-paints the prompt rather than
+                               answering it (see there for why). */
+                            key_code = 0u;
+                            exit_confirm = 1u;
+                            spectrum_gui_notify(exit_prompt_msg, 1u);
                         } else {
                             /* S8 step 4: not a menu key -- gui.c returned it
                                unchanged (menu closed or not one of its keys).
@@ -1131,9 +1306,17 @@ void main(void) {
                     }
                 }
             }
+            board_cursor_move();
+            board_select_or_move();
+            if (key == 0u) {
+                break;                  /* keyboard queue empty */
+            }
+            key_code = 0u;
+            --keys_left;
+            if (keys_left == 0u) {
+                break;
+            }
         }
-        board_cursor_move();
-        board_select_or_move();
 
         /* Wall clock (S5-finish step 1): sampled once a second, not every
            frame -- rtc_sample RSTs into DSS, and nothing here needs

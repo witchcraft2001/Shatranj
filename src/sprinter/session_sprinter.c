@@ -166,6 +166,15 @@ extern char pending_local_move[6];
 extern unsigned char pending_retry_timer;
 extern unsigned char net_send_move_wire(uint16_t ply, const char *move);
 void net_drop(const char *why);
+/* Every "a send returned 0" site in this file goes through this instead of
+   calling net_drop directly -- see its definition (next to net_link_down_why,
+   whose answer it needs) for the two very different things that zero can
+   mean on this port. net_link_down_why is forward-declared alongside it
+   because net_give_up_pending, textually well above its definition, wants
+   the same answer -- a prototype matters here beyond style: without one
+   sccz80 assumes int and the notice line gets a truncated pointer. */
+static void net_send_failed(void);
+static const char *net_link_down_why(void);
 
 /* S8 step 4 (app.c's CONTROL_PENDING_*, reduced): a local RESET request or
    DRAW offer we are waiting on, or a DRAW offer the peer sent us that we
@@ -453,7 +462,7 @@ void board_select_or_move(void) {
             spectrum_gui_notify_persistent(move);
 
             if (!net_send_move_wire(ply, move)) {
-                net_drop("Link down");
+                net_send_failed();
                 return;
             }
             pending_local_ply = ply;
@@ -464,50 +473,61 @@ void board_select_or_move(void) {
         return;
     }
 
+    {
+        unsigned char from = square_index(selected_row, selected_col);
+
+        /* S9 (move-flash): clears the selection highlight only -- board
+           content at `from` is unchanged yet -- then flashes it (piece
+           still there) BEFORE the board actually changes, matching
+           app.c's own ordering (spectrum_gui_prepare_move called ahead of
+           spectrum_board_apply_trusted_move_with_undo, app.c:1639-1640). */
+        selected_row = NO_SQUARE;
+        selected_col = NO_SQUARE;
+        render_square_marked(from);
+        spectrum_gui_prepare_move(move);
+    }
+
     if (!spectrum_board_apply_trusted_move(move)) {
         spectrum_gui_notify("Bad move", 1u);
         return;
     }
 
-    {
-        unsigned char from = square_index(selected_row, selected_col);
-        unsigned char to = square_index(cursor_row, cursor_col);
+    /* spectrum_gui_apply_move repaints from/to (and, since it reads the
+       live board, castling rook / en-passant capture squares too) and
+       flashes `to` -- replaces the two direct render_square_marked calls
+       this used to make, which never repainted anything past the two
+       squares the move string itself names. */
+    spectrum_gui_apply_move(move);
+    /* side_to_move (board.c) has already flipped inside apply_
+       trusted_move -- this reflects the NEW side to move, matching
+       ZX's own turn_set_notice call right after a move lands.
+       Check-state variants (SPECTRUM_GUI_TURN_*_CHECK) are not driven
+       yet -- check detection isn't wired to this path (S5-finish
+       scope); WHITE/BLACK only for now. */
+    spectrum_gui_move_timer_reset();
+    net_set_turn_label_from_side();
 
-        selected_row = NO_SQUARE;
-        selected_col = NO_SQUARE;
-        render_square_marked(from);
-        render_square_marked(to);
-        /* side_to_move (board.c) has already flipped inside apply_
-           trusted_move -- this reflects the NEW side to move, matching
-           ZX's own turn_set_notice call right after a move lands.
-           Check-state variants (SPECTRUM_GUI_TURN_*_CHECK) are not driven
-           yet -- check detection isn't wired to this path (S5-finish
-           scope); WHITE/BLACK only for now. */
-        spectrum_gui_move_timer_reset();
-        net_set_turn_label_from_side();
+    /* A prior "Bad move"/"Empty square"/etc is error-severity
+       (notify_internal, gui.c) and therefore persistent until
+       explicitly replaced -- it does not auto-expire, and nothing
+       above touches the notice line on a SUCCESSFUL move, so it was
+       staying on screen through however many further legal moves
+       followed (human tester, 2026-08-12: "подсказка не исчезает
+       после правильного хода"). ZX's own send_local_move (app.c)
+       replaces it immediately with the move just made
+       (spectrum_gui_notify_persistent(SAN)) -- this is that same
+       call, using the plain coordinate move string already computed
+       above instead of SAN (app.c's move_san_or_fallback is not
+       linked here, same reasoning as this file's own "Empty square"/
+       "Not your piece" literals over ZX's dynamic square-naming
+       text). */
+    spectrum_gui_notify_persistent(move);
 
-        /* A prior "Bad move"/"Empty square"/etc is error-severity
-           (notify_internal, gui.c) and therefore persistent until
-           explicitly replaced -- it does not auto-expire, and nothing
-           above touches the notice line on a SUCCESSFUL move, so it was
-           staying on screen through however many further legal moves
-           followed (human tester, 2026-08-12: "подсказка не исчезает
-           после правильного хода"). ZX's own send_local_move (app.c)
-           replaces it immediately with the move just made
-           (spectrum_gui_notify_persistent(SAN)) -- this is that same
-           call, using the plain coordinate move string already computed
-           above instead of SAN (app.c's move_san_or_fallback is not
-           linked here, same reasoning as this file's own "Empty square"/
-           "Not your piece" literals over ZX's dynamic square-naming
-           text). */
-        spectrum_gui_notify_persistent(move);
-
-        /* S5-finish plan D12 (GUI_LOG(2) scope): append the move just made
-           to the move-list panel -- src/sprinter/gui_log_sprinter.c's own
-           ply counter tracks white/black from call order alone, so no ply
-           string is needed here (see that file's own header). */
-        spectrum_gui_add_move("", move);
-    }
+    /* S5-finish plan D12 (GUI_LOG(2) scope): append the move just made
+       to the move-list panel -- src/sprinter/gui_log_sprinter.c's own
+       ply counter tracks white/black from call order alone, so no ply
+       string is needed here (see that file's own header). */
+    spectrum_gui_add_move("", move);
 }
 
 /* --- save/load (S6, port.md section 5) ------------------------------------
@@ -573,7 +593,6 @@ extern void fileui_open(void);
  * they need a prototype instead of just disappearing from this file. */
 extern unsigned char net_send_move_wire(uint16_t ply, const char *move);
 extern unsigned char net_send_nack_sync(const char *ply);
-extern void net_repaint_move(const char *move);
 extern void net_apply_pending_local_move(void);
 extern unsigned char net_send_takeback_wire(uint16_t ply);
 extern void apply_takeback_snapshot(void);
@@ -662,7 +681,7 @@ static void net_draw_start_rematch(void) {
     pending_retry_timer = PENDING_RETRY_TICKS;
     spectrum_gui_notify_persistent("Draw agreed - new game");
     if (!spectrum_link_send_text(NETCHESS_PROTO_RESET)) {
-        net_drop("Link down");
+        net_send_failed();
     }
 }
 
@@ -671,9 +690,11 @@ static void net_draw_start_rematch(void) {
    to have already decided this is valid and to clear takeback_pending_ply
    -- this function only ever touches takeback_snapshot_*, matching
    pending_local_clear/control_pending_clear's own narrow scope. A full
-   board repaint (not a two-square net_repaint_move) because the undone
-   move might have been a castle or an en-passant capture, touching more
-   than the two squares its own coordinate string names. */
+   board repaint (not spectrum_gui_apply_move's own from/to-plus-castling/
+   en-passant repair) because an undo has no "move string" to read the
+   castling rook or en-passant capture square back out of -- only a
+   forward apply (net_apply_pending_local_move/net_apply_remote_move/
+   board_select_or_move, S9) has one. */
 /* Every exit from a session lands here: the link is already gone (or is
    being given up on), so this only has to make the local state honest
    again. ng_close is idempotent (unet.inc), so calling it after a link the
@@ -813,7 +834,7 @@ static void net_give_up_pending(void) {
         spectrum_gui_notify("Load cancelled", 1u);
         return;
     }
-    net_drop("Link down");
+    net_drop(net_link_down_why());
 }
 
 /* Called once per frame while net_active (main frame loop, below). Cheap
@@ -837,7 +858,7 @@ void net_retry_tick(void) {
     }
     ++control_retry_count;
     if (!retry_pending_outgoing()) {
-        net_drop("Link down");
+        net_send_failed();
     }
 }
 
@@ -863,7 +884,7 @@ static void net_apply_remote_move(const char *payload) {
        accepted-ply latch/idempotent-re-ACK requirement). */
     if (incoming_ply <= spectrum_gui_log_ply_get()) {
         if (!netchesszx_session_send_ack_move(ply)) {
-            net_drop("Link down");
+            net_send_failed();
         }
         return;
     }
@@ -906,32 +927,47 @@ static void net_apply_remote_move(const char *payload) {
     if (incoming_ply != (uint16_t)(spectrum_gui_log_ply_get() + 1u)) {
         spectrum_gui_notify("Bad move", 1u);
         if (!net_send_nack_sync(ply)) {
-            net_drop("Link down");
+            net_send_failed();
         }
         return;
     }
     /* The peer is not trusted to have checked its own move: this port runs
        the same RULES overlay against it that a local move goes through,
        and NACKs rather than corrupting the board. That is the contract
-       (docs/session-core-contract.md), not extra caution. S8 step 5: the
-       _with_undo variant captures the one-ply undo record here too -- this
-       is the remote-apply site, net_apply_pending_local_move is the
-       other. */
-    if (!spectrum_board_is_legal_move(move) ||
-        !spectrum_board_apply_trusted_move_with_undo(move, &takeback_undo)) {
+       (docs/session-core-contract.md), not extra caution. */
+    if (!spectrum_board_is_legal_move(move)) {
+        (void)netchesszx_session_send_nack_move(ply);
+        spectrum_gui_notify("Peer sent an illegal move", 1u);
+        return;
+    }
+    /* S9 (move-flash): flashes FROM (piece still on the board -- the move
+       has not been applied yet) before BOARD gets a chance to move it,
+       matching app.c's own remote-apply ordering (spectrum_gui_prepare_
+       move ahead of spectrum_board_apply_trusted_move_with_undo,
+       app.c:3233-3234). */
+    spectrum_gui_prepare_move(move);
+    /* S8 step 5: the _with_undo variant captures the one-ply undo record
+       here too -- this is the remote-apply site, net_apply_pending_local_
+       move is the other. */
+    if (!spectrum_board_apply_trusted_move_with_undo(move, &takeback_undo)) {
         (void)netchesszx_session_send_nack_move(ply);
         spectrum_gui_notify("Peer sent an illegal move", 1u);
         return;
     }
     selection_clear();
-    net_repaint_move(move);
+    /* spectrum_gui_apply_move repaints from/to (plus castling rook / en-
+       passant capture squares, reading the live board) and flashes `to` --
+       replaces net_repaint_move's own bare two-square repaint. The ACK
+       below still goes out only after the animation finishes, matching
+       app.c:3239-3241. */
+    spectrum_gui_apply_move(move);
     spectrum_gui_move_timer_reset();
     net_set_turn_label_from_side();
     spectrum_gui_notify_persistent(notation[0] != '\0' ? notation : move);
     spectrum_gui_add_move(ply, move);
     takeback_snapshot_save(incoming_ply, 0u);
     if (!netchesszx_session_send_ack_move(ply)) {
-        net_drop("Link down");
+        net_send_failed();
     }
 }
 
@@ -1050,6 +1086,10 @@ static unsigned char mqtt_seat_probed;
    the discrimination has to happen on this side of it. */
 extern unsigned char net_mqtt_down_reason;
 
+/* unet_link.c (WIN1): the last send exhausted its whole busy-retry budget on
+   uNet's NERR_BUSY -- nothing went out, and nothing is broken. */
+extern unsigned char net_send_busy;
+
 /* unet_link.c (WIN1) again: which step of the NET overlay's MQTT sequence
    gave up, and uNet's own verdict on it. They live in WIN1 rather than in
    the overlay precisely so this file can read them -- the overlay page is
@@ -1128,6 +1168,29 @@ static const char *net_link_down_why(void) {
         (void)spectrum_append_u16(p, net_mqtt_ovl_dropped);
     }
     return net_mqtt_fail_text;
+}
+
+/* A send came back zero. On ZX that can only mean the link is gone (its UART
+   send cannot be "busy"), which is why app.c's own tcp_required() goes
+   straight to handle_opponent_disconnected -- and this port copied that
+   one-to-one. It does not hold here: uNet answers NERR_BUSY when the DLL's
+   TCP channel is mid-handshake, which explicitly means "nothing was sent, try
+   again", and unet_link.c's ladder can exhaust its whole budget on it while
+   the link is perfectly healthy. Reported as a session loss, that turned a
+   draw offer the peer had ALREADY displayed into "Link down" two seconds
+   later (second MAME round, 2026-08-16). So: a busy-exhausted send re-arms
+   the retransmit timer and says so, and only a real transport failure -- with
+   net_link_down_why naming the layer that decided it -- ends the session.
+   No protocol change: an unsent MOVE/DRAW/ACK is still retransmitted by
+   net_retry_tick on exactly the same cadence, and still ends the session
+   through net_give_up_pending once the retry budget really is spent. */
+static void net_send_failed(void) {
+    if (net_send_busy) {
+        pending_retry_timer = PENDING_RETRY_TICKS;
+        spectrum_gui_notify("Link busy - retrying", 1u);
+        return;
+    }
+    net_drop(net_link_down_why());
 }
 
 /* app.c's mqtt_peer_reset_wait_state + mqtt_peer_disconnected_wait, reduced
@@ -1377,7 +1440,7 @@ static void net_handle_event(unsigned char event, const char *payload,
                    requested_ply == last_accepted_takeback_ply) {
             (void)spectrum_append_u16(ply_text, requested_ply);
             if (!netchesszx_session_send_ack_move(ply_text)) {
-                net_drop("Link down");
+                net_send_failed();
             }
         } else if (requested_ply == 0u ||
                    control_pending != CONTROL_PENDING_NONE ||
@@ -1418,7 +1481,7 @@ static void net_handle_event(unsigned char event, const char *payload,
         } else {
             net_apply_reset();
             if (!netchesszx_session_send_ack_reset()) {
-                net_drop("Link down");
+                net_send_failed();
             }
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_ACK_RESET) {
@@ -1451,7 +1514,7 @@ static void net_handle_event(unsigned char event, const char *payload,
         } else if (control_pending == CONTROL_PENDING_DRAW_SENT) {
             control_pending_clear();
             if (!netchesszx_session_send_ack_move("DRAW")) {
-                net_drop("Link down");
+                net_send_failed();
                 return;
             }
             net_draw_start_rematch();
@@ -1496,7 +1559,7 @@ static void net_handle_event(unsigned char event, const char *payload,
             /* Decision still open, or already accepted: re-send RY
                without a second prompt/decision (contract). */
             if (!spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RY)) {
-                net_drop("Link down");
+                net_send_failed();
             }
             return;
         }
@@ -1520,7 +1583,7 @@ static void net_handle_event(unsigned char event, const char *payload,
             control_retry_count = 0u;
             pending_retry_timer = PENDING_RETRY_TICKS;
             if (!restore_send_chunks()) {
-                net_drop("Link down");
+                net_send_failed();
             }
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESTORE_RN) {
@@ -1555,7 +1618,7 @@ static void net_handle_event(unsigned char event, const char *payload,
             if (memcmp(payload + 5, saveload_b64_pending +
                            (chunk == 0u ? 0u : 30u), 30) == 0) {
                 if (!spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RA)) {
-                    net_drop("Link down");
+                    net_send_failed();
                 }
             } else {
                 (void)spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RN);
@@ -1595,7 +1658,7 @@ static void net_handle_event(unsigned char event, const char *payload,
         restore_rx_mask = RESTORE_RX_APPLIED;
         restore_chunk_have = 0u;
         if (!spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RA)) {
-            net_drop("Link down");
+            net_send_failed();
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESTORE_RA) {
         /* Peer confirms it applied the game we pushed. A stray RA with
@@ -1645,7 +1708,7 @@ static void net_draw_offer(void) {
         return;
     }
     if (!spectrum_link_send_text(NETCHESS_PROTO_DRAW)) {
-        net_drop("Link down");
+        net_send_failed();
         return;
     }
     control_pending = CONTROL_PENDING_DRAW_SENT;
@@ -1661,7 +1724,7 @@ static void net_draw_reply(unsigned char accept) {
     control_pending_clear();
     if (accept) {
         if (!netchesszx_session_send_ack_move("DRAW")) {
-            net_drop("Link down");
+            net_send_failed();
             return;
         }
         /* app.c's own asymmetry: the accepting side does not drive the
@@ -1689,7 +1752,7 @@ static void net_takeback_request(void) {
         return;
     }
     if (!net_send_takeback_wire(takeback_snapshot_ply)) {
-        net_drop("Link down");
+        net_send_failed();
         return;
     }
     takeback_pending_ply = takeback_snapshot_ply;
@@ -1713,7 +1776,7 @@ static void net_takeback_reply(unsigned char accept) {
     if (accept) {
         apply_takeback_snapshot();
         if (!netchesszx_session_send_ack_move(ply_text)) {
-            net_drop("Link down");
+            net_send_failed();
             return;
         }
         last_accepted_takeback_ply = ply;
@@ -1734,7 +1797,7 @@ static void net_restore_reply(unsigned char accept) {
         restore_rx_mask = RESTORE_RX_RECEIVE;
         restore_chunk_have = 0u;
         if (!spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RY)) {
-            net_drop("Link down");
+            net_send_failed();
             return;
         }
         spectrum_gui_notify("Waiting for saved game", 0u);
@@ -1804,7 +1867,7 @@ void net_poll_once(void) {
         } else {
             net_hello_wait = NET_HELLO_REANNOUNCE_TICKS;
             if (!netchesszx_session_direct_send_hello()) {
-                net_drop("Link down");
+                net_send_failed();
                 return;
             }
         }
@@ -1848,7 +1911,7 @@ static void menu_reset_game(void) {
             return;
         }
         if (!spectrum_link_send_text(NETCHESS_PROTO_RESET)) {
-            net_drop("Link down");
+            net_send_failed();
             return;
         }
         control_pending = CONTROL_PENDING_RESET;

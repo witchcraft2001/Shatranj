@@ -57,16 +57,6 @@ extern const char *spectrum_net_mqtt_presence_payload(void);
 extern void spectrum_net_mqtt_setup_payload(char *out) NETCHESSZX_FASTCALL;
 
 extern void frame_wait(void);
-/* platform_defs.asm (always-mapped WIN2 primitive), same one main.c's own
- * frame loop calls -- see this file's busy-retry loops below for why a
- * second caller needs it. Deliberately NOT bridged into the cold page or
- * any WIN3 overlay (tools/gen_sprinter_cold_thunks.py's own comment: "NOT
- * in this list, deliberately: spectrum_frame_wait, spectrum_key_poll") --
- * DSS_SCANKEY can remap WIN3 without restoring it, which would corrupt a
- * WIN3-resident caller's own code page out from under it. This file is
- * WIN1-resident (always mapped), so it is safe here the same way main.c is
- * safe. */
-extern void key_poll(void);
 
 /* unet.inc's NERR_OK/NERR_BUSY, needed numerically here (see net_frame.c's
  * own NC_UNET_* comment for why these are duplicated rather than shared
@@ -132,6 +122,20 @@ static spectrum_mqtt_broker_keepalive_t net_mqtt_broker_keepalive;
  * gone quiet -- four different bugs in four different places. Read by
  * session_sprinter.c's net_poll_once and spelled out on the notice line. */
 uint8_t net_mqtt_down_reason;
+
+/* Set by either busy-retry ladder below when it exhausts its whole budget on
+ * NERR_BUSY: the packet never went out, but nothing about the link is broken
+ * -- uNet's own answer for BUSY is "nothing was sent, try again". link.h's
+ * send contract has no third value for that (ZX's UART cannot be busy, so
+ * "did not send" there really does mean the link is gone), so it travels
+ * beside the return value instead. Cleared at the top of every ladder, so a
+ * reader sees the outcome of the send it just made and not an older one.
+ * Read by session_sprinter.c's net_send_failed, which re-arms the retransmit
+ * timer on this instead of dropping the session -- pressing D for a draw
+ * offer and getting "Link down" a couple of seconds later, with the peer
+ * showing the offer dialog the whole time, is exactly this case (second MAME
+ * round, 2026-08-16). */
+uint8_t net_send_busy;
 
 /* Which step of the NET overlay's MQTT sequence gave up, and what uNet made
  * of it. Written by net_mqtt_ui_sprinter.c's mqtt_ovl_fail (see that file
@@ -252,6 +256,7 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
 {
     uint8_t retry;
 
+    net_send_busy = 0u;
     for (retry = 0u; retry < NC_SEND_BUSY_RETRY_MAX; ++retry) {
         /* Drain BEFORE the send, not only after a refusal. UNETRTL.md is
          * explicit: "The consumer must drain pending data before another
@@ -270,11 +275,15 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
         if (ng_v_call_status == NC_UNET_NERR_OK) {
             return 1u;
         }
-        /* A send that never went out is why the session layer will decide
-         * the peer is gone a few seconds later; without this the notice
-         * blames the peer for our own failure to speak. */
-        net_mqtt_down_reason = NET_MQTT_DOWN_PUBLISH;
         if (ng_v_call_status != NC_UNET_NERR_BUSY) {
+            /* A send that never went out is why the session layer will
+             * decide the peer is gone a few seconds later; without this the
+             * notice blames the peer for our own failure to speak. Set only
+             * on the real-failure branch now: setting it on BUSY too left a
+             * stale "publish" reason latched after a retry that went on to
+             * succeed, so a later, unrelated drop reported the wrong
+             * layer. */
+            net_mqtt_down_reason = NET_MQTT_DOWN_PUBLISH;
             /* Deliberately NOT retried, NERR_SEND above all. That one means
              * the NIC already transmitted and the peer's cumulative ACK
              * never came back (unetrtl.asm's MAP_TCP_SEND_FAIL) -- a fresh
@@ -283,26 +292,29 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
              * NERR_BUSY is a "nothing went out, try again" answer. */
             return 0u;
         }
-        /* 2026-08-16 MAME finding: a BUSY stretch can run several retries
-         * (up to NC_SEND_BUSY_RETRY_MAX frames) with the main loop never
-         * back at key_poll() in between -- every send site on this port
-         * funnels through here or the DIRECT loop below. DSS's own keyboard
-         * ISR keeps queuing scancodes into its 64-byte SBUF the whole time
-         * (interrupts stay enabled through a blocking DLL call --
-         * docs/UNETRTL.md's "Interrupt and window state on return"), but
-         * nothing drains it until this function returns, and a long enough
-         * stretch (fast typing, a held cursor key) can overflow that queue
-         * and lose keys -- reported as chat swallowing characters and
-         * unresponsive board cursor movement while a session is live. Safe
-         * from WIN1 (see this file's own key_poll extern comment); draining
-         * here every retry keeps key_code's single-slot latch current
-         * instead of stale. Does NOT cover the DLL's own internal NERR_SEND
-         * retransmit wait (unetrtl.asm, up to ~4s, entirely inside one
-         * ng_c_send() call this code cannot see into) -- a severely lossy
-         * link can still cost keystrokes during that window. */
-        key_poll();
+        /* Nothing but a frame wait here, deliberately. The first version of
+         * this ladder called key_poll() on every retry, meaning to "keep the
+         * latch current" while the main loop was blocked -- it did the exact
+         * opposite. key_code is ONE slot: each call took another event out of
+         * DSS's 16-entry SBUF and overwrote the previous one, so a BUSY
+         * stretch during typing destroyed up to NC_SEND_BUSY_RETRY_MAX
+         * keypresses that would otherwise have sat safely in SBUF until the
+         * frame loop got back to them. That is the "chat still swallows
+         * characters, cursor keys and SPACE get lost" report from the second
+         * MAME round (2026-08-16), and it is why the symptom tracked MQTT
+         * rather than DIRECT: BUSY is common once presence/PUBACK/PING
+         * publishes run from the frame loop, and rare on the DIRECT stream.
+         * key_poll() is now latch-preserving as well (im2_s1.asm), so this is
+         * belt and braces -- but there is still nothing for a poll to do here
+         * when no dispatcher can run. */
         frame_wait();
     }
+    /* Every retry came back BUSY. Nothing went out and nothing is wrong with
+     * the link -- uNet's own answer says "try again". Reported apart from a
+     * real failure so the session layer can re-arm its retransmit timer
+     * instead of declaring the peer gone (session_sprinter.c's
+     * net_send_failed). */
+    net_send_busy = 1u;
     return 0u;
 }
 
@@ -578,6 +590,7 @@ uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
     ng_c_send_ptr = net_tx_line;
     ng_c_send_len = len;
 
+    net_send_busy = 0u;
     for (retry = 0u; retry < NC_SEND_BUSY_RETRY_MAX; ++retry) {
         ng_c_send();
         if (ng_v_call_cf) {
@@ -587,12 +600,12 @@ uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
             return (ng_v_call_status == NC_UNET_NERR_OK) ? 1u : 0u;
         }
         nc_pump();
-        /* Same reasoning as net_mqtt_send_raw's own key_poll() call above:
-         * a BUSY stretch here blocks the main loop from polling the
-         * keyboard for as long as it runs. */
-        key_poll();
+        /* No key_poll() here either -- see net_mqtt_send_raw's own comment
+         * for why one used to be here and why it destroyed keypresses
+         * instead of preserving them. */
         frame_wait();
     }
+    net_send_busy = 1u;
     return 0u;
 }
 
