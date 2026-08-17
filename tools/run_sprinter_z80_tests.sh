@@ -72,6 +72,16 @@ if [[ -f "$repo_root/build/sprinter/net_frame_c.map" ]]; then
     --out "$generated_dir/netframe_blob_defs.inc" >/dev/null
 fi
 
+# The WIN3 cold page's own render entry points, for t_hint_blit.asm -- which
+# INCBINs that page and calls render_hint_marker in it. Only cold_page_image.
+# map knows those addresses; see that generator's docstring.
+if [[ -f "$repo_root/build/sprinter/cold_page_image.map" ]]; then
+  python3 "$repo_root/tools/gen_sprinter_coldrender_defs.py" \
+    --map "$repo_root/build/sprinter/cold_page_image.map" \
+    --sym "$repo_root/build/sprinter/platform_primitives.sym" \
+    --out "$generated_dir/coldrender_test_defs.inc" >/dev/null
+fi
+
 # Same idea one layer up, for t_net_mqtt_read.asm: that test INCBINs the
 # SPLICED resident image (build/sprinter/resident.bin -- WIN1 + WIN2 exactly
 # as SHATRANJ.EXE carries them, blob included) and drives its MQTT read path
@@ -107,6 +117,16 @@ for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
     # Makefile target depends on resident.bin, so `make sprinter-z80-test`
     # always runs this test.
     echo "SKIP $name: build/sprinter/resident.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
+  if [[ "$name" == "t_hint_blit" ]] &&
+     { [[ ! -f "$generated_dir/coldrender_test_defs.inc" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/cold_win3_page.bin" ]]; }; then
+    # Same "never built the target" guard the other blob tests use; the
+    # Makefile target depends on the cold page, so `make sprinter-z80-test`
+    # always runs this test.
+    echo "SKIP $name: build/sprinter/cold_win3_page.bin not built" >&2
     ran=$((ran - 1))
     continue
   fi

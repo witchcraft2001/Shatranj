@@ -110,6 +110,43 @@
     EXTERN BOARD_CELL_H
     EXTERN LOWRAM_CHESS_BOARD_ADDR
     EXTERN LOWRAM_RENDER_SHARED_ADDR
+    ; S9 dot-highlight: _netchesszx_movement_hints resolves through
+    ; SPRINTER_COLD_DEFS_ASM (config/session.c is WIN1-resident, this defc
+    ; bridges it -- gen_sprinter_cold_defs.py's COLD_RESIDENT_SYMBOLS
+    ; already lists it, added for the S7 relief pass before any reader
+    ; existed). netchesszx_hinted_rows is NOT bridged the same way: on
+    ; Sprinter it is a raw fixed-address macro (config/session.h), not a
+    ; linker symbol, so render_hint_marker below reads LOWRAM_HINTED_ROWS_
+    ; ADDR -- the ADDRESS, bridged from fixed_layout.json through gen_
+    ; sprinter_platform_defs.py, not a C name that does not exist.
+    EXTERN _netchesszx_movement_hints
+    EXTERN LOWRAM_HINTED_ROWS_ADDR
+    ; S9 dot-highlight: render_hint_enumerate_ovl (below) dispatches RULES
+    ; entry SPECTRUM_OVL_HINTS_SHOW directly from asm -- no WIN1 C wrapper
+    ; (board.c tried one, cost 86 resident bytes once written out; a
+    ; session_sprinter.c C version cost even more on THIS page's own
+    ; budget -- see gen_sprinter_cold_defs.py's own comment on both).
+    ; _side_to_move already resolves via the same defc bridge (S8 relief
+    ; pass); _castle_rights/_ep_square/_spectrum_overlay_exec_cached are
+    ; the same bridge, added for this routine. rules_board/spectrum_
+    ; overlay_context have no C linker symbol on Sprinter either (both are
+    ; raw fixed-address macros, board.c/overlay_context.h), so this routine
+    ; needs their ADDRESSES -- EXTERNed from the generated platform_defs.asm
+    ; bridge, NEVER re-stated as a literal here. S9 shipped exactly that bug
+    ; (2026-08-16): these three were hand-copied as EQUs from src/spectrum/
+    ; lowram_map.h's ZX/Next branch ($5FA0/$5FE0/$B357), so two of the three
+    ; were silently wrong for this port ($B30F/$B34F are Sprinter's), the
+    ; local EQUs shadowed the correct bridged values, the enumeration wrote
+    ; a context nothing read, and the hint mask came back all zeros -- no dot
+    ; ever painted and nothing failed at build time.
+    EXTERN _side_to_move
+    EXTERN _castle_rights
+    EXTERN _ep_square
+    EXTERN _spectrum_overlay_exec_cached
+    EXTERN LOWRAM_RULES_BOARD_ADDR
+    EXTERN LOWRAM_OVERLAY_CONTEXT_ADDR
+SPECTRUM_OVL_RULES EQU 0        ; overlay.h
+SPECTRUM_OVL_HINTS_SHOW EQU 2   ; overlay.h
     EXTERN _render_coord_labels
     EXTERN text_print
     EXTERN MOVE_Y
@@ -1027,6 +1064,10 @@ CURSOR_FRAME_SLOT EQU 52       ; CURSOR_SLOT, build_sprinter_ui_assets.py
 SELECT_FRAME_SLOT EQU 55       ; SELECT_SLOT, same fixed slot contract
 FRAME_W EQU 24                 ; bytes -- one whole cell (CELL_W_BYTES)
 FRAME_ROWS EQU 24              ; rows  -- one whole cell (BOARD_CELL_H)
+DOT_SLOT EQU 50                ; marker_dot, build_sprinter_ui_assets.py
+DOT_W EQU 8                    ; bytes -- 16px/2 (MARKER_W, make_sprinter_markers.py)
+DOT_ROWS EQU 8                 ; rows  -- MARKER_H
+DOT_OFFSET EQU 8                ; bytes/rows -- centres 8x8 inside the 24x24 cell
 
 NO_SQUARE EQU $FF              ; selected_row's "nothing picked up" value,
                                 ; mirroring app.c's own NO_SQUARE
@@ -1058,8 +1099,98 @@ NO_SQUARE EQU $FF              ; selected_row's "nothing picked up" value,
 ; caught before this ever reached MAME by re-checking every other
 ; MUL_CELL_TABLE call site in this file after fixing draw_square_into, not
 ; by a human report. Clobbers everything.
-draw_frame_at:
-    ld (@slot),a
+; Same contract as before, plus four more self-modified cells set by the
+; caller BEFORE the jp/call into here (draw_frame_at_sized, below, is the
+; only writer): frame_tw/frame_th (tile width in bytes / rows --
+; FRAME_W/FRAME_ROWS when unset) and frame_ox/frame_oy (byte/row offset
+; added to the cell's own top-left corner AFTER the flip transform, i.e. in
+; DISPLAY space -- 0 when unset). NOT z80asm "@name" locals (unlike @slot/
+; @row/@col/@disp_row/@disp_col below): draw_frame_at_sized needs to write
+; them from outside this routine's own scope, and this assembler's @name
+; locals cannot be addressed cross-scope (this file's own header explains
+; why -- no sjasmplus ".name" dotted access here). These four are shared,
+; PERSISTENT globals across calls -- render_cursor_marker/render_select_
+; marker (below) each reset all four to the whole-cell default themselves
+; before calling in (S9 fix, 2026-08-16: they used to assume the cells
+; simply stayed at that default, which broke the first time render_hint_
+; marker's draw_frame_at_sized call left them at the dot's 8/8/8/8 shape
+; -- see render_cursor_marker's own comment for the human-tester report
+; this closes). render_hint_marker (S9) is the only caller of draw_frame_
+; at_sized, and always sets all four explicitly first. Offset is added in
+; display space, not model space, so it does not need its own flip
+; handling -- the flip already mirrors the cell's corner, and a marker
+; centred inside a symmetric cell lands in the same visual spot either way.
+frame_tw: defb FRAME_W
+frame_th: defb FRAME_ROWS
+frame_ox: defb 0
+frame_oy: defb 0
+; The tile slot for draw_frame_at. Module scope, not one of that routine's
+; own @name locals, because draw_frame_at_sized has to write it before
+; falling through -- and this file's @name locals are not addressable
+; cross-scope (see the header of draw_frame_at itself).
+draw_frame_at_slot: defb 0
+
+; A=slot, B=row, C=col, D=width(bytes), E=rows, H=x-offset(bytes),
+; L=y-offset(rows) -- MODEL row/col, same convention as draw_frame_at.
+; Sets the four size/offset cells (frame_tw/frame_th/frame_ox/frame_oy,
+; above) then falls into draw_frame_at with its usual A/B/C. Only render_
+; hint_marker (below) calls this; render_cursor_marker/render_select_marker
+; call draw_frame_at directly and each reset these four to the whole-cell
+; default themselves first (their own comments explain why -- S9 fix,
+; 2026-08-16). Clobbers everything.
+; These two live BEFORE the label, joining the frame_*/draw_frame_at_slot
+; data block above, precisely because the routine now falls through into
+; draw_frame_at instead of jumping: there is no post-body spot left where
+; data would be unreachable. Nothing executes into them -- the block above
+; is data too, and every entry into this routine is by name.
+dfas_d: defw 0
+dfas_h: defw 0
+draw_frame_at_sized:
+    ld (draw_frame_at_slot),a   ; A is the SLOT and must survive: every
+                                 ; unpack step below uses A as scratch, and
+                                 ; draw_frame_at's first instruction is
+                                 ; "ld (@slot),a". Without this save it
+                                 ; stored whatever the last unpack left --
+                                 ; frame_oy's value, 8 for the dot -- so the
+                                 ; blit sourced slot 8 (font glyph bytes, all
+                                 ; index-0/index-15 nibbles) instead of
+                                 ; DOT_SLOT 50. Index 15 is the hardware
+                                 ; transparency key only as a WHOLE #FF byte;
+                                 ; a mixed 0F/F0 pair renders as literal
+                                 ; magenta, which is exactly the black-and-
+                                 ; magenta block the human tester photographed
+                                 ; on d5/d6 across three builds. S9 fix,
+                                 ; 2026-08-17, found by running the shipped
+                                 ; cold page under z88dk-ticks and reading
+                                 ; tile_src_slot back (it was 8, not 50) --
+                                 ; two earlier rounds of reading this file
+                                 ; had missed it.
+    ld (dfas_d),de                  ; stash D/E/H/L two at a time -- Z80 has no
+    ld (dfas_h),hl                  ; "ld (nn),r" form for anything but A.
+                                 ; "ld (nn),de" writes the LOW register
+                                 ; first, so @d holds E and @d+1 holds D
+                                 ; (likewise @h = L, @h+1 = H) -- the reads
+                                 ; below are crossed to match, keeping the
+                                 ; documented D=width/E=rows, H=x-off/L=y-off
+                                 ; ABI in the header above.
+    ld a,(dfas_d+1)                 ; D = tile width in bytes
+    ld (frame_tw),a
+    ld a,(dfas_d)                   ; E = tile rows
+    ld (frame_th),a
+    ld a,(dfas_h+1)                 ; H = x offset in bytes
+    ld (frame_ox),a
+    ld a,(dfas_h)                   ; L = y offset in rows
+    ld (frame_oy),a
+    ; Falls through into draw_frame_at_no_slot, NOT into draw_frame_at: the
+    ; slot was stored on entry above, and A now holds the y-offset, so
+    ; running draw_frame_at's own "ld (draw_frame_at_slot),a" here would
+    ; overwrite the slot with 8 -- precisely the bug this change fixes.
+    ; draw_frame_at proper therefore sits BELOW the shared body and jumps
+    ; back in, instead of standing between this fall-through and its target.
+
+; The shared body. Entered either by falling through from above (slot
+; already stored) or via draw_frame_at below (which stores it first).
+draw_frame_at_no_slot:
     ld a,(bench_asset_page)
     cp $FF
     ret z
@@ -1073,12 +1204,12 @@ draw_frame_at:
 
     ld a,(bench_asset_page)
     ld (tile_src_page),a
-    ld a,(@slot)
+    ld a,(draw_frame_at_slot)
     ld (tile_src_slot),a
-    ld a,FRAME_W
+    ld a,(frame_tw)
     ld (tile_width),a
     ld (tile_stride),a
-    ld a,FRAME_ROWS
+    ld a,(frame_th)
     ld (tile_rows),a
     ld a,VRAM_ALIAS_KEY
     ld (tile_alias),a
@@ -1109,6 +1240,8 @@ draw_frame_at:
     add hl,de
     ld a,(hl)
     add a,BOARD_X_BYTE
+    ld hl,frame_ox
+    add a,(hl)
     ld (tile_x_byte),a
     xor a
     ld (tile_x_hi),a
@@ -1120,14 +1253,53 @@ draw_frame_at:
     add hl,de
     ld a,(hl)
     add a,BOARD_Y
+    ld hl,frame_oy
+    add a,(hl)
     ld (tile_y),a
 
     jp gfx_draw_tile
-@slot: defb 0
+
+; The ordinary entry point: store the slot from A, then join the common body
+; above. A separate stub (rather than the body's first instruction) so that
+; draw_frame_at_sized can fall straight into draw_frame_at_no_slot without
+; passing through a store that would clobber its already-saved slot.
 @row: defb 0
 @col: defb 0
 @disp_row: defb 0
 @disp_col: defb 0
+
+; The ordinary entry point: store the slot from A, then join the common body
+; above. A separate stub (rather than the body's first instruction) so that
+; draw_frame_at_sized can fall straight into draw_frame_at_no_slot without
+; passing through a store that would clobber its already-saved slot.
+draw_frame_at:
+    ld (draw_frame_at_slot),a
+    jp draw_frame_at_no_slot
+
+
+; Shared by render_cursor_marker/render_select_marker below: resets
+; frame_tw/th/ox/oy to the whole-cell default (S9 fix, 2026-08-16). These
+; four are shared, persistent globals, and render_hint_marker (via
+; render_square_marked, called for every hinted square on every render_
+; hint_markers_all pass) leaves them at the dot's 8/8/8/8 shape rather
+; than restoring 24/24/0/0 -- once a single hint dot has ever been drawn
+; anywhere, the two callers below (both go straight to draw_frame_at,
+; bypassing render_square_marked's own render_hint_marker-then-frame
+; ordering: _spectrum_render_board/_spectrum_render_board_area, right
+; after their own render_hint_markers_all) drew a tiny frame in the wrong
+; spot instead of the full cell outline -- reported by a human tester
+; turning hints on, 2026-08-16 ("появилась подсказка, но при ходе не
+; появляются точки"). A shared reset (rather than relying on caller
+; order) makes draw_frame_at's two entry points independent regardless
+; of what ran before -- factored out rather than inlined twice, cold
+; page budget has no room for a second copy. Clobbers A only.
+frame_reset_default:
+    ld hl,FRAME_ROWS*256+FRAME_W  ; L=frame_tw's value, H=frame_th's --
+    ld (frame_tw),hl              ; one 16-bit store covers both bytes,
+                                   ; since frame_th is frame_tw+1
+    ld hl,0                       ; same trick for the offset pair: frame_oy
+    ld (frame_ox),hl              ; is frame_ox+1, so one store zeroes both
+    ret
 
 ; No arguments. Paints the cursor frame over (cursor_row, cursor_col).
 ; Clobbers everything.
@@ -1135,6 +1307,7 @@ draw_frame_at:
 render_cursor_marker:
     PUBLIC _render_cursor_marker
     defc _render_cursor_marker = render_cursor_marker
+    call frame_reset_default
     ld a,(cursor_row)
     ld b,a
     ld a,(cursor_col)
@@ -1153,16 +1326,203 @@ render_select_marker:
     cp NO_SQUARE
     ret z
     ld b,a
+    call frame_reset_default
     ld a,(selected_col)
     ld c,a
     ld a,SELECT_FRAME_SLOT
     jp draw_frame_at
 
+; One bit per column, MSB=col0 -- matches session_sprinter.c's hints_show
+; loop (col 0 = 'a'-file = bit 7), which is the only writer of
+; netchesszx_hinted_rows. Read by both render_hint_marker and
+; render_hint_markers_all below.
+BIT_TABLE8:
+    defb $80,$40,$20,$10,$08,$04,$02,$01
+
+; L = square index (row*8+col, 0-63), MODEL coordinates -- __z88dk_fastcall.
+; Paints the dot marker centred in the square if netchesszx_movement_hints
+; is on AND that square's bit is set in netchesszx_hinted_rows -- silent
+; no-op otherwise (both checks), so every caller can call this unconditionally
+; the same way render_cursor_marker/render_select_marker's callers do not
+; pre-check cursor/selection state either. row = index>>3, col = index&7,
+; the same split square_index's own callers already use in reverse
+; (session_sprinter.c). Clobbers everything.
+    PUBLIC render_hint_marker
+render_hint_marker:
+    PUBLIC _render_hint_marker
+    defc _render_hint_marker = render_hint_marker
+    ld a,(_netchesszx_movement_hints)
+    or a
+    ret z
+    ld a,l
+    and $3F                     ; A = idx (0-63)
+    ld c,a
+    and 7
+    ld (@col),a                 ; @col = idx & 7
+    ld a,c
+    srl a \ srl a \ srl a       ; A = idx >> 3 = row (zero-filled shift,
+                                 ; not rrca -- that wraps bit0 into bit7)
+    ld (@row),a
+
+    ld c,a                      ; BC is free here (unlike render_hint_markers_
+    ld b,0                      ; all's row walk, where B/C are the loop
+    ld hl,LOWRAM_HINTED_ROWS_ADDR ; counters), so the compact pair-add form is
+    add hl,bc                   ; both correct and the shortest one available.
+    ld a,(hl)                   ; A = this row's mask byte
+    ld c,a                      ; stash it
+
+    ld hl,BIT_TABLE8
+    ld a,(@col)
+    ld e,a
+    ld d,0
+    add hl,de
+    ld a,c
+    and (hl)
+    ret z                       ; bit clear: not a legal target, skip
+
+    ld a,(@col)
+    ld c,a                      ; C = col
+    ld a,(@row)
+    ld b,a                      ; B = row
+    ld a,DOT_SLOT
+    ld de,DOT_W*256+DOT_ROWS      ; D=width, E=rows in one 3-byte load
+    ld hl,DOT_OFFSET*256+DOT_OFFSET ; H=x-offset, L=y-offset, likewise
+    jp draw_frame_at_sized
+@row: defb 0
+@col: defb 0
+
+; L = MODEL square index (0-63) -- __z88dk_fastcall. Fills the RULES
+; overlay context exactly the way board.c's spectrum_board_is_legal_move_
+; coords does for entry 0 (context[0..1]=board ptr, [2]=side, [3]=from,
+; [5]=castle, [6]=ep -- [4]=`to` deliberately left whatever it last was,
+; entry SPECTRUM_OVL_HINTS_SHOW supplies its own per candidate
+; internally), then dispatches SPECTRUM_OVL_HINTS_SHOW, which fills
+; netchesszx_hinted_rows (zeroing it first, that entry's own header in
+; rules_stub_sprinter.asm). Call render_hint_markers_all afterward to
+; actually paint the squares the mask now has set -- this routine touches
+; no VRAM itself. Clobbers everything.
+    PUBLIC render_hint_enumerate_ovl
+render_hint_enumerate_ovl:
+    PUBLIC _render_hint_enumerate_ovl
+    defc _render_hint_enumerate_ovl = render_hint_enumerate_ovl
+    ld a,l
+    and $3F
+    ld b,a                       ; B = from, kept across the A reloads below
+    ld hl,LOWRAM_RULES_BOARD_ADDR
+    ld (LOWRAM_OVERLAY_CONTEXT_ADDR),hl  ; context[0..1] = board ptr, one
+                                          ; 16-bit store instead of two 8-bit
+    ld hl,LOWRAM_OVERLAY_CONTEXT_ADDR+2
+    ld a,(_side_to_move)
+    ld (hl),a
+    inc hl
+    ld (hl),b                    ; context[3] = from
+    inc hl                       ; context[4] = `to` -- skipped on purpose
+    inc hl
+    ld a,(_castle_rights)
+    ld (hl),a
+    inc hl
+    ld a,(_ep_square)
+    ld (hl),a
+
+    ; _spectrum_overlay_exec_cached(ovl_id, entry_id) is an ordinary
+    ; stack-argument C function (z88dk classic default convention, NOT
+    ; __z88dk_fastcall) -- ovl_exec_cached's own header spells out the
+    ; exact offsets it reads after its own `call` pushes a return address:
+    ; SP+2=entry_id, SP+4=ovl_id, each a 16-bit push (low byte value, high
+    ; byte don't-care). z88dk classic pushes arguments source-order
+    ; left-to-right, so the FIRST parameter (ovl_id) is pushed FIRST
+    ; (ending up furthest from the call, at SP+4) and the SECOND parameter
+    ; (entry_id) is pushed LAST, nearest the call (SP+2) -- confirmed
+    ; 2026-08-16 by compiling spectrum_overlay_exec_cached(0, 2) as a C
+    ; probe and inspecting the generated asm (`ld hl,0 / push hl / ld l,2
+    ; / push hl / call ...`), after this routine's own first version had
+    ; the two pushes swapped: that bug dispatched overlay id 2 (GUI_LOG,
+    ; an unported placeholder pointing at raw font-glyph bytes) entry 0
+    ; instead of RULES entry HINTS_SHOW, executing font data as code and
+    ; hanging with interrupts left disabled (first MAME run of the 'h'
+    ; hotkey, since hints defaulted off through every earlier session).
+    ; Ignoring the uint8_t return value (board.c's own callers all do
+    ; too, `(void)`-cast).
+    ld hl,SPECTRUM_OVL_RULES
+    push hl                     ; SP+4 after the call below = ovl_id
+    ld hl,SPECTRUM_OVL_HINTS_SHOW
+    push hl                     ; SP+2 after the call below = entry_id
+    call _spectrum_overlay_exec_cached
+    pop hl
+    pop hl
+    ret
+
+; No arguments. Repaints every currently-hinted square (netchesszx_hinted_
+; rows, all 8 bytes) via render_square_marked -- the one path that also
+; re-applies the cursor/selection frame on top if either lands on the same
+; square. Used only by the two full-board-repaint wrappers below:
+; render_board_full paints straight through draw_square_into and never
+; calls render_square_marked, so a full repaint would otherwise silently
+; drop every hint dot on screen. A no-op scan (netchesszx_movement_hints
+; off, or no selection up) costs 8 byte reads. Clobbers everything.
+    PUBLIC render_hint_markers_all
+render_hint_markers_all:
+    PUBLIC _render_hint_markers_all
+    defc _render_hint_markers_all = render_hint_markers_all
+    ld a,(_netchesszx_movement_hints)
+    or a
+    ret z
+    ld b,0                      ; B = row 0-7
+@row_loop:
+    ld c,b                      ; C is dead until "ld c,0" below sets up the
+    ld b,0                      ; col loop, so it is free scratch here; B (the
+    ld hl,LOWRAM_HINTED_ROWS_ADDR ; row counter) is restored right after the
+    add hl,bc                   ; add. The first version did "ld c,a / ld d,0
+    ld b,c                      ; / add hl,bc", zeroing D while B still held
+                                 ; the row counter, so "add hl,bc" (which takes
+                                 ; the WHOLE pair) read the mask from base +
+                                 ; row*256 + row: row 0 looked right and rows
+                                 ; 1-7 read unrelated memory as a hint mask.
+                                 ; S9 fix, 2026-08-16 -- that is what painted a
+                                 ; garbage 16x16 font-data block over d5 in the
+                                 ; human tester's screenshot, the stray bits
+                                 ; re-entering render_square_marked with
+                                 ; draw_frame_at_sized's cells still live from
+                                 ; an earlier dot. Case 5 of tests/sprinter/
+                                 ; z80/t_hint_marker.asm pins the arithmetic.
+    ld a,(hl)
+    or a
+    jr z,@next_row
+    ld (@mask),a
+    ld c,0                      ; C = col 0-7
+@col_loop:
+    ld a,(@mask)
+    rlca                        ; MSB (col0) rotates into CF first, then
+    ld (@mask),a                ; col1, ... -- matches BIT_TABLE8's
+                                 ; MSB=col0 layout (render_hint_marker)
+    jr nc,@next_col
+    ld a,b
+    add a,a \ add a,a \ add a,a
+    add a,c
+    ld l,a
+    push bc
+    call render_square_marked   ; clobbers everything, including B/C
+    pop bc
+@next_col:
+    inc c
+    ld a,c
+    cp 8
+    jr nz,@col_loop
+@next_row:
+    inc b
+    ld a,b
+    cp 8
+    jr nz,@row_loop
+    ret
+@mask: defb 0
+
 ; L = square index (row*8+col, 0-63) -- __z88dk_fastcall, same convention
 ; and same "only L is guaranteed" caveat as render_square above. Repaints
 ; that square from the board buffer and then puts back whichever marks
-; belong on it: the selection frame first, the cursor frame on top, so a
-; square that is both reads as ZX's double-frame-plus-cursor does.
+; belong on it: the hint dot first, the selection frame next, the cursor
+; frame on top, so a square that is all three reads as dot-under-frame
+; exactly like ZX's own render_hint_from_spec/draw_square_mark layering
+; (asm/spectrum/screen.asm).
 ;
 ; This is the routine every caller that changes a square should use --
 ; render_square alone silently erases the cursor whenever it happens to
@@ -1177,6 +1537,10 @@ render_square_marked:
     and $3F
     ld (@index),a
     call render_square
+
+    ld a,(@index)
+    ld l,a
+    call render_hint_marker
 
     ld a,(selected_row)
     cp NO_SQUARE
@@ -1391,23 +1755,24 @@ board_cursor_move:
 ; HL=board pointer (__z88dk_fastcall) -- ALWAYS ignored: gui.c only ever
 ; passes gui_live_board (src/spectrum/ui/gui.c's own #define), which IS
 ; LOWRAM_CHESS_BOARD_ADDR, the exact buffer render_board_full already
-; reads. Full repaint, then the cursor/selection frames are reapplied --
-; render_board_full's own per-cell loop does not know about them, the same
-; "frame survives an unrelated repaint" contract render_square_marked
-; already guarantees for one square. Clobbers everything.
+; reads. Full repaint, then the hint dots and cursor/selection frames are
+; reapplied -- render_board_full's own per-cell loop does not know about
+; any of them, the same "frame survives an unrelated repaint" contract
+; render_square_marked already guarantees for one square (S9: extended to
+; cover the hint dots the same way, via render_hint_markers_all -- that
+; per-cell loop paints straight through draw_square_into and never calls
+; render_square_marked itself). Clobbers everything.
+; No separate "board area" concept yet (ZX draws the board without its
+; coordinate frame here, used while movement hints are up) -- same body as
+; spectrum_render_board below, so this entry point falls straight through
+; into it rather than repeating all four calls a second time (cold-page
+; budget recon, 2026-08-16: identical bodies are pure waste on this page).
+    PUBLIC _spectrum_render_board_area
+_spectrum_render_board_area:
     PUBLIC _spectrum_render_board
 _spectrum_render_board:
     call render_board_full
-    call render_select_marker
-    jp render_cursor_marker
-
-; No separate "board area" concept yet (ZX draws the board without its
-; coordinate frame here, used while movement hints are up -- hints are not
-; ported, see rules_stub_sprinter.asm's own header). Same behaviour as
-; spectrum_render_board above.
-    PUBLIC _spectrum_render_board_area
-_spectrum_render_board_area:
-    call render_board_full
+    call render_hint_markers_all
     call render_select_marker
     jp render_cursor_marker
 
@@ -1499,9 +1864,11 @@ _spectrum_render_square_attr:
     ld (hilite_bg),a
     ret
 
-; Legal-move hints (RULES entries 2/3) are not ported -- see rules_stub_
-; sprinter.asm's own header for why. Same plain frame-safe repaint as
-; spectrum_render_square.
+; Same plain frame-safe repaint as spectrum_render_square -- the "with
+; hint" half of gui.c's name is handled automatically now (S9):
+; gui_square_from_spec ends in render_square_marked, which paints the hint
+; dot itself (render_hint_marker) whenever that square is currently a
+; legal target, so there is no separate "hinted" variant to implement here.
     PUBLIC _spectrum_render_square_with_hint
 _spectrum_render_square_with_hint:
     jp gui_square_from_spec

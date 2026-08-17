@@ -32,4 +32,16 @@
 #define CHAT_SPRINTER_KEY_LINK_DOWN 2u
 #define CHAT_SPRINTER_KEY_BLOCKED 3u
 
+/* S9 slash commands: chat_submit recognises "/draw", "/resign", "/takeback"
+ * (exact strcmp, case-sensitive, ZX's own convention -- see app.c's own
+ * process_local_key) and returns one of these instead of sending a CHAT.
+ * This overlay cannot itself send a control verb or show a notice (this
+ * file's own header: no spectrum_overlay_exec_cached, no cross-page
+ * pointers) -- main.c's frame loop maps each straight onto the matching
+ * hotkey already wired in session_sprinter.c's net_control_key, so all the
+ * actual policy (guards, confirmation, retry) lives in exactly one place. */
+#define CHAT_SPRINTER_KEY_CMD_DRAW 4u
+#define CHAT_SPRINTER_KEY_CMD_RESIGN 5u
+#define CHAT_SPRINTER_KEY_CMD_TAKEBACK 6u
+
 #endif

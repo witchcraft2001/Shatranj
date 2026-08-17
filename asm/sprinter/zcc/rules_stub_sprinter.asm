@@ -6,11 +6,17 @@
 ; _rules_hints_ovl/_rules_hints_clear_ovl, entries 2/3, which self-render
 ; legal-move markers straight into ZX attribute/bitmap memory via
 ; compute_screen_base/compute_attr_base/set_square_attr_2x2 -- ZX-ULA-
-; specific code with no Sprinter analog, and whose only ZX callers,
-; spectrum_board_show/clear_legal_hints, live in app.c, not ported to
-; Sprinter at all yet). Entries 2/3 are intentionally NOT forked here;
-; porting them is separate follow-up work (docs/sprinter-testnotes/S5.md)
-; once a render_hint_marker primitive and a move-selection UI exist.
+; specific code with no Sprinter analog). Entries 2/3 are intentionally NOT
+; forked here, and this port's own dot-highlight (S9,
+; src/sprinter/session_sprinter.c's hints_show/render_core.asm's render_
+; hint_marker) does not need them either: rather than a self-rendering
+; overlay entry, it drives spectrum_board_is_legal_move_coords (board.c) --
+; which already reuses THIS entry 0 for each single from/to pair it checks
+; -- from a plain 64-iteration C loop on the WIN3 cold page, and paints the
+; result through the render primitives directly. Porting entries 2/3
+; remains unneeded unless a future pass needs the enumeration to run
+; somewhere other than the cold page (see that plan's own budget-valve
+; section for when this would become the fallback).
 ;
 ; Everything below entries 0/1 (rules_current_legal, rules_pseudo, the
 ; per-piece move generators, rules_find_king/rules_attacked_by/rules_
@@ -35,8 +41,20 @@
 
     PUBLIC _rules_play_ovl
     PUBLIC _rules_check_ovl
+    PUBLIC _rules_hints_show_ovl
 
     EXTERN LOWRAM_OVERLAY_SCRATCH_ADDR
+; fixed_layout.json / session.h's NETCHESSZX_LOWRAM_HINTED_ROWS_ADDR, the
+; bitmap _rules_hints_show_ovl fills and render_core.asm's render_hint_
+; marker reads back. EXTERNed from the generated platform_defs.asm bridge
+; (linked into this overlay already, same as LOWRAM_OVERLAY_SCRATCH_ADDR
+; above) rather than restated as a literal here: the two sides live on
+; different pages and cannot EXTERN each OTHER, but they can both take the
+; address from the one generator that owns fixed_layout.json -- which is
+; the only way the two stay equal by construction. Hand-copied literals
+; are what broke this feature on its first MAME run (2026-08-16, see
+; render_core.asm's own note on the ZX-vs-Sprinter address mixup).
+    EXTERN LOWRAM_HINTED_ROWS_ADDR
 
     SECTION code_user
 
@@ -175,6 +193,90 @@ rules_check_found_escape:
 rules_check_none:
     ld l, 0
     jr rules_check_done
+
+; S9 dot-highlight, tier-3 budget valve (session_sprinter.c's hints_show
+; used to drive this same 64-iteration enumeration from the WIN3 cold page
+; via 64 separate spectrum_board_is_legal_move_coords/entry-0 round trips;
+; moved here once that cost pushed the cold page over its 16 KiB ceiling).
+; DE=context pointer (board ptr + side/from/castle/ep, same shape entry 0
+; reads -- context[4]/`to` is ignored, this loop supplies its own). Sets
+; every bit in netchesszx_hinted_rows (LOWRAM_HINTED_ROWS_ADDR, MSB=col0,
+; the same convention hints_show's own C loop used to write) for every
+; `to` square rules_current_legal accepts from the context's `from`.
+; Structurally rules_check_to_loop's inner loop (above), with rh_loop's own
+; bit-setting idea (asm/overlay/rules/rules_stub.asm's ZX original) instead
+; of either escape-detection or self-painting -- this entry paints nothing,
+; render_hint_markers_all (render_core.asm) does that afterward, reading
+; the bitmap this just filled. Zeroes the whole bitmap first (this is the
+; only writer of the region, so no repaint call needs the OLD contents).
+; Clobbers everything; returns L=1 always (dispatch ABI needs a return
+; value, there is no failure mode here). Same IX/IY save/restore contract
+; as entries 0/1.
+; One bit per column, MSB=col0 -- same table shape as render_core.asm's own
+; BIT_TABLE8 (render_hint_marker), independent copy since the two live on
+; different overlay pages and neither can EXTERN across that boundary.
+rhs_bit_table:
+    defb $80, $40, $20, $10, $08, $04, $02, $01
+
+_rules_hints_show_ovl:
+    push ix
+    push iy
+    call rules_import_board
+    ld de, r_side
+    ld bc, 5
+    ldir
+
+    ld hl, LOWRAM_HINTED_ROWS_ADDR
+    ld b, 8
+rhs_clear_loop:
+    ld (hl), 0
+    inc hl
+    djnz rhs_clear_loop
+
+    ld e, 0                     ; E = to (0-63)
+rhs_to_loop:
+    ld a, e
+    ld (r_to), a
+    push de
+    call rules_current_legal
+    pop de
+    or a
+    jr z, rhs_next_to
+
+    ; A square is legal (A<>0 above, E=to still valid via the pop de).
+    ; Look up the bit mask for this column FIRST (into D, a register the
+    ; row-byte lookup below does not touch), then compute the row-byte
+    ; address and OR the mask in -- two separate HL lookups done in
+    ; sequence rather than both at once, so neither needs to be stashed
+    ; off HL/preserved across the other.
+    ld a, e
+    and 7                       ; A = col (0-7)
+    ld c, a
+    ld b, 0
+    ld hl, rhs_bit_table
+    add hl, bc
+    ld d, (hl)                  ; D = bit mask for this column
+
+    ld a, e
+    srl a \ srl a \ srl a       ; A = row (0-7), zero-filled shift
+    ld c, a
+    ld b, 0
+    ld hl, LOWRAM_HINTED_ROWS_ADDR
+    add hl, bc                  ; HL -> this row's byte
+    ld a, (hl)
+    or d
+    ld (hl), a
+
+rhs_next_to:
+    inc e
+    ld a, e
+    cp 64
+    jr nz, rhs_to_loop
+
+    ld l, 1
+    pop iy
+    pop ix
+    ret
 
 rules_current_legal:
     call rules_pseudo

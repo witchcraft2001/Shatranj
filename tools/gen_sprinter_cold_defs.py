@@ -67,6 +67,25 @@ COLD_RESIDENT_SYMBOLS = [
     # plain same-page calls.
     "net_active",                              # src/sprinter/main.c
     "side_to_move",                            # src/spectrum/board/board.c
+    # S9 dot-highlight: render_hint_enumerate_ovl (render_core.asm, hand-
+    # written asm -- see its own header) reads these two plain resident
+    # globals directly, the same way it already reads side_to_move above,
+    # to build the RULES overlay context and dispatch SPECTRUM_OVL_HINTS_
+    # SHOW without a WIN1 C wrapper function. Two C wrapper variants were
+    # tried and measured first (a board.c function: cheap on the cold page
+    # but 86 bytes resident; a session_sprinter.c inline fill: worse on
+    # BOTH pools, more resident-side C codegen overhead per call site than
+    # the board.c version's one shared routine) -- the asm version has
+    # neither cost: no C calling-convention overhead, and nothing left
+    # resident at all once spectrum_overlay_exec_cached (below) is the
+    # only other WIN1 symbol it needs.
+    "castle_rights",                           # src/spectrum/board/board.c
+    "ep_square",
+    # overlay_loader_sprinter.asm's ovl_dispatch/ovl_exec_cached -- already
+    # resident (the WIN3 overlay bank-switch itself lives here), reached
+    # the same way board.c's own spectrum_board_is_legal_move_coords
+    # already reaches it, just from asm instead of C.
+    "spectrum_overlay_exec_cached",
     "spectrum_board_reset",
     "spectrum_board_is_legal_move",
     "spectrum_board_apply_trusted_move",

@@ -85,6 +85,31 @@ extern void render_coord_labels(void);
 extern void render_cursor_marker(void);
 extern void render_select_marker(void);
 extern void render_square_marked(unsigned char index) __z88dk_fastcall;
+/* S9 dot-highlight: render_core.asm's own render_hint_marker (no C-side
+   extern needed -- render_square_marked already calls it internally for
+   every square-touching repaint) paints/skips a single square's dot
+   depending on netchesszx_movement_hints and that square's netchesszx_
+   hinted_rows bit, so hints_show/hints_clear below only need to flip the
+   mask bits and repaint the affected squares through render_square_marked,
+   never call the asm routine directly. render_hint_markers_all IS called
+   directly, by hints_show below -- it walks the whole 8-byte bitmap and
+   repaints every set square, the one repaint shape this file needs that
+   is not "one square I already know the index of". */
+extern void render_hint_markers_all(void);
+/* render_core.asm's render_hint_enumerate_ovl -- fills the RULES overlay
+   context and dispatches SPECTRUM_OVL_HINTS_SHOW directly in hand-written
+   asm, filling netchesszx_hinted_rows[8] with every legal target from a
+   `from` square in one overlay dispatch. Two C wrapper variants were
+   tried and measured first: a board.c function (cheap on the cold page,
+   but 86 bytes resident on WIN1) and a C fill inlined straight into this
+   function (worse on BOTH pools -- z88dk classic's calling-convention/
+   register-spill overhead around the six context stores cost more than
+   board.c's one shared routine did, even before counting what it added
+   here). The asm version has neither cost: no C call overhead, and
+   nothing left resident at all -- see tools/gen_sprinter_cold_defs.py's
+   own comment on the two resident globals (castle_rights/ep_square) it
+   still has to read the same way side_to_move already does. */
+extern void render_hint_enumerate_ovl(unsigned char from_idx) __z88dk_fastcall;
 extern void spectrum_gui_reset_move_log(void);
 /* S9 chat pass: gui_log_sprinter.c's own dispatcher onto chat_sprinter.c
    (SPECTRUM_OVL_INPUT_EDIT=9u). gui.h declares spectrum_gui_add_chat
@@ -94,6 +119,18 @@ extern void spectrum_gui_reset_chat(void);
 extern uint16_t spectrum_gui_log_ply_get(void);
 extern void spectrum_gui_log_ply_set(uint16_t ply);
 extern unsigned char key_code;
+
+/* S9 budget valve (plan section 5, tier 2): shared string constants for
+   the notice literals repeated most often in this file -- one copy in
+   rodata instead of N copies of the same bytes, the same "net_link_down_
+   why" reasoning that collapsed 20 "Link down" call sites into a shared
+   answer, applied here to plain literals that do not need a function
+   (severity still varies per call site, so each caller still supplies its
+   own 0u/1u). */
+static const char NOTICE_WAITING_FOR_ACK[] = "Waiting for ACK";
+static const char NOTICE_WAITING_RESIGN_ACK[] = "Waiting resign ACK";
+static const char NOTICE_GAME_OVER[] = "Game already over";
+static const char NOTICE_BAD_MOVE[] = "Bad move";
 
 /* WIN1 (main.c): the one piece of this file's state the resident frame
  * loop reads directly (see this file's own header for why it cannot move
@@ -208,6 +245,50 @@ static const char *net_link_down_why(void);
 static unsigned char control_pending;
 extern unsigned char control_retry_count;
 
+/* S9 local resign (docs/session-core-contract.md:251-270, app.c's
+   resign_pending/game_over/last_control_accept==CONTROL_ACCEPT_RESIGN,
+   reduced to what this port actually needs -- no save/restore round trip
+   through NETCHESSZX_SAVE_FLAG_GAME_OVER, no local_action_ready's own
+   check/checkmate/stalemate branches, since none of that exists on
+   Sprinter yet either).
+
+   resign_pending: RESIGN sent, retransmitting until ACK RESIGN -- deliberately
+   NOT folded into control_pending: the one-operation invariant still holds
+   (net_op_busy below gates a fresh RESET/DRAW/takeback/RESTORE while this is
+   set), but the contract's own preemption rule (":264-270") makes RESIGN the
+   ONE local control allowed to fire with a MOVE already in flight, which
+   control_pending's existing three states never had to accommodate.
+
+   game_over: latched once EITHER side's resignation has been accepted
+   (locally sent and ACKed, or a peer RESIGN applied) -- gates board_select_
+   or_move/net_draw_offer/net_takeback_request until the automatic rematch
+   RESET lands (net_apply_reset already clears it, see below). This port
+   does not distinguish which side's resignation set it (app.c's own
+   last_control_accept==CONTROL_ACCEPT_RESIGN does, to tell "you already
+   resigned" apart from "the opponent resigned" in its own error message --
+   S9 budget valve: this port folds both into one "Game already over"
+   notice instead, needing no extra state to pick between them). */
+static unsigned char resign_pending;
+static unsigned char game_over;
+/* Set by net_resign_request, answered by net_control_key's 'y'/'n' layer
+   (below) -- the local "Resign? Y/N" prompt, distinct from control_pending's
+   incoming-DRAW prompt (a different peer-driven confirmation). */
+static unsigned char resign_confirm;
+
+/* Shared by net_apply_reset (a rematch, own or the peer's, ends the
+   resigned state) and net_drop (no peer left for any of this to mean
+   anything to) -- one copy instead of repeating the same three assignments
+   at each site, matching takeback_clear/restore_net_clear's own shape
+   just below. resign_pending is NOT always zero when this runs (net_drop
+   can fire while a RESIGN is still in flight, its own retry budget spent)
+   but ending up 0 either way is correct: there is nothing left pending
+   once the session/game is over. */
+static void resign_clear(void) {
+    resign_pending = 0u;
+    game_over = 0u;
+    resign_confirm = 0u;
+}
+
 /* S8 step 5 (app.c's takeback_pending_ply/takeback_snapshot_local): one
    variable pair does double duty for both directions, exactly matching
    app.c's own implicit design -- takeback_pending_ply != 0 means
@@ -282,17 +363,20 @@ static void restore_net_clear(void) {
 }
 
 /* Shared one-operation-pending guard (docs/session-core-contract.md):
-   true while a MOVE, RESET/DRAW, takeback, or RESTORE exchange is already
-   in flight, so a fresh local action must wait rather than starting a
-   second one. Every local trigger site (board_select_or_move,
-   menu_reset_game, net_draw_offer, net_takeback_request,
-   local_load_game) shares this one check instead of repeating the same
-   five-way comparison. */
+   true while a MOVE, RESET/DRAW, takeback, RESTORE, or RESIGN exchange is
+   already in flight, or the game has already ended, so a fresh local
+   action must wait (or is refused outright) rather than starting a second
+   one. Every local trigger site (board_select_or_move, menu_reset_game,
+   net_draw_offer, net_takeback_request, local_load_game) shares this one
+   check instead of repeating the same comparison. net_resign_request
+   (below) deliberately does NOT call this -- it has its own narrower guard,
+   since a local RESIGN is the one action allowed to fire with a MOVE
+   already in flight (docs/session-core-contract.md:264-270). */
 unsigned char net_op_busy(void) {
     return (unsigned char)(pending_local_ply != 0u ||
         control_pending != CONTROL_PENDING_NONE ||
         takeback_pending_ply != 0u || restore_rx_mask != 0u ||
-        restore_prompt_pending);
+        restore_prompt_pending || resign_pending || game_over);
 }
 
 /* S9 chat pass: a strictly narrower guard than net_op_busy above. CHAT is
@@ -329,6 +413,94 @@ static unsigned char piece_is_side_to_move(char piece) {
     return (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE);
 }
 
+/* S9 dot-highlight (port.md/app.c's movement_hints_show/_clear, reduced --
+   see the plan's own section 1.3): app.c tracks a selected-row/col pair of
+   its own (hints_selected_row/col) to dedup against; this port already has
+   selected_row/col for exactly that, so one square index (hints_from, or
+   NO_SQUARE) is enough. netchesszx_hinted_rows is the raw fixed-address
+   macro session.h defines for NETCHESSZX_SPRINTER -- indexed by a
+   VARIABLE (row) throughout, never a compile-time-constant subscript
+   directly on that macro (sccz80-miscompiles: a constant index on a
+   cast-literal pointer silently compiles to the wrong byte, caught by
+   check_sccz80_codegen.py -- `netchesszx_hinted_rows[0]` as a literal
+   would be exactly that trap). */
+static unsigned char hints_from = NO_SQUARE;
+
+/* Zeroes the mask and hints_from without repainting anything -- for the one
+   caller (menu_reset_game's hot-seat path) that is about to blow away the
+   whole screen with its own render_board_full() anyway, where per-square
+   render_square_marked calls would be pure waste. Every other caller wants
+   the repaint too, so it goes through hints_clear() (below), which is this
+   function plus the affected squares' repaint. */
+static void hints_mask_reset(void) {
+    unsigned char row;
+
+    for (row = 0u; row < 8u; ++row) {
+        netchesszx_hinted_rows[row] = 0u;
+    }
+    hints_from = NO_SQUARE;
+}
+
+/* The mask has a bit set only while hints_from != NO_SQUARE (hints_show
+   is the only writer, and always sets both together; this function and
+   hints_mask_reset are the only clearers, and always clear both together)
+   -- so hints_from alone is enough to skip the whole scan when there is
+   nothing to clear, no separate "has_hints" pre-pass needed. */
+static void hints_clear(void) {
+    unsigned char row;
+    unsigned char from = hints_from;
+
+    if (from == NO_SQUARE) {
+        return;
+    }
+    for (row = 0u; row < 8u; ++row) {
+        unsigned char mask = netchesszx_hinted_rows[row];
+        unsigned char col;
+
+        netchesszx_hinted_rows[row] = 0u;
+        if (mask == 0u) {
+            continue;
+        }
+        for (col = 0u; col < 8u; ++col) {
+            if ((mask & (unsigned char)(0x80u >> col)) != 0u) {
+                render_square_marked(square_index(row, col));
+            }
+        }
+    }
+    hints_from = NO_SQUARE;
+    render_square_marked(from);
+}
+
+static void hints_show(void) {
+    unsigned char from;
+
+    if (netchesszx_movement_hints == 0u || selected_row == NO_SQUARE) {
+        return;
+    }
+    if (net_active && !netchesszx_session_has_local_turn(
+            (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
+        return;
+    }
+    if (pending_local_ply != 0u) {
+        return;
+    }
+    from = square_index(selected_row, selected_col);
+    if (hints_from == from) {
+        return;                 /* already showing hints for this square */
+    }
+    hints_clear();
+    hints_from = from;
+    /* RULES entry SPECTRUM_OVL_HINTS_SHOW fills netchesszx_hinted_rows
+       (including zeroing it first, own header on that entry) and also
+       clears any stray bit at `from` itself the enumeration might set --
+       rules_current_legal never accepts a piece moving onto its own
+       square, so this needs no explicit from-square exclusion the way
+       the old C loop did. render_hint_markers_all repaints every square
+       the mask now has set. */
+    render_hint_enumerate_ovl(from);
+    render_hint_markers_all();
+}
+
 void selection_clear(void) {
     unsigned char row = selected_row;
     unsigned char col = selected_col;
@@ -338,6 +510,7 @@ void selection_clear(void) {
     }
     selected_row = NO_SQUARE;
     selected_col = NO_SQUARE;
+    hints_clear();
     render_square_marked(square_index(row, col));
 }
 
@@ -346,6 +519,7 @@ static void selection_set(unsigned char row, unsigned char col) {
     selected_row = row;
     selected_col = col;
     render_square_marked(square_index(row, col));
+    hints_show();
 }
 
 void board_select_or_move(void) {
@@ -367,6 +541,15 @@ void board_select_or_move(void) {
     if (net_active && !netchesszx_session_has_local_turn(
             (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
         spectrum_gui_notify("Not your turn", 0u);
+        return;
+    }
+
+    /* S9 local resign: the game ended (either side's resignation was
+       accepted) and the automatic rematch RESET has not landed yet -- no
+       moves until it does. Hot-seat never sets game_over (resign is
+       networked-only, matching ZX), so this is a no-op there. */
+    if (net_active && game_over) {
+        spectrum_gui_notify(NOTICE_GAME_OVER, 0u);
         return;
     }
 
@@ -413,7 +596,7 @@ void board_select_or_move(void) {
            here, not invented, since it needs no square-name interpolation.
            Error severity: notify_internal makes this persistent until
            replaced, unlike the info notices above. */
-        spectrum_gui_notify("Bad move", 1u);
+        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
         return;                 /* keep the selection: pick another target */
     }
 
@@ -433,7 +616,7 @@ void board_select_or_move(void) {
                are S8 step 6's own addition to the same one-operation
                invariant). Keep the selection so the player can simply try
                again once it resolves. */
-            spectrum_gui_notify("Waiting for ACK", 0u);
+            spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
             return;
         }
         {
@@ -455,6 +638,7 @@ void board_select_or_move(void) {
                point, before either platform's own send blocks on anything. */
             selected_row = NO_SQUARE;
             selected_col = NO_SQUARE;
+            hints_clear();
             render_square_marked(from);    /* clears the selection highlight
                                                only -- board content at
                                                `from` is unchanged until the
@@ -483,12 +667,13 @@ void board_select_or_move(void) {
            spectrum_board_apply_trusted_move_with_undo, app.c:1639-1640). */
         selected_row = NO_SQUARE;
         selected_col = NO_SQUARE;
+        hints_clear();
         render_square_marked(from);
         spectrum_gui_prepare_move(move);
     }
 
     if (!spectrum_board_apply_trusted_move(move)) {
-        spectrum_gui_notify("Bad move", 1u);
+        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
         return;
     }
 
@@ -655,12 +840,22 @@ static void control_pending_clear(void) {
 
 /* Shared by both reset paths: a peer-initiated RESET (auto-accepted) and a
    locally-initiated one once the peer's ACK RESET arrives -- both sides
-   always end up here, whichever one asked. */
+   always end up here, whichever one asked. This is also the rematch RESET
+   that always follows a resignation (docs/session-core-contract.md:253-
+   256), so it clears game_over (via resign_clear) here rather than needing
+   a separate reset at each of the three RESIGN-adjacent call sites in
+   net_handle_event above -- the same "one shared reset function" reasoning
+   pending_local_clear/control_pending_clear/takeback_clear/restore_net_
+   clear already follow. resign_clear's own resign_pending/resign_confirm
+   zeroing here is redundant with what every caller above already did at
+   its own point (the resign is over by the time any of them decide to
+   reset) -- harmless, not worth a narrower helper just to avoid it. */
 static void net_apply_reset(void) {
     pending_local_clear();
     control_pending_clear();
     takeback_clear();
     restore_net_clear();
+    resign_clear();
     spectrum_board_reset();
     selection_clear();
     render_board_full();
@@ -671,15 +866,35 @@ static void net_apply_reset(void) {
     spectrum_gui_notify_persistent("New game");
 }
 
-/* Shared by net_handle_event's ACK_DRAW branch (we offered, peer
-   accepted) and its crossed-DRAW branch (both offered -- see
-   NETCHESSZX_SESSION_EVENT_DRAW's own comment): the side whose offer was
-   just accepted drives the post-draw rematch RESET. */
-static void net_draw_start_rematch(void) {
-    control_pending = CONTROL_PENDING_RESET;
+/* Shared by net_handle_event's RESET branch: two of its four outcomes
+   (resign_pending's automatic-rematch-RESET acceptance, and the plain
+   "nothing else pending" auto-accept) apply the reset and ACK it the
+   exact same way (S9 budget valve: one copy instead of two identical
+   four-line blocks). */
+static void net_apply_reset_ack(void) {
+    net_apply_reset();
+    if (!netchesszx_session_send_ack_reset()) {
+        net_send_failed();
+    }
+}
+
+/* Shared rematch-RESET arming, one copy instead of one per caller (S9
+   budget valve, plan section 5 tier 2): net_handle_event's ACK_DRAW branch
+   (we offered, peer accepted), its crossed-DRAW branch (both offered --
+   see NETCHESSZX_SESSION_EVENT_DRAW's own comment), and S9's own crossed-
+   RESIGN/ACK_RESIGN branches all arm the exact same CONTROL_PENDING_RESET
+   send -- only the notice text differs. */
+/* Every "just sent a fresh outgoing control/move request" site rearms the
+   same two-cell retry state (S9 budget valve: one copy instead of six). */
+static void arm_retry(void) {
     control_retry_count = 0u;
     pending_retry_timer = PENDING_RETRY_TICKS;
-    spectrum_gui_notify_persistent("Draw agreed - new game");
+}
+
+static void net_start_rematch(const char *notice) {
+    control_pending = CONTROL_PENDING_RESET;
+    arm_retry();
+    spectrum_gui_notify_persistent(notice);
     if (!spectrum_link_send_text(NETCHESS_PROTO_RESET)) {
         net_send_failed();
     }
@@ -711,6 +926,11 @@ void net_drop(const char *why) {
     control_pending_clear();
     takeback_clear();
     restore_net_clear();
+    /* S9 local resign: none of resign_clear's four flags survive a
+       dropped link either, same reasoning as every clear above -- there
+       is no peer left for a "Resign? Y/N" prompt to mean anything to, and
+       the next session (if any) starts a fresh game. */
+    resign_clear();
     netchesszx_session_peer_reset();
     ng_close();
     net_status_idle();
@@ -771,6 +991,14 @@ static unsigned char restore_send_chunks(void) {
    true at once (the one-operation-pending invariant, guarded at every
    site that sets one of these). */
 static unsigned char retry_pending_outgoing(void) {
+    /* S9 local resign: checked first, ahead of pending_local_ply, matching
+       app.c's own retry_pending_outgoing (a resigned MOVE was preempted --
+       net_resign_request below clears pending_local_ply -- so the two can
+       never both be true, but resign's own priority is the contract's, not
+       an accident of ordering). */
+    if (resign_pending) {
+        return spectrum_link_send_text(NETCHESS_PROTO_RESIGN);
+    }
     if (pending_local_ply != 0u) {
         return net_send_move_wire(pending_local_ply, pending_local_move);
     }
@@ -793,7 +1021,7 @@ static unsigned char retry_pending_outgoing(void) {
 }
 
 static unsigned char local_retry_pending(void) {
-    return (unsigned char)(pending_local_ply != 0u ||
+    return (unsigned char)(resign_pending || pending_local_ply != 0u ||
         control_pending == CONTROL_PENDING_RESET ||
         control_pending == CONTROL_PENDING_DRAW_SENT ||
         (takeback_pending_ply != 0u && takeback_snapshot_local) ||
@@ -816,6 +1044,14 @@ static unsigned char local_retry_pending(void) {
    link is actually down, poll.c's own liveness timeout will reach the
    same conclusion independently. */
 static void net_give_up_pending(void) {
+    /* S9 local resign: RESIGN has no CANCEL verb on the wire (it is
+       unilateral and idempotent, docs/session-core-contract.md:251-253) --
+       a peer that never ACKs one is indistinguishable from a dead link,
+       same as an unanswered MOVE/takeback/in-flight-RESTORE just below. */
+    if (resign_pending) {
+        net_drop(net_link_down_why());
+        return;
+    }
     if (control_pending == CONTROL_PENDING_RESET) {
         control_pending_clear();
         (void)spectrum_link_send_text(NETCHESS_PROTO_CANCEL_RESET);
@@ -862,6 +1098,23 @@ void net_retry_tick(void) {
     }
 }
 
+/* Shared by net_apply_remote_move's two "the peer's move failed our own
+   legality check" sites below -- NACK plus the same notice, one copy
+   instead of two identical three-line blocks (S9 budget valve). */
+static void nack_illegal_move(const char *ply) {
+    (void)netchesszx_session_send_nack_move(ply);
+    spectrum_gui_notify("Peer sent an illegal move", 1u);
+}
+
+/* Shared by net_apply_remote_move's two "something else is already
+   in-flight, this MOVE has to wait" sites below (control op pending, and
+   the pending_local_ply crossed-move case) -- same NACK/notice pair,
+   one copy instead of two identical three-line blocks. */
+static void nack_move_busy(const char *ply) {
+    spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 1u);
+    (void)netchesszx_session_send_nack_move(ply);
+}
+
 static void net_apply_remote_move(const char *payload) {
     char ply[6];
     char move[6];
@@ -875,7 +1128,7 @@ static void net_apply_remote_move(const char *payload) {
     }
     incoming_ply = net_parse_u16(ply);
     if (incoming_ply == 0u) {
-        spectrum_gui_notify("Bad move", 1u);
+        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
         (void)netchesszx_session_send_nack_move(ply);
         return;
     }
@@ -894,8 +1147,7 @@ static void net_apply_remote_move(const char *payload) {
        be replaced out from under it. */
     if (control_pending != CONTROL_PENDING_NONE || takeback_pending_ply != 0u ||
         restore_rx_mask != 0u || restore_prompt_pending) {
-        spectrum_gui_notify("Waiting for ACK", 1u);
-        (void)netchesszx_session_send_nack_move(ply);
+        nack_move_busy(ply);
         return;
     }
     /* Crossed with our own pending local move (app.c's own
@@ -913,8 +1165,7 @@ static void net_apply_remote_move(const char *payload) {
             net_apply_pending_local_move();
         }
         if (pending_local_ply != 0u) {
-            spectrum_gui_notify("Waiting for ACK", 1u);
-            (void)netchesszx_session_send_nack_move(ply);
+            nack_move_busy(ply);
             return;
         }
     }
@@ -925,7 +1176,7 @@ static void net_apply_remote_move(const char *payload) {
         return;
     }
     if (incoming_ply != (uint16_t)(spectrum_gui_log_ply_get() + 1u)) {
-        spectrum_gui_notify("Bad move", 1u);
+        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
         if (!net_send_nack_sync(ply)) {
             net_send_failed();
         }
@@ -936,8 +1187,7 @@ static void net_apply_remote_move(const char *payload) {
        and NACKs rather than corrupting the board. That is the contract
        (docs/session-core-contract.md), not extra caution. */
     if (!spectrum_board_is_legal_move(move)) {
-        (void)netchesszx_session_send_nack_move(ply);
-        spectrum_gui_notify("Peer sent an illegal move", 1u);
+        nack_illegal_move(ply);
         return;
     }
     /* S9 (move-flash): flashes FROM (piece still on the board -- the move
@@ -950,8 +1200,7 @@ static void net_apply_remote_move(const char *payload) {
        here too -- this is the remote-apply site, net_apply_pending_local_
        move is the other. */
     if (!spectrum_board_apply_trusted_move_with_undo(move, &takeback_undo)) {
-        (void)netchesszx_session_send_nack_move(ply);
-        spectrum_gui_notify("Peer sent an illegal move", 1u);
+        nack_illegal_move(ply);
         return;
     }
     selection_clear();
@@ -1433,12 +1682,15 @@ static void net_handle_event(unsigned char event, const char *payload,
         uint16_t requested_ply = tail != 0 ? net_parse_u16(tail) : 0u;
         char ply_text[8];
 
+        (void)spectrum_append_u16(ply_text, requested_ply);  /* only the
+            first branch below never reads this -- cheap enough to always
+            format rather than duplicate the call in both that do (S9
+            budget valve) */
         if (requested_ply != 0u && requested_ply == takeback_pending_ply &&
             !takeback_snapshot_local) {
             /* still waiting on the player's y/n -- nothing to do */
         } else if (requested_ply != 0u &&
                    requested_ply == last_accepted_takeback_ply) {
-            (void)spectrum_append_u16(ply_text, requested_ply);
             if (!netchesszx_session_send_ack_move(ply_text)) {
                 net_send_failed();
             }
@@ -1448,7 +1700,6 @@ static void net_handle_event(unsigned char event, const char *payload,
                    takeback_snapshot_local ||
                    requested_ply != spectrum_gui_log_ply_get() ||
                    requested_ply != takeback_snapshot_ply) {
-            (void)spectrum_append_u16(ply_text, requested_ply);
             (void)netchesszx_session_send_nack_move(ply_text);
         } else {
             takeback_pending_ply = requested_ply;
@@ -1473,21 +1724,36 @@ static void net_handle_event(unsigned char event, const char *payload,
            own distinction: DRAW/RESET-vs-RESET are the "really busy" case,
            a bare NACK just says "not right now"). Otherwise: still
            auto-accepted unconditionally, unchanged from before S8 (this
-           section's own header explains why that stays as-is). */
-        if (control_pending == CONTROL_PENDING_RESET || pending_local_ply != 0u) {
+           section's own header explains why that stays as-is).
+           S9: a RESET arriving while resign_pending is the automatic
+           rematch this side's own ACK RESIGN handler (below) is itself
+           waiting to send OR just sent -- the peer only ever sends RESET
+           after it has ACKed our RESIGN (docs/session-core-contract.md:
+           253-254), so its arrival is proof enough even if our own copy of
+           that ACK RESIGN never made it back (lost packet, or this side
+           is about to retransmit RESIGN into a peer that already moved on).
+           Accepted unconditionally, bypassing the MOVE/RESET-pending BUSY
+           checks above -- there is no move to protect once the game is
+           over, and resign_pending firing this path IS what unblocks it. */
+        if (resign_pending) {
+            resign_pending = 0u;
+            net_apply_reset_ack();
+        } else if (control_pending == CONTROL_PENDING_RESET ||
+                   pending_local_ply != 0u) {
             (void)netchesszx_session_send_nack_reset_busy();
         } else if (control_pending != CONTROL_PENDING_NONE) {
             (void)netchesszx_session_send_nack_reset();
         } else {
-            net_apply_reset();
-            if (!netchesszx_session_send_ack_reset()) {
-                net_send_failed();
-            }
+            net_apply_reset_ack();
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_ACK_RESET) {
         /* Our own RESET request was accepted -- both sides now reset,
            whichever one asked (net_apply_reset is shared). A stray
-           ACK_RESET with nothing of ours pending is ignored. */
+           ACK_RESET with nothing of ours pending is ignored. S9: the
+           rematch RESET this side sent after its own ACK RESIGN (below)
+           is a CONTROL_PENDING_RESET exactly like any other -- no separate
+           branch needed, net_apply_reset already clears game_over via
+           resign_clear (see its own comment). */
         if (control_pending == CONTROL_PENDING_RESET) {
             net_apply_reset();
         }
@@ -1497,8 +1763,49 @@ static void net_handle_event(unsigned char event, const char *payload,
             spectrum_gui_notify("Reset rejected", 1u);
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESIGN) {
-        spectrum_gui_notify_persistent("Opponent resigned");
-        (void)netchesszx_session_send_ack_resign();
+        /* RESIGN is unilateral and idempotent (docs/session-core-contract.
+           md:251-253): every received RESIGN is ACKed, including a
+           retransmit of one already applied -- crossed is when THIS side
+           also has its own resign_pending outstanding, resolved by the
+           immutable-role tie-break below. ACK goes out through net_send_
+           failed like every other control-ACK in this file (S9: this used
+           to be the one bare `(void)` in the file -- a lost ACK under
+           NERR_BUSY would have let the peer retransmit RESIGN until it
+           gave up and dropped the link, since nothing here re-armed a
+           retry for an ACK that never left). */
+        unsigned char crossed = resign_pending;
+
+        if (!netchesszx_session_send_ack_resign()) {
+            net_send_failed();
+            return;
+        }
+        resign_pending = 0u;
+        if (!game_over) {
+            spectrum_gui_notify_persistent("Opponent resigned");
+            spectrum_gui_game_timer_stop();
+            game_over = 1u;
+        }
+        /* docs/session-core-contract.md:257-264: only HOST drives the
+           automatic rematch RESET on a crossed RESIGN (both sides
+           resigned at once) -- GUEST waits to accept it, preventing two
+           simultaneous rematch requests from colliding. A normal
+           (non-crossed) RESIGN case leaves the rematch entirely to
+           whichever side's own ACK RESIGN (below) or explicit menu_
+           reset_game eventually fires. */
+        if (crossed && netchesszx_session_is_host()) {
+            net_start_rematch("Restarting game");
+        }
+    } else if (event == NETCHESSZX_SESSION_EVENT_ACK_RESIGN) {
+        /* Our own RESIGN was accepted -- drive the automatic rematch RESET
+           (docs/session-core-contract.md:253-256), same shared helper as
+           the crossed-RESIGN case just above and DRAW's own ACK_DRAW/
+           crossed-DRAW branches below. A stray ACK_RESIGN with nothing of
+           ours pending (already handled by the RESET path above, or a
+           plain duplicate) is ignored. */
+        if (resign_pending) {
+            resign_pending = 0u;
+            net_start_rematch("Restarting game");
+        }
     } else if (event == NETCHESSZX_SESSION_EVENT_DRAW) {
         /* app.c's own crossed-DRAW rule: "crossed DRAW is ACKed and
            advances to RESET" -- if we ALSO have a draw offer outstanding,
@@ -1517,7 +1824,7 @@ static void net_handle_event(unsigned char event, const char *payload,
                 net_send_failed();
                 return;
             }
-            net_draw_start_rematch();
+            net_start_rematch("Draw agreed - new game");
         } else if (control_pending != CONTROL_PENDING_NONE ||
                    pending_local_ply != 0u) {
             (void)netchesszx_session_send_nack_move("DRAW");
@@ -1530,7 +1837,7 @@ static void net_handle_event(unsigned char event, const char *payload,
            (app.c's start_draw_rematch(1u) for the ACK_DRAW case; the
            accepting side, net_draw_reply below, does not). */
         if (control_pending == CONTROL_PENDING_DRAW_SENT) {
-            net_draw_start_rematch();
+            net_start_rematch("Draw agreed - new game");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_NACK_DRAW) {
         if (control_pending == CONTROL_PENDING_DRAW_SENT) {
@@ -1580,8 +1887,7 @@ static void net_handle_event(unsigned char event, const char *payload,
            stray RY with nothing of ours pending is ignored. */
         if ((restore_rx_mask & RESTORE_TX_PENDING) != 0u) {
             restore_rx_mask = RESTORE_TX_AWAIT_ACK;
-            control_retry_count = 0u;
-            pending_retry_timer = PENDING_RETRY_TICKS;
+            arm_retry();
             if (!restore_send_chunks()) {
                 net_send_failed();
             }
@@ -1690,21 +1996,93 @@ static void net_handle_event(unsigned char event, const char *payload,
 /* S8 step 4: local triggers for RESET/DRAW confirmation. No portable menu
    tab exists for "offer draw"/"accept draw" (gui.h's SPECTRUM_GUI_KEY_
    MENU_* set has no such entries -- on ZX these are typed text commands,
-   SPECTRUM_INPUT_CMD_DRAW/_RESIGN via the same input line INPUT_EDIT owns.
-   S9 gave this port INPUT_EDIT for chat (src/sprinter/chat_sprinter.c),
-   but not slash-command routing -- chat_submit() sends everything typed
-   there as a CHAT message, unconditionally). Rather than build that
-   parsing for three letters, this port dedicates plain ASCII hotkeys
-   instead -- Sprinter-native, not a port of anything, deliberately not
-   touching the shared gui.c/gui.h menu surface ZX/Next also use, and not
-   the chat input line either (typing 'd' while chat is open adds a
+   SPECTRUM_INPUT_CMD_DRAW/_RESIGN via the same input line INPUT_EDIT owns).
+   Rather than build parsing for that, this port dedicates plain ASCII
+   hotkeys instead -- Sprinter-native, not a port of anything, deliberately
+   not touching the shared gui.c/gui.h menu surface ZX/Next also use, and
+   not the chat input line either (typing 'd' while chat is open adds a
    literal 'd' to the message, see main.c's own chat_input_mode routing).
-   'd' offers a draw; 'y'/'n' answer an incoming offer. There is no local
-   resign trigger yet (S8 does not add one -- see this section's own
-   header). */
+   'd' offers a draw, 'r' resigns (S9, net_resign_request below), 't'
+   requests a takeback; 'y'/'n' answer whichever incoming prompt is
+   pending. S9 also gave this port INPUT_EDIT chat's own "/draw"/"/resign"/
+   "/takeback" slash commands (chat_sprinter.c) -- those are strict
+   aliases of these same three hotkeys (main.c's chat dispatch ladder), not
+   a second implementation. */
+
+/* S9 local resign (docs/session-core-contract.md:251-270, full parity --
+   see this file's own resign_pending/game_over comment above for the
+   state model). Deliberately does NOT call net_op_busy():
+   a local RESIGN is the one action allowed to fire with a MOVE already
+   in flight (the contract's own preemption rule), so it needs its own,
+   narrower guard instead of the shared one every other trigger uses. */
+static void net_resign_request(void) {
+    if (resign_pending) {
+        spectrum_gui_notify_persistent(NOTICE_WAITING_RESIGN_ACK);
+        return;
+    }
+    if (game_over) {
+        spectrum_gui_notify(NOTICE_GAME_OVER, 0u);
+        return;
+    }
+    if (!net_active || !netchesszx_session_peer_ready_state) {
+        spectrum_gui_notify("Not connected", 0u);
+        return;
+    }
+    resign_confirm = 1u;
+    spectrum_gui_notify_persistent("Resign? Y/N");
+}
+
+/* Answers the local "Resign? Y/N" prompt net_resign_request armed above --
+   net_control_key's own y/n layer (below) calls this, ahead of every other
+   prompt layer in priority (see that function's own comment). */
+static void net_resign_confirm_reply(unsigned char accept) {
+    if (!resign_confirm) {
+        return;
+    }
+    resign_confirm = 0u;
+    if (!accept) {
+        spectrum_gui_notify("Resign cancelled", 0u);
+        return;
+    }
+    if (!spectrum_link_send_text(NETCHESS_PROTO_RESIGN)) {
+        net_send_failed();
+        return;
+    }
+    /* docs/session-core-contract.md:264-267: the ONE local control allowed
+       to preempt a locally originated MOVE still awaiting its numeric ACK
+       -- the MOVE control timer is cancelled here (pending_local_clear),
+       the MOVE is not applied locally, and no later ACK/NACK for it can
+       apply, reject, or revive it (net_apply_remote_move/net_handle_
+       event's ACK_MOVE/NACK_MOVE branches only ever act while pending_
+       local_ply is still set, which this just zeroed). */
+    pending_local_clear();
+    control_pending_clear();
+    game_over = 1u;
+    resign_pending = 1u;
+    spectrum_gui_game_timer_stop();
+    hints_clear();
+    spectrum_gui_notify_persistent(NOTICE_WAITING_RESIGN_ACK);
+    arm_retry();
+}
+
+/* Shared by three local trigger functions below (net_draw_offer,
+   net_takeback_request, menu_reset_game's networked path) whose busy-
+   guard is the plain "reject with the shared notice" shape -- returns
+   nonzero if busy (S9 budget valve: one copy instead of three identical
+   three-line blocks). board_select_or_move's own net_op_busy() check
+   (above) and net_handle_event's RESTORE_TX_PENDING one keep their own
+   inline forms -- different notice text/severity or a comment worth
+   keeping at the call site, not this same shape. */
+static unsigned char net_op_busy_reject(void) {
+    if (!net_op_busy()) {
+        return 0u;
+    }
+    spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
+    return 1u;
+}
+
 static void net_draw_offer(void) {
-    if (net_op_busy()) {
-        spectrum_gui_notify("Waiting for ACK", 0u);
+    if (net_op_busy_reject()) {
         return;
     }
     if (!spectrum_link_send_text(NETCHESS_PROTO_DRAW)) {
@@ -1712,8 +2090,7 @@ static void net_draw_offer(void) {
         return;
     }
     control_pending = CONTROL_PENDING_DRAW_SENT;
-    control_retry_count = 0u;
-    pending_retry_timer = PENDING_RETRY_TICKS;
+    arm_retry();
     spectrum_gui_notify("Draw offered", 0u);
 }
 
@@ -1743,8 +2120,7 @@ static void net_draw_reply(unsigned char accept) {
    receiver's mirror-image guard in net_handle_event's TAKEBACK branch
    checks the same flag from its own point of view). */
 static void net_takeback_request(void) {
-    if (net_op_busy()) {
-        spectrum_gui_notify("Waiting for ACK", 0u);
+    if (net_op_busy_reject()) {
         return;
     }
     if (!takeback_snapshot_local || takeback_snapshot_ply == 0u) {
@@ -1756,8 +2132,7 @@ static void net_takeback_request(void) {
         return;
     }
     takeback_pending_ply = takeback_snapshot_ply;
-    control_retry_count = 0u;
-    pending_retry_timer = PENDING_RETRY_TICKS;
+    arm_retry();
     spectrum_gui_notify("Takeback requested", 0u);
 }
 
@@ -1807,37 +2182,81 @@ static void net_restore_reply(unsigned char accept) {
     }
 }
 
+/* Toggles netchesszx_movement_hints and immediately shows/hides the dots
+   for whatever is selected right now (hints_show/hints_clear both no-op
+   safely if nothing is selected). Deliberately ABOVE the `if (!net_active)
+   return;` guard below: this is the one net_control_key branch with no
+   session dependency at all (app.c's own SETUP screen owns the ZX/Next
+   equivalent toggle; this port has no SETUP yet, S9's own scope decision),
+   so hot-seat needs it live too -- everything else in this function is
+   genuinely session-shaped (draw/takeback/resign offers, y/n replies) and
+   correctly stays gated. */
+/* 255=not a y/n key, 1=yes, 0=no -- shared by every y/n prompt layer in
+   net_control_key below (S9 budget valve: one comparison chain instead of
+   one per layer). key_code is cleared here, once, for whichever key it
+   turns out to be -- callers only act when the return value is not 255. */
+#define KEY_YN_NONE 255u
+static unsigned char key_yn(unsigned char key) {
+    if (key == 'y' || key == 'Y') {
+        key_code = 0u;
+        return 1u;
+    }
+    if (key == 'n' || key == 'N') {
+        key_code = 0u;
+        return 0u;
+    }
+    return KEY_YN_NONE;
+}
+
 void net_control_key(unsigned char key) {
+    unsigned char yn;
+
+    if (key == 'h' || key == 'H') {
+        key_code = 0u;
+        netchesszx_movement_hints = (unsigned char)(
+            netchesszx_movement_hints == 0u ? 1u : 0u);
+        if (netchesszx_movement_hints == 0u) {
+            hints_clear();
+            spectrum_gui_notify("Hints off", 0u);
+        } else {
+            hints_show();
+            spectrum_gui_notify("Hints on", 0u);
+        }
+        return;
+    }
     if (!net_active) {
         return;
     }
+    /* S9 local resign: the local "Resign? Y/N" confirmation, above every
+       other y/n prompt layer here -- see net_resign_request's own comment
+       for why this is a separate flag rather than a fourth control_pending
+       state, and this file's own header block on resign_pending/game_over
+       for the state model this answers into. */
+    if (resign_confirm) {
+        yn = key_yn(key);
+        if (yn != KEY_YN_NONE) {
+            net_resign_confirm_reply(yn);
+        }
+        return;
+    }
     if (control_pending == CONTROL_PENDING_DRAW_INCOMING) {
-        if (key == 'y' || key == 'Y') {
-            key_code = 0u;
-            net_draw_reply(1u);
-        } else if (key == 'n' || key == 'N') {
-            key_code = 0u;
-            net_draw_reply(0u);
+        yn = key_yn(key);
+        if (yn != KEY_YN_NONE) {
+            net_draw_reply(yn);
         }
         return;
     }
     if (takeback_pending_ply != 0u && !takeback_snapshot_local) {
-        if (key == 'y' || key == 'Y') {
-            key_code = 0u;
-            net_takeback_reply(1u);
-        } else if (key == 'n' || key == 'N') {
-            key_code = 0u;
-            net_takeback_reply(0u);
+        yn = key_yn(key);
+        if (yn != KEY_YN_NONE) {
+            net_takeback_reply(yn);
         }
         return;
     }
     if (restore_prompt_pending) {
-        if (key == 'y' || key == 'Y') {
-            key_code = 0u;
-            net_restore_reply(1u);
-        } else if (key == 'n' || key == 'N') {
-            key_code = 0u;
-            net_restore_reply(0u);
+        yn = key_yn(key);
+        if (yn != KEY_YN_NONE) {
+            net_restore_reply(yn);
         }
         return;
     }
@@ -1847,6 +2266,9 @@ void net_control_key(unsigned char key) {
     } else if (key == 't' || key == 'T') {
         key_code = 0u;
         net_takeback_request();
+    } else if (key == 'r' || key == 'R') {
+        key_code = 0u;
+        net_resign_request();
     }
 }
 
@@ -1906,8 +2328,7 @@ void net_poll_once(void) {
    flight via the usual guard. */
 static void menu_reset_game(void) {
     if (net_active) {
-        if (net_op_busy()) {
-            spectrum_gui_notify("Waiting for ACK", 0u);
+        if (net_op_busy_reject()) {
             return;
         }
         if (!spectrum_link_send_text(NETCHESS_PROTO_RESET)) {
@@ -1915,15 +2336,19 @@ static void menu_reset_game(void) {
             return;
         }
         control_pending = CONTROL_PENDING_RESET;
-        control_retry_count = 0u;
-        pending_retry_timer = PENDING_RETRY_TICKS;
+        arm_retry();
         spectrum_gui_notify("Reset requested", 0u);
         return;
     }
     spectrum_board_reset();
-    render_board_full();
     selected_row = NO_SQUARE;
     selected_col = NO_SQUARE;
+    hints_mask_reset();         /* render_board_full repaints every square
+                                    from scratch, below -- no per-square
+                                    render_square_marked calls to piggyback
+                                    the mask clear on, unlike selection_
+                                    clear's own hints_clear() */
+    render_board_full();
     render_cursor_marker();
     spectrum_gui_reset_move_log();
     spectrum_gui_game_timer_start();

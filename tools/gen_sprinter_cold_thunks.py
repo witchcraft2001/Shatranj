@@ -91,6 +91,14 @@ COLD_THUNK_SYMBOLS = [
     "render_banner",
     "render_board_full",
     "render_coord_labels",
+    # S9 dot-highlight: the two WIN1 call sites that repaint through
+    # render_board_full directly (not the _spectrum_render_board*
+    # wrappers, which already call this internally) without a preceding
+    # selection_clear() -- menu_flip_board, saveload_full_redraw (both
+    # main.c) -- need it too, or a live selection's hint dots go stale at
+    # the OLD screen position (flip) or vanish from the mask's own point
+    # of view without ever repainting (fileui close).
+    "render_hint_markers_all",
     "render_menu_bar",
     "render_status_clock",
     "render_status_text",

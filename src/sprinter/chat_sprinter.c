@@ -388,6 +388,29 @@ static uint8_t chat_submit(void)
     if (!chat_has_text(local_input)) {
         return chat_close_empty();
     }
+    /* S9 slash commands, byte-for-byte app.c's own strcmp shape (process_
+       local_key's "/resign"/"/draw"/"/takeback" branches) -- exact,
+       case-sensitive match, no trim/lowercase (that is Qt's own local_
+       input handling, a different input-line family). An unrecognised
+       "/foo" falls straight through to the ordinary CHAT send below,
+       matching both existing platforms: only these three strings are
+       commands, everything else typed is a message. Checked before
+       net_chat_blocked() below on purpose -- main.c's net_control_key
+       dispatch reports its own "Waiting for ACK"/busy notices the same
+       way the 'd'/'t' hotkeys already do, so this file does not need to
+       duplicate that guard. */
+    if (strcmp(local_input, "/draw") == 0) {
+        (void)chat_close_empty();
+        return CHAT_SPRINTER_KEY_CMD_DRAW;
+    }
+    if (strcmp(local_input, "/resign") == 0) {
+        (void)chat_close_empty();
+        return CHAT_SPRINTER_KEY_CMD_RESIGN;
+    }
+    if (strcmp(local_input, "/takeback") == 0) {
+        (void)chat_close_empty();
+        return CHAT_SPRINTER_KEY_CMD_TAKEBACK;
+    }
     if (net_chat_blocked()) {
         return CHAT_SPRINTER_KEY_BLOCKED;   /* line stays open, unsent */
     }

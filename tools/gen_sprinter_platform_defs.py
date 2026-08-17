@@ -119,6 +119,21 @@ PLATFORM_SYMBOLS = [
     # r_tmp must equal this exact address, the same way rules_stub.asm's own
     # r_tmp EQU is required to equal ZX's NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_ADDR.
     "LOWRAM_OVERLAY_SCRATCH_ADDR",
+    # RULES(0) engine board + the S9 dot-highlight bitmap. Both are read or
+    # written from BOTH sides of the overlay boundary -- render_core.asm's
+    # render_hint_enumerate_ovl/render_hint_marker (cold WIN3 page) and
+    # rules_stub_sprinter.asm's _rules_hints_show_ovl (RULES overlay page) --
+    # and neither side can EXTERN the other's symbols across that boundary,
+    # so both used to hardcode the addresses as literal EQUs. That is exactly
+    # how S9 shipped a silent bug (2026-08-16): render_core.asm's copies were
+    # taken from src/spectrum/lowram_map.h's ZX/Next branch ($5FA0/$5FE0)
+    # rather than Sprinter's own ($B30F/$B34F), so the enumeration filled a
+    # context nothing read and pointed the engine at a board that was not
+    # there -- the mask came back all zeros and no dot ever painted, with no
+    # build-time signal at all. Bridged here so the fixed_layout.json values
+    # reach the asm mechanically instead of by hand-copied literal.
+    "LOWRAM_RULES_BOARD_ADDR",
+    "LOWRAM_HINTED_ROWS_ADDR",
     # MOVE band (S5 substep 3, coordinate labels): the a-h file letters
     # paint into this band, above the board (render_layout.json).
     "MOVE_Y",
@@ -417,6 +432,8 @@ def _clean_fixture() -> str:
         "LOWRAM_CHAT_LOG_ADDR: EQU 0x0000B0E0\n"
         "LOWRAM_OVERLAY_CONTEXT_ADDR: EQU 0x0000B32F\n"
         "LOWRAM_OVERLAY_SCRATCH_ADDR: EQU 0x0000B33F\n"
+        "LOWRAM_RULES_BOARD_ADDR: EQU 0x0000B2EF\n"
+        "LOWRAM_HINTED_ROWS_ADDR: EQU 0x0000B347\n"
         "MOVE_Y: EQU 0x0000001C\n"
         "STATUS_Y: EQU 0x000000E8\n"
         "BANNER_Y: EQU 0x00000000\n"

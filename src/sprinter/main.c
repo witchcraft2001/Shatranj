@@ -155,6 +155,10 @@ extern void key_poll(void);
 extern void exit_stand(void);
 extern void render_cursor_marker(void);
 extern void render_select_marker(void);
+/* S9 budget valve: shared constant for the three identical "Waiting for
+   ACK" notify calls in this file (local_load_game, and the chat dispatch
+   ladder's LINK_DOWN/net_send_busy and BLOCKED arms). */
+static const char NOTICE_WAITING_FOR_ACK[] = "Waiting for ACK";
 /* render_square_marked used to be declared here too (__z88dk_fastcall,
    spelled out rather than left to the classic default: it reads its
    argument from L, and a plain declaration makes sccz80 push it on the
@@ -612,18 +616,19 @@ static void local_save_game(const char *name) {
 
 /* Full post-load repaint: same board-area sequence menu_flip_board/
    menu_reset_game already use (render_board_full/render_coord_labels plus
-   the selection/cursor markers) -- this port's own proven, MAME-tested
-   redraw, not gui.c's spec-based path (see menu_flip_board's own comment
-   for why that one has no live caller here). Also erases whatever the
-   FILEUI panel painted over the board area (S6 plan step 4) -- a full
-   repaint of that same screen region is a correct "close" for either
-   reason, load or plain cancel. */
-static void saveload_full_redraw(void) {
-    render_board_full();
-    render_coord_labels();
-    render_select_marker();
-    render_cursor_marker();
-}
+   the selection/cursor markers, plus render_hint_markers_all for a live
+   selection's hint dots -- fileui_close's own call site has no prior
+   selection_clear() to have already cleared them) -- this port's own
+   proven, MAME-tested redraw, not gui.c's spec-based path (see menu_flip_
+   board's own comment for why that one has no live caller here). Also
+   erases whatever the FILEUI panel painted over the board area (S6 plan
+   step 4) -- a full repaint of that same screen region is a correct
+   "close" for either reason, load or plain cancel. S9 budget valve: the
+   body is five plain cold-page thunk calls and nothing else, so it moved
+   to render_shim.asm (asm/sprinter/zcc) as hand-written asm -- a C
+   function paid a full call prologue per call site (three of them) for
+   work that is otherwise just five 3-byte `call`s in a row. */
+extern void saveload_full_redraw(void);
 
 /* Shared by local_load_game's local-apply path and net_handle_event's
    RESTORE_RS completion (S8 step 6) -- both end up applying a decoded
@@ -680,7 +685,7 @@ static void local_load_game(const char *name) {
        aliasing, which does not apply to this port's shape). */
     if (net_active) {
         if (net_op_busy()) {
-            spectrum_gui_notify("Waiting for ACK", 0u);
+            spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
             return;
         }
         if (!spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RQ)) {
@@ -839,13 +844,14 @@ static void menu_cycle_theme(void) {
  * flip transform is internal to it. cursor_row/col and selected_row/col
  * are left untouched -- flipping does not change which model square is
  * selected/highlighted, only where on screen it is painted. */
-static void menu_flip_board(void) {
-    spectrum_gui_set_board_view((unsigned char)!spectrum_gui_is_board_flipped());
-    render_board_full();
-    render_coord_labels();
-    render_select_marker();
-    render_cursor_marker();
-}
+/* S9 budget valve: moved to render_shim.asm (asm/sprinter/zcc) alongside
+   saveload_full_redraw, whose repaint tail it shares by falling straight
+   into it -- see that file's own comment on both. Flip leaves cursor_row/
+   col and selected_row/col untouched (this function's OLD header comment,
+   above, still describes the real behaviour) -- a live selection's hint
+   dots must still show, now at their flipped screen positions, which is
+   exactly what render_hint_markers_all in the shared tail gives it. */
+extern void menu_flip_board(void);
 
 static void menu_not_available(void) {
     spectrum_gui_notify("Not available", 0u);
@@ -952,6 +958,19 @@ void main(void) {
     cursor_col = 4u;
     selected_row = NO_SQUARE;
     selected_col = NO_SQUARE;
+
+    /* S9 dot-highlight: netchesszx_hinted_rows is fixed low RAM, never
+       zero-filled by crt0 -- but unlike LOWRAM_RENDER_SHARED just above,
+       it genuinely needs no explicit boot seed. netchesszx_movement_hints
+       (config/session.c, ordinary resident BSS) starts at crt0's own 0 --
+       hints off by default, same as ZX/Next's own SETUP-screen-gated
+       default, toggled on with 'h' (net_control_key, session_sprinter.c)
+       -- and every reader of netchesszx_hinted_rows (render_hint_marker/
+       render_hint_markers_all, render_core.asm; hints_clear/hints_show,
+       session_sprinter.c) checks netchesszx_movement_hints or hints_from
+       first, never reading the mask's stale boot content before the
+       first real hints_show() call rebuilds it from scratch (RULES entry
+       SPECTRUM_OVL_HINTS_SHOW zeroes it before setting any bit). */
 
     video_init();
     video_clear_both_buffers();
@@ -1239,10 +1258,14 @@ void main(void) {
                             unsigned char rc = chat_key(key);
 
                             key_code = 0u;
-                            if (rc == CHAT_SPRINTER_KEY_CLOSED) {
+                            /* Every outcome except BLOCKED closes the line
+                               -- hoisted here once instead of repeating it
+                               in three of the four arms below (WIN1 budget
+                               valve). */
+                            if (rc != CHAT_SPRINTER_KEY_BLOCKED) {
                                 chat_input_mode = 0u;
-                            } else if (rc == CHAT_SPRINTER_KEY_LINK_DOWN) {
-                                chat_input_mode = 0u;
+                            }
+                            if (rc == CHAT_SPRINTER_KEY_LINK_DOWN) {
                                 if (net_send_busy) {
                                     /* Transient BUSY, not a dead link -- see
                                        the RESTORE_RQ send above. CHAT has no
@@ -1256,7 +1279,29 @@ void main(void) {
                                     net_drop("Link down");
                                 }
                             } else if (rc == CHAT_SPRINTER_KEY_BLOCKED) {
-                                spectrum_gui_notify("Waiting for ACK", 0u);
+                                spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
+                            } else if (rc >= CHAT_SPRINTER_KEY_CMD_DRAW) {
+                                /* S9 slash commands: chat_submit already
+                                   closed the line (chat_sprinter.c) -- each
+                                   is a strict alias of the matching hotkey,
+                                   so all the actual policy (busy/pending
+                                   guards, confirmation, retry) lives once,
+                                   in net_control_key, not duplicated here.
+                                   No upper bound needed: CMD_TAKEBACK (6)
+                                   is chat_key's own highest possible return
+                                   value (chat_sprinter.h), and this is the
+                                   last arm of the ladder. "drt"[rc-CMD_DRAW]
+                                   turns the three consecutive CMD_* codes
+                                   (DRAW=4, RESIGN=5, TAKEBACK=6) back into
+                                   their hotkey letters without a three-way
+                                   branch. CHAT_SPRINTER_KEY_CLOSED itself
+                                   needs no branch at all now -- closing the
+                                   line was this whole ladder's only effect
+                                   for that outcome, already done above. */
+                                static const char cmd_keys[4] = "drt";
+
+                                net_control_key((unsigned char)
+                                    cmd_keys[rc - CHAT_SPRINTER_KEY_CMD_DRAW]);
                             }
                         } else if (key == CHAT_OPEN_KEY) {
                             /* ENTER, chat closed: open the line unless
@@ -1272,7 +1317,7 @@ void main(void) {
                             } else if (!netchesszx_session_peer_ready_state) {
                                 spectrum_gui_notify("Waiting for opponent", 0u);
                             } else if (net_chat_blocked()) {
-                                spectrum_gui_notify("Waiting for ACK", 0u);
+                                spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
                             } else {
                                 chat_open();
                                 chat_input_mode = 1u;

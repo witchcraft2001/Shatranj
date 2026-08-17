@@ -18,6 +18,22 @@
 
     EXTERN frame_wait
     EXTERN key_code
+    ; S9 dot-highlight budget valve: saveload_full_redraw (below) is five
+    ; back-to-back calls into the cold page and nothing else -- as C
+    ; (main.c) each one paid a full call-with-args prologue even though
+    ; none take arguments; here each is a plain 3-byte `call` into the
+    ; SAME generated WIN1 thunks (build/sprinter/generated/cold_thunks.asm)
+    ; the C version already used, at whatever address gen_sprinter_cold_
+    ; thunks.py assigns them -- resolved as ordinary EXTERNs, the ordinary
+    ; ORDER this file is linked in (SPRINTER_RESIDENT_C_SRC, Makefile)
+    ; already puts cold_thunks.asm ahead of this file for.
+    EXTERN _render_board_full
+    EXTERN _render_hint_markers_all
+    EXTERN _render_coord_labels
+    EXTERN _render_select_marker
+    EXTERN _render_cursor_marker
+    EXTERN _spectrum_gui_set_board_view
+    EXTERN _spectrum_gui_is_board_flipped
 
     SECTION code_user
 
@@ -52,3 +68,41 @@ _spectrum_key_poll:
     xor a
     ld (key_code),a
     ret
+
+; No arguments. Full post-load repaint (main.c's own former C body, moved
+; here as five plain calls -- see this file's own header on why a shared
+; sequence of thunk calls with no other logic compiles smaller as asm than
+; as a C function with three callers): render_board_full/render_hint_
+; markers_all/render_coord_labels/render_select_marker/render_cursor_
+; marker, in that order. render_hint_markers_all repaints any hint dots a
+; live selection still has (fileui_close/menu_flip_board have no prior
+; selection_clear() to already have cleared them) -- render_board_full
+; alone paints straight through draw_square_into and never touches them.
+    PUBLIC saveload_full_redraw
+saveload_full_redraw:
+    PUBLIC _saveload_full_redraw
+    defc _saveload_full_redraw = saveload_full_redraw
+    call _render_board_full
+    call _render_hint_markers_all
+    call _render_coord_labels
+    call _render_select_marker
+    jp _render_cursor_marker
+
+; No arguments. Flips the board view and repaints (session_sprinter.c's
+; handle_menu_action calls this by its C name) -- same budget-valve
+; reasoning as saveload_full_redraw just above, and shares its own
+; repaint tail by falling straight into it. spectrum_gui_is_board_flipped
+; returns uint8_t in L (this port's confirmed asm-entry return register);
+; spectrum_gui_set_board_view takes uint8_t in L too (__z88dk_fastcall) --
+; negating L in place (xor 1, cheaper than a real "not" since the value
+; is always 0/1) needs no register shuffling between the two calls.
+    PUBLIC menu_flip_board
+menu_flip_board:
+    PUBLIC _menu_flip_board
+    defc _menu_flip_board = menu_flip_board
+    call _spectrum_gui_is_board_flipped
+    ld a,l
+    xor 1
+    ld l,a
+    call _spectrum_gui_set_board_view
+    jp saveload_full_redraw

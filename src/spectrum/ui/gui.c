@@ -322,12 +322,19 @@ static void toggle_menu_bar(void)
     }
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller on Sprinter (app.c-only, its own ESC/menu-key
+   handling) and not in COLD_THUNK_SYMBOLS -- Sprinter's own menu close
+   path is main.c's handle_menu_action/net_control_key, entirely separate
+   from gui.c's menu_visible model. See spectrum_gui_animate_board_pieces's
+   own comment above for the established pattern. */
 void spectrum_gui_hide_menu(void)
 {
     if (menu_visible) {
         (void)menu_action_key(0u);
     }
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_set_clock(uint8_t hour, uint8_t minute, uint8_t second)
 {
@@ -339,6 +346,12 @@ void spectrum_gui_set_clock(uint8_t hour, uint8_t minute, uint8_t second)
     render_clock_only();
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller on Sprinter (app.c-only) and not in
+   COLD_THUNK_SYMBOLS -- this port's own status-line errors go through
+   spectrum_gui_notify/_persistent instead (session_sprinter.c). See
+   spectrum_gui_animate_board_pieces's own comment above for the
+   established pattern. */
 void spectrum_gui_set_status_error(const char *text) NETCHESSZX_FASTCALL
 {
     char status_line[NETCHESSZX_STATUS_LEFT_TEXT_SIZE + 1u];
@@ -347,6 +360,7 @@ void spectrum_gui_set_status_error(const char *text) NETCHESSZX_FASTCALL
     spectrum_render_status_error(status_line);
     render_clock_only();
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_game_timer_start(void)
 {
@@ -474,6 +488,12 @@ void spectrum_gui_tick(void)
     }
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: neither has a caller on Sprinter (app.c-only --
+   src/sprinter/main.c's own comment on the RESTORE_RS/local_load_game
+   path explains why this port does NOT call spectrum_gui_reset_logs the
+   way app.c does) and neither is in COLD_THUNK_SYMBOLS. See spectrum_gui_
+   animate_board_pieces's own comment above for the established pattern. */
 void spectrum_gui_reset_moves(void)
 {
     memset(move_lines, 0, NETCHESSZX_MOVE_ROWS * NETCHESSZX_MOVE_SLOT_SIZE);
@@ -493,6 +513,7 @@ void spectrum_gui_reset_logs(void)
         spectrum_render_chat(chat_lines);
     }
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_set_input(const char *text) NETCHESSZX_FASTCALL
 {
@@ -502,6 +523,15 @@ void spectrum_gui_set_input(const char *text) NETCHESSZX_FASTCALL
     spectrum_render_input(text);
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve (see spectrum_gui_animate_board_pieces's own comment,
+   above, for the established pattern this follows): neither function has
+   a caller on Sprinter (input_edit_ovl.c's own per-character cursor model
+   is ZX/Next-only -- chat_sprinter.c's own header explains why this port's
+   proportional font uses a different, append-only editing model instead)
+   and neither is in tools/gen_sprinter_cold_thunks.py's COLD_THUNK_
+   SYMBOLS, so both were always dead weight here. gui.h's own prototypes
+   stay unguarded (ZX/Next's app.c needs them). */
 void spectrum_gui_set_input_edit(const char *text, uint8_t len, uint8_t cursor)
 {
     if (about_visible) {
@@ -526,6 +556,7 @@ void spectrum_gui_input_cell(uint8_t pos, char c, uint8_t cursor)
     spec[2] = (char)cursor;
     spectrum_render_input_cell(spec);
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 static uint8_t display_coord(uint8_t coord) NETCHESSZX_FASTCALL
 {
@@ -557,17 +588,31 @@ uint8_t spectrum_gui_is_board_flipped(void)
     return spectrum_gui_board_flipped;
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller on Sprinter (app.c-only -- main.c's own
+   comment ahead of spectrum_gui_set_board_view explains why this port
+   flips via that function instead, not this one) and not in COLD_THUNK_
+   SYMBOLS. See spectrum_gui_animate_board_pieces's own comment above for
+   the established pattern. */
 void spectrum_gui_toggle_board_view(void)
 {
     spectrum_gui_clear_cursor_coords();
     spectrum_gui_board_flipped = (uint8_t)!spectrum_gui_board_flipped;
     spectrum_gui_redraw_board_view();
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: its one caller, spectrum_gui_animate_board_pieces, is
+   already guarded above (see that function's own comment) -- not in
+   COLD_THUNK_SYMBOLS either. board_pieces_visible itself stays a plain
+   resident static; other live readers/writers of it (render_square_from_
+   board, spectrum_gui_hide_board_pieces's guard) are unaffected. */
 void spectrum_gui_set_board_pieces_visible(uint8_t visible) NETCHESSZX_FASTCALL
 {
     board_pieces_visible = (uint8_t)(visible != 0u);
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_clear_cursor_coords(void)
 {
@@ -583,6 +628,12 @@ void spectrum_gui_clear_cursor_coords(void)
     active_coord_valid = 0u;
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: app.c-only (the ABOUT menu tab, gui.h's SPECTRUM_GUI_
+   KEY_MENU_ABOUT) -- this port's menu has no ABOUT tab of its own yet
+   (handle_menu_action, session_sprinter.c) and this function is not in
+   COLD_THUNK_SYMBOLS. See spectrum_gui_animate_board_pieces's own comment
+   above for the established pattern. */
 uint8_t spectrum_gui_show_about(void)
 {
     uint8_t was_menu_visible = menu_visible;
@@ -599,11 +650,17 @@ uint8_t spectrum_gui_show_about(void)
     }
     return 1u;
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller on Sprinter (app.c-only -- app.c is not
+   linked here, D8) and not in COLD_THUNK_SYMBOLS. See spectrum_gui_
+   animate_board_pieces's own comment above for the established pattern. */
 uint8_t spectrum_gui_about_visible(void)
 {
     return about_visible;
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 /* The FILE browser shares the about_visible gate (value 2) so every
    board-area suppression path keeps working unchanged. */
@@ -625,6 +682,13 @@ uint8_t spectrum_gui_fileui_visible(void)
     return (uint8_t)(about_visible == 2u);
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: spectrum_gui_mark_cursor_coords has exactly one caller,
+   spectrum_gui_mark_cursor (below, also guarded); spectrum_gui_hide_board_
+   pieces has exactly one caller, spectrum_gui_animate_board_pieces
+   (already guarded, see its own comment) -- neither reaches Sprinter any
+   other way, and neither is in COLD_THUNK_SYMBOLS. See that same comment
+   for the established pattern. */
 static void spectrum_gui_mark_cursor_coords(uint8_t row, uint8_t col)
 {
     char coord_mark_spec[3];
@@ -657,6 +721,7 @@ void spectrum_gui_hide_board_pieces(void)
     }
     spectrum_gui_redraw_board_squares();
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 static void render_square_from_board(uint8_t row, uint8_t col)
 {
@@ -676,6 +741,13 @@ static void render_square_from_board(uint8_t row, uint8_t col)
     }
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller anywhere (app.c does not call this one
+   either -- only spectrum_gui_redraw_board_squares, the ALL-64-squares
+   sibling just below, which stays unguarded because it IS reachable here,
+   via spectrum_gui_redraw_board_view/_flip_squares, the live FLIP path) and
+   not in COLD_THUNK_SYMBOLS. See spectrum_gui_animate_board_pieces's own
+   comment above for the established pattern. */
 void spectrum_gui_redraw_square(uint8_t row, uint8_t col)
 {
     if (about_visible) {
@@ -683,6 +755,7 @@ void spectrum_gui_redraw_square(uint8_t row, uint8_t col)
     }
     render_square_from_board(row, col);
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_redraw_board_squares(void)
 {
@@ -716,6 +789,14 @@ static void spectrum_gui_redraw_board_flip_squares(void)
     }
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: gui.c's OWN cursor/selection model, unreachable on this
+   port -- main.c's board_cursor_move/board_select_or_move (session_
+   sprinter.c) drive cursor_row/col and selected_row/col directly instead
+   (render_core.asm's own comment on _spectrum_render_square_mark/_with_
+   hint has the full explanation of why this whole model is bypassed
+   here). Not in COLD_THUNK_SYMBOLS. See spectrum_gui_animate_board_
+   pieces's own comment above for the established pattern. */
 void spectrum_gui_mark_cursor(uint8_t row, uint8_t col, uint8_t selected)
 {
     char square_spec[6];
@@ -736,11 +817,24 @@ void spectrum_gui_mark_cursor(uint8_t row, uint8_t col, uint8_t selected)
         spectrum_render_square_mark(square_spec);
     }
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
+/* Sprinter never calls this wrapper: main.c's frame loop reads key_code
+   (the asm key_poll's own latch) directly instead of going through gui.c
+   at all (session_sprinter.c/main.c's own dispatch, not app.c's). The only
+   real caller left is app.c's process_local_key path, which Sprinter does
+   not link (SPRINTER_RESIDENT_C_SRC has no app.c entry) -- confirmed dead
+   here rather than assumed, S9 cold-page overage recon, 2026-08-16.
+   Guarding it drops the wrapper AND makes render_shim.asm's own
+   _spectrum_key_poll backing call unreferenced from this page, but that
+   asm lives on the resident build (SPRINTER_RENDER_SHIM_ASM), a different
+   byte budget than this one -- left alone here. */
+#if !defined(NETCHESSZX_SPRINTER)
 uint8_t spectrum_gui_poll_key(void)
 {
     return spectrum_key_poll();
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 uint8_t spectrum_gui_handle_menu_key(uint8_t key) NETCHESSZX_FASTCALL
 {
@@ -874,6 +968,12 @@ void spectrum_gui_apply_move(const char *move) NETCHESSZX_FASTCALL
     }
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller anywhere, on any platform, at the time this
+   was found (app.c does not call it either -- render_core.asm's own
+   comment above only mentions it in passing) and not in COLD_THUNK_
+   SYMBOLS. See spectrum_gui_animate_board_pieces's own comment above for
+   the established pattern. */
 void spectrum_gui_draw_board(void)
 {
     about_visible = 0u;
@@ -893,6 +993,7 @@ void spectrum_gui_draw_board(void)
     render_game_timer_only();
     spectrum_gui_set_input("");
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 void spectrum_gui_redraw_board_view(void)
 {
@@ -960,6 +1061,10 @@ void spectrum_gui_animate_board_pieces(void)
 }
 #endif /* !NETCHESSZX_SPRINTER */
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller on Sprinter (app.c-only) and not in
+   COLD_THUNK_SYMBOLS. See spectrum_gui_animate_board_pieces's own comment
+   above for the established pattern. */
 void spectrum_gui_draw_status(void)
 {
     render_clock_only();
@@ -971,7 +1076,12 @@ void spectrum_gui_draw_status(void)
         spectrum_render_notice(notice_text);
     }
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller anywhere (app.c-only) and not in
+   COLD_THUNK_SYMBOLS. See spectrum_gui_animate_board_pieces's own comment
+   above for the established pattern. */
 void spectrum_gui_restore_side_panels(void)
 {
     about_visible = 0u;
@@ -980,8 +1090,14 @@ void spectrum_gui_restore_side_panels(void)
     spectrum_render_moves(move_lines);
     spectrum_render_chat(chat_lines);
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve: no caller on Sprinter (app.c-only) and not in
+   COLD_THUNK_SYMBOLS. See spectrum_gui_animate_board_pieces's own comment
+   above for the established pattern. */
 uint8_t spectrum_gui_side_panels_visible(void)
 {
     return side_panels_visible;
 }
+#endif /* !NETCHESSZX_SPRINTER */
