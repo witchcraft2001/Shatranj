@@ -86,20 +86,32 @@ ABOUT_CHUNKS       EQU 8            ; 128 rows per page / 16
 ABOUT_CHUNK_SLOTS  EQU 8            ; 16 rows * 128 bytes / 256 bytes per slot
 ABOUT_PAGE_ROWS    EQU 128          ; rows of the image held in one page
 
-; Caption. Bottom-left of the picture, clear of the artwork's own centred
-; title. X must be even (text_print rejects odd), Y <= 248 (8-row glyph).
+; Caption. Two lines, both pinned to rows the artwork itself never paints:
+; the picture's own title glyphs and their underline decoration end above
+; row 240 everywhere across the full 512px width (checked against the
+; committed about640.png, 2026-08-18 -- the visible dark band below the
+; "Shatranj" wordmark is plain ground, full width, all the way to row 255).
+; Y=248 is the routine's own maximum (8-row glyph, Y<=248), so the two
+; lines sit back to back with no gap between them. X must be even
+; (text_print rejects odd).
 ABOUT_TEXT_X       EQU 72
-ABOUT_TEXT_Y       EQU 240
+ABOUT_TEXT_Y       EQU 240           ; line 1: version
+ABOUT_TEXT_Y2      EQU 248           ; line 2: port credit
 ABOUT_CAPTION_BG   EQU 14           ; reserved black (build_sprinter_about.py)
 ABOUT_CLEAR_ROWS   EQU 64           ; margin rows per blit call (DI budget)
 
 ; LOWRAM_OVERLAY_SCRATCH layout used by this overlay (160 bytes total, and
-; documented as belonging to whichever overlay is loaded). Three staging
+; documented as belonging to whichever overlay is loaded). Four staging
 ; areas, because everything the resident render primitives read must live
 ; outside this overlay's own WIN3 page -- they map VRAM there while running.
-ABOUT_SCRATCH_PAL  EQU 0            ; 48 bytes: the artwork palette
-ABOUT_SCRATCH_TEXT EQU 48           ; 32 bytes: the version caption
-ABOUT_SCRATCH_FILL EQU 80           ; 32 bytes: one row of margin black
+; CREDIT reuses the FILL offset's neighbourhood rather than growing the
+; total: FILL is only read by about_clear_margins, which has already run
+; and returned by the time about_caption stages CREDIT (call order in
+; _about_render_ovl below).
+ABOUT_SCRATCH_PAL    EQU 0          ; 48 bytes: the artwork palette
+ABOUT_SCRATCH_TEXT   EQU 48         ; 32 bytes: the version caption
+ABOUT_SCRATCH_FILL   EQU 80         ; 32 bytes: one row of margin black
+ABOUT_SCRATCH_CREDIT EQU 80         ; 48 bytes: the port-credit line
 ABOUT_TEXT_COLOUR  EQU $EF          ; bg<<4|fg = index 14 on index 15, the
                                      ; two entries build_sprinter_about.py
                                      ; reserves and checks.
@@ -327,12 +339,18 @@ about_blit_image:
 @chunk:    defb 0
 @row_base: defb 0
 
-; Prints the generated version string over the picture. Same staging reason
-; as the palette: text_print's own contract says the string must be in
-; resident RAM, "never the WIN0/WIN3 windows", and it maps VRAM into WIN3
-; itself. The string is parked after the 48 palette bytes in the same
-; scratch region (LOWRAM_OVERLAY_SCRATCH is 160 bytes, so 48 + a short
-; version string fits with room to spare). Clobbers everything.
+; Prints the generated version string, then the fixed port-credit line,
+; over the picture -- two ordinary text_print calls, one per row (see the
+; ABOUT_TEXT_Y/ABOUT_TEXT_Y2 comment above for why those two rows are safe).
+; Same staging reason as the palette: text_print's own contract says the
+; string must be in resident RAM, "never the WIN0/WIN3 windows", and it
+; maps VRAM into WIN3 itself. Neither call yields to interrupts mid-string
+; (unlike .copy_rect/flip_sync's per-row irq_yield_vram): each string is
+; short enough that this is the same one-line cost the version caption
+; alone already paid before the credit line existed, and About repaints
+; once per screen entry, not per frame -- buffers.asm's own irq_yield_vram
+; comment accepts a materially longer DI span (2-3ms) for a chat line that
+; repaints on every keystroke. Clobbers everything.
 about_caption:
     ld hl,sprinter_banner_msg
     ld de,LOWRAM_OVERLAY_SCRATCH_ADDR+ABOUT_SCRATCH_TEXT
@@ -345,4 +363,23 @@ about_caption:
     ld c,ABOUT_TEXT_Y
     ld a,ABOUT_TEXT_COLOUR
     ld hl,(back_base)
+    call text_print
+
+    ld hl,about_credit_msg
+    ld de,LOWRAM_OVERLAY_SCRATCH_ADDR+ABOUT_SCRATCH_CREDIT
+    ld bc,48                    ; generous fixed copy, same reasoning as
+    ldir                         ; above -- about_credit_msg is 38 bytes
+                                 ; including its NUL
+
+    ld de,LOWRAM_OVERLAY_SCRATCH_ADDR+ABOUT_SCRATCH_CREDIT
+    ld ix,ABOUT_TEXT_X
+    ld c,ABOUT_TEXT_Y2
+    ld a,ABOUT_TEXT_COLOUR
+    ld hl,(back_base)
     jp text_print
+
+; Fixed, not VERSION-derived -- CLAUDE.md rule 5 governs the version
+; number only. One line, this port's own credit; not ported to ZX/Next/Qt.
+about_credit_msg:
+    defm "Sprinter PORT by Dmitry Mikhalchenkov"
+    defb 0

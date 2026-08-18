@@ -26,11 +26,14 @@ headless-Chrome technique with two Sprinter-specific differences:
      because Sprinter's mode #82 pixels are visually ~2:1 (width:height),
      so 32 narrow stored columns and 16 taller stored rows depict a square
      source without stretching (port.md section 3.6). Then hard-quantize
-     every pixel to the nearest of ALL 4 piece reference colours jointly
-     (read from assets/sprinter/palette.json, the same source of truth
-     tools/build_sprinter_piece_tiles.py validates against) or full
+     every pixel to the nearest of ALL 4 import quantization targets
+     jointly (read from assets/sprinter/palette.json) or full
      transparency -- no anti-aliasing survives the quantization, per
      port.md's "no dithering, hard threshold" rule (section 4 step A.3).
+     Those 4 colours bound this IMPORT only: the build accepts a much
+     wider palette in the PNGs (tools/build_sprinter_piece_tiles.py's
+     PIECE_ALLOWED_INDICES), which is what an artist repainting them
+     afterwards works to.
 
      Quantizing jointly, not restricted to each side's own body/outline
      pair, matters in practice: a source SVG's interior shading strokes
@@ -305,7 +308,16 @@ def render_svg_square(browser: Path, svg: Path, tmpdir: Path,
     assert last_image is not None  # unreachable, fail() raises
 
 
-PIECE_REF_INDICES = (4, 5, 6, 7)
+# The colours an imported SVG is quantized DOWN to. This is an import
+# baseline, not the rule for finished art: the build's gate
+# (tools/build_sprinter_piece_tiles.py's PIECE_ALLOWED_INDICES) accepts a
+# far wider set, so the artist who picks these PNGs up afterwards may
+# repaint them with any palette entry that is not a precompose background.
+# Kept narrow HERE on purpose -- an automatic quantizer handed the HUD
+# colours would scatter them through the shading of every piece.
+# assets/sprinter/palette.json carries the same list under
+# "piece_import_quantize_indices".
+PIECE_QUANTIZE_INDICES = (4, 5, 6, 7)
 
 
 def reference_colors(palette: dict, side: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
@@ -321,13 +333,15 @@ def reference_colors(palette: dict, side: str) -> tuple[tuple[int, int, int], tu
 
 
 def all_piece_reference_colors(palette: dict) -> list[tuple[int, int, int]]:
-    """All 4 piece reference colours (palette indices 4-7), for JOINT
-    quantization -- port.md section 4 step A.3's actual rule, and
-    tools/build_sprinter_piece_tiles.py's PIECE_REF_INDICES already
-    validates opaque pixels against exactly this set regardless of a
-    piece's side, so no downstream change was needed to support it."""
+    """All 4 import quantization targets (palette indices 4-7), for JOINT
+    quantization -- port.md section 4 step A.3's actual rule. The build's
+    validator accepts them regardless of a piece's side (and a good deal
+    more besides -- see the comment on PIECE_QUANTIZE_INDICES), so no
+    downstream change was needed to support quantizing jointly."""
     by_index = {e["index"]: e["rgb"] for e in palette["base"]}
-    return [gsp._parse_rgb(by_index[i], "piece reference") for i in PIECE_REF_INDICES]
+    return [
+        gsp._parse_rgb(by_index[i], "piece reference") for i in PIECE_QUANTIZE_INDICES
+    ]
 
 
 def process_piece(browser: Path, svg: Path, side: str, palette: dict, tmpdir: Path) -> Image.Image:

@@ -47,7 +47,7 @@ python3 "$repo_root/tools/gen_sprinter_palette.py" \
   --inc-out "$generated_dir/palette_base.inc" \
   --theme-bin-out "$build_dir/theme_table.bin" >/dev/null
 
-# scene_s4.asm's banner. Same generator the Makefile's
+# preload_loader.asm's boot banner. Same generator the Makefile's
 # $(SPRINTER_VERSION_INC) rule uses -- the template must not exist twice.
 python3 "$repo_root/tools/gen_sprinter_version.py" \
   --version-file "$repo_root/VERSION" \

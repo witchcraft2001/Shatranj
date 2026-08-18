@@ -42,6 +42,8 @@
 ; --- recorder ids ----------------------------------------------------------
 ; One per paint the rebuild must reach. Numbered in the order about_restore_
 ; screen issues them, so a log dump reads as a sequence at a glance.
+ID_FADE_OUT     EQU 18      ; fade_out                   (blackout, first)
+ID_FADE_IN      EQU 19      ; fade_in                    (reveal, last)
 ID_CLEAR        EQU 1       ; video_clear_both_buffers   (the pixel clear)
 ID_VINIT        EQU 2       ; video_init                 (the theme palette)
 ID_BOARD        EQU 3       ; spectrum_gui_restore_board_area
@@ -104,69 +106,78 @@ start:
 
         call    t_begin                 ; re-arm the harness cells
 
-        ; --- 1/2. The clear comes FIRST, and the palette straight after it.
-        ; Round 1's defect is exactly "no ID_CLEAR at all"; the order matters
-        ; too, since swapping the two displays the artwork through the theme
-        ; palette for a frame (colour noise, not black).
+        ; --- 1. The blackout comes before anything else. Everything after it
+        ; -- the pixel clear and a dozen repaints -- is meant to be invisible;
+        ; a rebuild step that escapes ahead of it is a visible artifact, which
+        ; is what the third round reported.
         ld      a,(LOG+0)
-        cp      ID_CLEAR
+        cp      ID_FADE_OUT
         ld      a,1
         call    t_expect_z
+
+        ; --- 2/3. Then the clear, then the palette. Round 1's defect is
+        ; exactly "no ID_CLEAR at all"; the clear/palette order matters too,
+        ; since swapping those two runs the artwork through the theme palette
+        ; for a frame (colour noise rather than black).
         ld      a,(LOG+1)
-        cp      ID_VINIT
+        cp      ID_CLEAR
         ld      a,2
         call    t_expect_z
+        ld      a,(LOG+2)
+        cp      ID_VINIT
+        ld      a,3
+        call    t_expect_z
 
-        ; --- 3..19. Every paint in the contract happened. This is round 2's
+        ; --- 4..18. Every paint in the contract happened. This is round 2's
         ; defect: a rebuild that clears the screen and then leaves five fields
         ; blank is worse than one that leaves the artwork up.
         ld      a,ID_BOARD
-        ld      b,3
-        call    require_id
-        ld      a,ID_COORDS
         ld      b,4
         call    require_id
-        ld      a,ID_BANNER
+        ld      a,ID_COORDS
         ld      b,5
         call    require_id
-        ld      a,ID_MENUBAR
+        ld      a,ID_BANNER
         ld      b,6
         call    require_id
-        ld      a,ID_STATUS_TEXT
+        ld      a,ID_MENUBAR
         ld      b,7
         call    require_id
-        ld      a,ID_INPUT
+        ld      a,ID_STATUS_TEXT
         ld      b,8
         call    require_id
-        ld      a,ID_PANEL
+        ld      a,ID_INPUT
         ld      b,9
         call    require_id
-        ld      a,ID_MOVES
+        ld      a,ID_PANEL
         ld      b,10
         call    require_id
-        ld      a,ID_CHAT
+        ld      a,ID_MOVES
         ld      b,11
         call    require_id
-        ld      a,ID_CLOCK
+        ld      a,ID_CHAT
         ld      b,12
         call    require_id
-        ld      a,ID_TIMER
+        ld      a,ID_CLOCK
         ld      b,13
         call    require_id
-        ld      a,ID_CONN
+        ld      a,ID_TIMER
         ld      b,14
         call    require_id
-        ld      a,ID_NOTICE
+        ld      a,ID_CONN
         ld      b,15
         call    require_id
-        ld      a,ID_STATUS_LIVE
+        ld      a,ID_NOTICE
         ld      b,16
         call    require_id
-        ld      a,ID_TURN
+        ld      a,ID_STATUS_LIVE
         ld      b,17
         call    require_id
+        ld      a,ID_TURN
+        ld      b,18
+        call    require_id
 
-        ; --- 20. render_status_text paints the boot-time "NO SESSION"
+        ; --- 19. render_status_text paints the boot-time "NO SESSION"
         ; placeholder into the very cell the live status goes in, so it has to
         ; come FIRST or a networked game comes back from About claiming it has
         ; no session.
@@ -178,13 +189,26 @@ start:
         call    find_id
         ld      a,(pos_a)
         cp      b                       ; placeholder position < live position
-        ld      a,20
+        ld      a,19
         call    t_expect_c
+
+        ; --- 20. The reveal is LAST. A repaint left after it is a repaint the
+        ; player watches land on an already-visible screen -- the same class
+        ; of artifact the fade exists to remove.
+        ld      hl,LOG-1
+        ld      a,(log_count)
+        ld      e,a
+        ld      d,0
+        add     hl,de
+        ld      a,(hl)
+        cp      ID_FADE_IN
+        ld      a,20
+        call    t_expect_z
 
         ; --- 21. The modal gate is down afterwards. render_clock_only and
         ; render_game_timer_only return early while it is up, so leaving it
         ; set would silently freeze the clock and the GAME/TURN line for the
-        ; rest of the session -- and assertions 12/13 above only prove the
+        ; rest of the session -- and assertions 13/14 above only prove the
         ; gate was down BY the time the rebuild reached them.
         ld      a,(_about_visible)
         or      a
@@ -268,6 +292,8 @@ patch_all:
         ret
         ENDM
 
+rec_fade_out:       RECORDER ID_FADE_OUT
+rec_fade_in:        RECORDER ID_FADE_IN
 rec_clear:          RECORDER ID_CLEAR
 rec_vinit:          RECORDER ID_VINIT
 rec_board:          RECORDER ID_BOARD
@@ -287,6 +313,11 @@ rec_status_live:    RECORDER ID_STATUS_LIVE
 rec_turn:           RECORDER ID_TURN
 
 patch_table:
+        ; The two fades must be recorded, not merely observed: they are the
+        ; only entries here that would otherwise RUN, and fade_in's ramp
+        ; drives frame_wait, a WIN2 address this harness never loads.
+        dw      _fade_out,                        rec_fade_out
+        dw      _fade_in,                         rec_fade_in
         dw      video_clear_both_buffers,         rec_clear
         dw      _video_init,                      rec_vinit
         dw      _spectrum_gui_restore_board_area, rec_board

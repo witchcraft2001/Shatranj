@@ -3,17 +3,27 @@
 
 assets/sprinter/palette.json is the single source of truth for the 16-entry
 mode #82 palette (port.md section 3.5): the base RGB8 triples for indices
-0-15 and the theme table that overrides indices 2/3 (light/dark board
-square) for an instant, tile-traffic-free theme switch. This tool renders
-that JSON into two independent outputs, keeping every consumer -- the boot
-palette, the theme table, the piece-tile packer's reference RGBs, and the
-piece rasterizer's quantization targets -- reading the same numbers:
+0-15, the theme table that overrides indices 2/3 (light/dark board square)
+and the per-set piece palettes that override 4-7 -- both for an instant,
+tile-traffic-free switch, since the tiles store indices rather than
+colours. This tool renders that JSON into independent outputs, keeping
+every consumer -- the boot palette, the theme table, the piece-tile
+packer's per-set colours, and the piece rasterizer's quantization targets
+-- reading the same numbers:
 
   - asm/sprinter/generated/palette_base.inc: the 16x3-byte palette_rgb
     table asm/sprinter/video_s1.asm INCLUDEs (replacing its old ad-hoc EGA
     ramp).
+  - asm/sprinter/generated/piece_set_palettes.inc (render_piece_sets_inc):
+    the per-set 4-colour records. Written on demand via
+    --piece-sets-inc-out; its Z80 consumer arrives with the set-selection
+    UI (port.md stage S14), so the build does not generate it yet.
   - a binary theme-table blob (build_theme_blob) packed into the assets
     page at slot 27 by tools/make_sprinter_assets_page.py's --theme-bin.
+    NOTE: no shipped code reads that blob. It was S4's scene demo's theme
+    source; the resident's own themes are asm/sprinter/video.asm's
+    hand-written theme_squares_rgb, which this file's "themes" mirror
+    verbatim under a test that parses the .asm back out.
     Format v1: byte 0 = format (1), byte 1 = theme count, byte 2 = entries
     per theme E, byte 3 = reserved (0), then per theme: 8-byte ASCII
     NUL-padded name, then E x (palette index, R, G, B).
@@ -41,6 +51,12 @@ from pathlib import Path
 
 REQUIRED_BASE_COUNT = 16
 THEMEABLE_INDICES = {2, 3, 8, 9, 10}
+# The four entries a piece SET owns. They are to a set what 2/3 are to a
+# theme: the tiles store indices, so switching sets re-writes four palette
+# registers and repaints nothing (port.md section 3.5).
+PIECE_SET_INDICES = frozenset({4, 5, 6, 7})
+MIN_PIECE_SET_COUNT = 1
+MAX_PIECE_SET_COUNT = 8
 # Blob field width vs. usable characters: the last byte must stay NUL so
 # the field is a valid ASCIIZ string where the Z80 prints it (see the
 # module docstring).
@@ -81,7 +97,14 @@ def parse_palette(raw: dict) -> dict:
         }
         for theme in raw["themes"]
     ]
-    return {"base": base, "themes": themes}
+    piece_sets = [
+        {
+            "name": entry["name"],
+            "entries": {str(k): v for k, v in entry["entries"].items()},
+        }
+        for entry in raw.get("piece_sets", [])
+    ]
+    return {"base": base, "themes": themes, "piece_sets": piece_sets}
 
 
 def validate_palette(palette: dict) -> list[str]:
@@ -203,6 +226,8 @@ def validate_palette(palette: dict) -> list[str]:
             f"(saw: {[sorted(s) for s in theme_key_sets]})"
         )
 
+    errors.extend(_validate_piece_sets(palette, base_rgb, theme_rgb))
+
     if themes and not errors:
         first_rgb = theme_rgb[0]
         for idx, rgb in first_rgb.items():
@@ -211,6 +236,101 @@ def validate_palette(palette: dict) -> list[str]:
                     f"theme 0 ({themes[0]['name']!r}) index {idx} does not match "
                     "the base palette -- theme 0 must equal the boot palette"
                 )
+
+    return errors
+
+
+def _validate_piece_sets(palette: dict, base_rgb: dict, theme_rgb: list) -> list[str]:
+    """Per-set piece palettes: each set re-defines entries 4-7 (port.md
+    section 3.5).
+
+    The collision rule is the interesting part. A set's four colours have
+    to differ from each other AND from every other colour that can share
+    the screen with them -- 0, 1, 8-15, and the square colours of EVERY
+    theme, not just the current one. Two reasons, and the first is the one
+    that bites silently: every packer inverts the palette into an
+    {rgb: index} map, so a duplicated value makes one index unreachable
+    and the artist's pixel is quietly encoded as the other entry. The
+    second is simply what it would look like -- a piece the exact colour
+    of the board or of a marker."""
+    errors: list[str] = []
+    piece_sets = palette["piece_sets"]
+
+    if not (MIN_PIECE_SET_COUNT <= len(piece_sets) <= MAX_PIECE_SET_COUNT):
+        errors.append(
+            f"piece set count {len(piece_sets)} out of range "
+            f"{MIN_PIECE_SET_COUNT}..{MAX_PIECE_SET_COUNT}"
+        )
+
+    # Everything a piece colour must stay clear of, as {rgb: description}.
+    neighbours: dict[tuple[int, int, int], str] = {}
+    for idx, rgb in sorted(base_rgb.items()):
+        if idx not in PIECE_SET_INDICES:
+            neighbours.setdefault(rgb, f"base index {idx}")
+    for theme, rgb_by_index in zip(palette["themes"], theme_rgb):
+        for idx, rgb in sorted(rgb_by_index.items()):
+            neighbours.setdefault(rgb, f"theme {theme['name']!r} index {idx}")
+
+    for set_index, piece_set in enumerate(piece_sets):
+        name = piece_set["name"]
+        where = f"piece set {name!r}"
+        if not isinstance(name, str) or not name:
+            errors.append("piece set name must be a non-empty string")
+            continue
+        try:
+            name.encode("ascii")
+        except UnicodeEncodeError:
+            errors.append(f"{where}: name is not pure ASCII")
+
+        keys: set[int] = set()
+        rgb_by_index: dict[int, tuple[int, int, int]] = {}
+        for key_str, rgb_str in piece_set["entries"].items():
+            try:
+                idx = int(key_str)
+            except ValueError:
+                errors.append(f"{where}: non-integer index key {key_str!r}")
+                continue
+            keys.add(idx)
+            try:
+                rgb_by_index[idx] = _parse_rgb(rgb_str, f"{where} index {idx}")
+            except ValueError as exc:
+                errors.append(str(exc))
+        if keys != set(PIECE_SET_INDICES):
+            errors.append(
+                f"{where}: overrides indices {sorted(keys)}, must override exactly "
+                f"{sorted(PIECE_SET_INDICES)} (a set owns the piece colours and "
+                "nothing else)"
+            )
+
+        owners: dict[tuple[int, int, int], list[int]] = {}
+        for idx, rgb in sorted(rgb_by_index.items()):
+            owners.setdefault(rgb, []).append(idx)
+        for rgb, sharing in sorted(owners.items()):
+            if len(sharing) > 1:
+                errors.append(
+                    f"{where}: #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X} is used by "
+                    f"index(es) {', '.join(str(i) for i in sharing)} -- a set's four "
+                    "colours must differ from each other"
+                )
+            if rgb in neighbours:
+                errors.append(
+                    f"{where}: #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X} (index "
+                    f"{sharing[0]}) collides with {neighbours[rgb]} -- a piece colour "
+                    "may not repeat a board, marker or UI colour (the packers invert "
+                    "the palette into an {rgb: index} map, so one of the two indices "
+                    "would become unreachable)"
+                )
+
+        # Set 0 is what boots, so it has to be the base palette itself --
+        # same argument as theme 0, and without it the very first frame
+        # would draw set 0's tiles through somebody else's colours.
+        if set_index == 0:
+            for idx, rgb in sorted(rgb_by_index.items()):
+                if idx in base_rgb and base_rgb[idx] != rgb:
+                    errors.append(
+                        f"{where}: index {idx} does not match the base palette -- "
+                        "piece set 0 must equal the boot palette"
+                    )
 
     return errors
 
@@ -234,6 +354,42 @@ def render_inc(palette: dict) -> str:
     ]
     for idx, name, (r, g, b) in base_rows(palette):
         lines.append(f"        DB 0x{r:02X},0x{g:02X},0x{b:02X}        ; {idx} {name}")
+    lines.append("")
+    lines.append("        ENDIF")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_piece_sets_inc(palette: dict) -> str:
+    """The per-set piece palettes as a z88dk-z80asm include.
+
+    Shaped like palette_base.inc rather than like the theme BLOB on
+    purpose: the theme blob went into the assets page for S4's scene demo
+    and no shipped code ever read it, while the boot palette's .inc is
+    read by video.asm every day. The consumer (a piece_set_apply routine
+    next to theme_set_squares) lands with the set-selection UI -- port.md
+    section 3.5 and stage S14; this generator is written first so the data
+    format is settled and gated before the Z80 side exists, the same split
+    build_sprinter_about.py had before S9."""
+    guard = "SPRINTER_PIECE_SET_PALETTES_INC"
+    piece_sets = palette["piece_sets"]
+    lines = [
+        f"; {GENERATED_BANNER}",
+        "",
+        f"        IFNDEF {guard}",
+        f"        DEFINE {guard}",
+        "",
+        f"PIECE_SET_COUNT EQU {len(piece_sets)}",
+        "",
+        "; One record per set, in selected_next_sets.json order: entries 4,5,6,7",
+        "; as R,G,B triples -- 12 bytes per set, copied into palette_rgb+4*3.",
+        "piece_set_rgb:",
+    ]
+    for set_index, piece_set in enumerate(piece_sets):
+        lines.append(f"        ; {set_index} {piece_set['name']}")
+        for idx in sorted(PIECE_SET_INDICES):
+            r, g, b = _parse_rgb(piece_set["entries"][str(idx)], "piece set")
+            lines.append(f"        DB 0x{r:02X},0x{g:02X},0x{b:02X}        ; {idx}")
     lines.append("")
     lines.append("        ENDIF")
     lines.append("")
@@ -337,6 +493,12 @@ def _clean_fixture() -> dict:
             {"name": "BROWN", "entries": {"2": "#F0D9B5", "3": "#B58863"}},
             {"name": "BLUE", "entries": {"2": "#DEE3E6", "3": "#8CA2AD"}},
         ],
+        "piece_sets": [
+            {"name": "setzero", "entries": {"4": "#F8F8F0", "5": "#3A3A3A",
+                                             "6": "#2E2E2E", "7": "#D8D8D0"}},
+            {"name": "setone", "entries": {"4": "#EFD6A8", "5": "#4B2E14",
+                                            "6": "#3B2410", "7": "#C9A46B"}},
+        ],
     }
     return parse_palette(raw)
 
@@ -355,6 +517,17 @@ def self_test() -> None:
         raise SystemExit("[ERR] palette self-test: .inc rendering is not deterministic")
     if "palette_rgb:" not in inc1 or "; 14 accent" not in inc1:
         raise SystemExit("[ERR] palette self-test: .inc missing expected content")
+
+    sets1 = render_piece_sets_inc(clean)
+    sets2 = render_piece_sets_inc(_clean_fixture())
+    if sets1 != sets2:
+        raise SystemExit(
+            "[ERR] palette self-test: piece-set .inc rendering is not deterministic"
+        )
+    if "PIECE_SET_COUNT EQU 2" not in sets1 or "piece_set_rgb:" not in sets1:
+        raise SystemExit(
+            "[ERR] palette self-test: piece-set .inc missing expected content"
+        )
 
     blob1 = build_theme_blob(clean)
     blob2 = build_theme_blob(_clean_fixture())
@@ -441,6 +614,36 @@ def self_test() -> None:
             lambda f: f["themes"][0]["entries"].__setitem__("2", "#123456"),
             "must equal the boot palette",
         ),
+        "no piece sets": (
+            lambda f: f["piece_sets"].clear(),
+            "piece set count",
+        ),
+        "piece set overrides the wrong indices": (
+            lambda f: f["piece_sets"][1]["entries"].__setitem__("8", "#123456"),
+            "must override exactly",
+        ),
+        "piece set 0 mismatches base": (
+            lambda f: f["piece_sets"][0]["entries"].__setitem__("4", "#123456"),
+            "piece set 0 must equal the boot palette",
+        ),
+        "piece set repeats a colour inside itself": (
+            lambda f: f["piece_sets"][1]["entries"].__setitem__(
+                "5", f["piece_sets"][1]["entries"]["4"]
+            ),
+            "must differ from each other",
+        ),
+        "piece colour collides with a marker colour": (
+            lambda f: f["piece_sets"][1]["entries"].__setitem__("4", "#FFD24A"),
+            "collides with base index 8",
+        ),
+        "piece colour collides with a theme's square colour": (
+            lambda f: f["piece_sets"][1]["entries"].__setitem__("4", "#8CA2AD"),
+            "collides with theme 'BLUE' index 3",
+        ),
+        "non-ascii piece set name": (
+            lambda f: f["piece_sets"][1].__setitem__("name", "набор"),
+            "not pure ASCII",
+        ),
     }
     for label, (mutate, needle) in cases.items():
         fixture = broken(mutate)
@@ -474,6 +677,10 @@ def main() -> int:
                         default=Path("assets/sprinter/palette.json"))
     parser.add_argument("--inc-out", type=Path)
     parser.add_argument("--theme-bin-out", type=Path)
+    parser.add_argument("--piece-sets-inc-out", type=Path,
+                        help="per-set piece palettes as a z80asm include "
+                             "(consumer lands with stage S14; see the module "
+                             "docstring)")
     parser.add_argument("--check", action="store_true",
                         help="validate only, do not write output files")
     parser.add_argument("--self-test", action="store_true")
@@ -507,6 +714,12 @@ def main() -> int:
     args.theme_bin_out.write_bytes(build_theme_blob(palette))
     print(f"[OK] {args.inc_out}")
     print(f"[OK] {args.theme_bin_out}")
+    if args.piece_sets_inc_out:
+        args.piece_sets_inc_out.parent.mkdir(parents=True, exist_ok=True)
+        args.piece_sets_inc_out.write_text(
+            render_piece_sets_inc(palette), encoding="ascii"
+        )
+        print(f"[OK] {args.piece_sets_inc_out}")
     return 0
 
 

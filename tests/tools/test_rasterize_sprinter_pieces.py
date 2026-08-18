@@ -9,6 +9,7 @@ S4 plan calls for, no headless Chrome required.
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 import unittest.mock
@@ -202,6 +203,24 @@ class ReferenceColorsTests(unittest.TestCase):
         self.assertEqual(
             rsp.all_piece_reference_colors(palette),
             [w_body, w_outline, b_body, b_outline],
+        )
+
+
+class QuantizeTargetsTests(unittest.TestCase):
+    def test_palette_json_lists_the_same_import_targets(self) -> None:
+        raw = json.loads(
+            (Path(__file__).resolve().parent.parent.parent
+             / "assets/sprinter/palette.json").read_text(encoding="utf-8")
+        )
+        # The import baseline is deliberately narrower than what the build
+        # accepts in a finished PNG (build_sprinter_piece_tiles.py's
+        # PIECE_ALLOWED_INDICES) -- see that constant's comment.
+        self.assertEqual(
+            raw["piece_import_quantize_indices"], list(rsp.PIECE_QUANTIZE_INDICES)
+        )
+        self.assertTrue(
+            set(raw["piece_import_quantize_indices"])
+            < set(raw["piece_allowed_indices"])
         )
 
 

@@ -39,7 +39,15 @@ LOADER_START:
         in      a,(WIN3_PORT)
         ld      (l_saved_win3),a
 
-        ld      hl,l_banner
+        ; Two calls rather than one string: sprinter_banner_msg is generated
+        ; from VERSION (rule 5 -- no version literal of our own), and
+        ; sjasmplus has no way to splice a label's own bytes into a DB
+        ; literal at assemble time, so the ": loading..." tail is a second,
+        ; ordinary string printed right after it.
+        ld      hl,sprinter_banner_msg
+        ld      c,DSS_PCHARS
+        rst     RST_DSS
+        ld      hl,l_banner_tail
         ld      c,DSS_PCHARS
         rst     RST_DSS
 
@@ -251,7 +259,22 @@ l_fail:
         ld      c,DSS_EXIT
         rst     RST_DSS
 
-l_banner: DB "Shatranj Sprinter S1 stand: loading...",13,10,0
+; sprinter_banner_msg (gen_sprinter_version.py, CLAUDE.md rule 5: VERSION is
+; the only source of the version string). INCLUDEd HERE, not up in the file
+; header with dss.inc/fixed_layout.inc: those two are constants only and
+; emit no bytes, but this one does (a labeled DB), and everything in this
+; file that emits bytes must come after "ORG LD_ADDR" above -- a first
+; attempt put it before that ORG, which put sprinter_banner_msg at address
+; 0 instead of inside the loader's own #8100 blob. sjasmplus's --raw output
+; then silently dropped the unaddressed gap ("bytes skipped", not padded),
+; shifting every byte emitted after it forward by the string's own length --
+; every absolute address the assembler computed for the rest of the loader
+; was wrong by that amount. Reported as garbled banner text (the pointer to
+; the string was wrong) immediately followed by a hang (the very next branch
+; target was wrong too), human tester, 2026-08-18.
+        INCLUDE "sprinter_version.inc"
+
+l_banner_tail: DB ": loading...",13,10,0
 l_fail_msg: DB 13,10,"Sprinter S1 loader: boot failed.",13,10,0
 l_hdr_magic: DB "SHS1"
 

@@ -21,67 +21,106 @@ STRIPE_COUNT EQU 16             ; palette entry count, not a stand artifact
 ; body/outline, 8-13 HUD, 14 accent, 15 a plain colour.
         INCLUDE "palette_base.inc"
 
-; Writes one palette entry (A=index 0..15, HL->3 RGB8 bytes) to both
-; palette banks -- render.c repaints just the theme-surface indices (2/3)
-; on a theme switch without re-touching the other 14. Caller must already
-; have WIN3 mapped to VRAM. Clobbers AF, DE, HL (HL left one past the 3
-; source bytes, matching write_palette's own advance).
-write_palette_entry:
-        out     (PORT_Y),a
+; --- screen fade (S9 follow-up, 2026-08-18) --------------------------------
+;
+; Every screen switch on this port is a visible rebuild: About covers all
+; 640x256, so dismissing it pixel-clears the screen and repaints a dozen
+; elements, and a tester watching MAME sees the clear and each repaint land
+; (human tester, 2026-08-18). Boot had the same problem in a cruder form --
+; the S5 overlay-probe diagnostic flashed the whole background green before
+; the real screen appeared.
+;
+; The fix costs no pixel work at all. This hardware keeps its 16 palette
+; entries as 24-bit RGB in VRAM, so scaling all 16 toward black and back is
+; a 96-byte rewrite that dims or reveals whatever is already in the
+; framebuffer. Fade to black, rebuild the screen unseen, fade back up.
+;
+; fade_level is the master: 0 = black, FADE_MAX = the table's own colours.
+; EVERY palette write goes through it (write_palette_entry below), so a
+; repaint that happens mid-fade lands at the current level instead of
+; flashing at full brightness -- which is exactly what makes the rebuild
+; invisible without any caller having to know a fade is in progress.
+FADE_MAX EQU 16
+
+fade_level: DB 0                ; boot starts black; main() fades in once
+                                 ; the whole first screen has painted
+; The table the live screen's colours come from, so a fade needs no
+; argument and no caller has to keep one alive across the ramp. Set by
+; palette_apply_from below; palette_rgb until the first call.
+pal_src:    DW palette_rgb
+
+; A = one RGB component, scaled to fade_level (A*level/FADE_MAX). Shift-add
+; rather than a lookup table: 48 of these run per fade step, all OUTSIDE the
+; palette write's DI window, so ~380 T-states apiece costs nothing that
+; matters and a 4 KiB table would not fit in this pool anyway.
+; Clobbers AF only -- write_palette_entry calls this with its source and
+; destination pointers live.
+fade_scale:
         push    hl
-        ld      de,#C3E0
-        ld      a,(hl)
-        ld      (de),a
-        inc     hl
-        inc     de
-        ld      a,(hl)
-        ld      (de),a
-        inc     hl
-        inc     de
-        ld      a,(hl)
-        ld      (de),a
-        inc     de
-        xor     a               ; 4th entry byte: the proven palette.inc
-        ld      (de),a          ; donor zeroes it unconditionally per bank
-        pop     hl
-        push    hl
-        ld      de,#C3E4
-        ld      a,(hl)
-        ld      (de),a
-        inc     hl
-        inc     de
-        ld      a,(hl)
-        ld      (de),a
-        inc     hl
-        inc     de
-        ld      a,(hl)
-        ld      (de),a
-        inc     de
-        xor     a
-        ld      (de),a
-        pop     hl
-        ld      de,3
+        push    de
+        push    bc
+        ld      e,a
+        ld      d,0                     ; DE = component
+        ld      a,(fade_level)
+        ld      c,a                     ; C = level, 0..16 (5 bits)
+        ld      hl,0
+        ld      b,5
+.bit:
+        srl     c
+        jr      nc,.no_add
         add     hl,de
+.no_add:
+        ex      de,hl
+        add     hl,hl
+        ex      de,hl
+        djnz    .bit
+        ; HL = component*level, at most 4080. Dividing by FADE_MAX (16) is
+        ; four right shifts, which is four LEFT shifts and then reading H.
+        add     hl,hl
+        add     hl,hl
+        add     hl,hl
+        add     hl,hl
+        ld      a,h
+        pop     bc
+        pop     de
+        pop     hl
         ret
 
-; Writes all 16 entries to both palette banks (R10: SetVMod for screen 1
-; then 0 is the loader's job; the palette itself must still land in both
-; banks or one screen shows stale colours).
+; Writes one palette entry (A=index 0..15, HL->3 RGB8 bytes) to both
+; palette banks, scaled to the current fade level. Caller must already have
+; WIN3 mapped to the palette page. Clobbers AF, BC, DE, HL (HL left one past
+; the 3 source bytes, matching palette_apply_raw's own advance).
 ;
-; HL -> 16 x 3 RGB8 bytes. Passed in rather than hardwired to palette_rgb
-; since the S9 About screen: that screen is a full-screen takeover and owns
-; all 16 entries while it is up, so it swaps in its OWN table (packed by
-; tools/build_sprinter_about.py in exactly this layout) and hands back to
-; video_init below on exit. Caller must already have WIN3 mapped to VRAM,
-; same precondition write_palette_entry documents. Clobbers AF, BC, DE, HL.
-write_palette:
-        ld      b,0
-.next:  ld      a,b
-        call    write_palette_entry
-        inc     b
-        ld      a,b
-        cp      STRIPE_COUNT
-        jr      c,.next
+; Each component is scaled ONCE and stored to both banks, rather than the
+; source being re-read per bank the way this used to do it: the scale is the
+; expensive part now, and doing it twice would double the DI window for
+; nothing.
+write_palette_entry:
+        out     (PORT_Y),a
+        ld      de,#C3E0
+        ld      b,3
+.component:
+        ld      a,(hl)
+        inc     hl
+        call    fade_scale
+        ld      (de),a                  ; bank 0
+        ld      c,a
+        ld      a,e
+        add     a,4
+        ld      e,a
+        ld      a,c
+        ld      (de),a                  ; bank 1
+        ld      a,e
+        sub     3                       ; back one bank, on to the next
+        ld      e,a                      ; component
+        djnz    .component
+        xor     a                       ; 4th entry byte: the proven
+        ld      (de),a                  ; palette.inc donor zeroes it
+        ld      a,e                     ; unconditionally, per bank
+        add     a,4
+        ld      e,a
+        xor     a
+        ld      (de),a
         ret
 
 ; Sets up the palette in both VRAM buffers. Call once at boot (from C's
@@ -101,95 +140,112 @@ video_init:
 ; cannot be mapped while the palette registers are, which is why this has
 ; to be a resident entry point and not overlay-local code. The table must
 ; therefore sit somewhere still addressable with VRAM in WIN3 -- the
-; About overlay stages its copy into LOWRAM_OVERLAY_SCRATCH (WIN2) first.
-; Clobbers AF,BC,DE,HL.
+; About overlay stages its copy into LOWRAM_OVERLAY_SCRATCH (WIN2) first,
+; and it must STAY there while that screen is up, since every fade step
+; re-reads it from here. Clobbers AF,BC,DE,HL.
 palette_apply_from:
-        di
-        in      a,(WIN3_PORT)
-        ld      (.saved_win3),a
-        ld      a,#50
-        out     (WIN3_PORT),a
+        ld      (pal_src),hl
+        ; falls through
 
-        call    write_palette
-
-        ld      a,#C0
-        out     (PORT_Y),a
-        ld      a,(.saved_win3)
-        out     (WIN3_PORT),a
-        ei
-        ret
-.saved_win3: DB 0
-
-; C-callable (single uint8_t arg at SP+2): z88dk's -clib=default convention
-; (Small-C-derived, the only one available for +pps) promotes every scalar
-; argument to a full 16-bit stack slot regardless of C type -- see
-; overlay_loader_sprinter.asm's file banner for the verified detail and the
-; bug that shipped from assuming otherwise. A single-argument call is the
-; one case where that still lands the real value at a plain SP+2: there is
-; no earlier argument's padding byte in the way.
+; No arguments. Re-applies whatever table palette_apply_from last saw, at
+; the current fade level -- one fade step. Clobbers AF,BC,DE,HL.
+; One interrupt is admitted between entries. Scaling three components costs
+; ~1100 T-states, so all sixteen under a single DI span would run about 1.6ms
+; -- right at the ~2ms mark where DSS's three-byte keyboard FIFO starts
+; dropping scancodes (gfx_core.asm's irq_yield_vram has the full account),
+; and this now runs sixteen times per fade instead of once at boot. Splitting
+; costs atomicity, which nothing here needs: a fade step moves every entry by
+; one sixteenth, and the two entries a theme switch moves are
+; indistinguishable a frame apart.
 ;
-; Repaints the background palette entry (index 0) with the existing
-; hud_success/hud_error theme colours instead of new RGB bytes, so a human
-; watching MAME sees an immediate, unambiguous
-; result without this port inventing its own colour meaning. S5 substep 2
-; diagnostic only (main.c's one real ovl_exec(14u,...) call) -- substep 3's
-; render.c replaces this with real board/panel painting via text_print/
-; gfx_draw_tile, not this palette trick. Reuses video_init's own WIN3
-; save/map(#50)/restore dance verbatim: write_palette_entry itself assumes
-; WIN3 is already VRAM-mapped by the caller. Clobbers AF,BC,DE,HL.
-ovl_test_signal:
-        ld      hl,2
-        add     hl,sp
-        ld      a,(hl)
-        or      a
-        ld      hl,palette_rgb + 11*3   ; hud_error (red) -- pass=0
-        jr      z,.picked
-        ld      hl,palette_rgb + 12*3   ; hud_success (green) -- pass<>0
-.picked:
-        push    hl
+; The palette page is re-selected at the top of EVERY entry rather than once
+; up front, for the same reason irq_yield_vram re-maps VRAM unconditionally:
+; DSS is documented to remap page 3 and not restore it, so nothing mapped
+; across an EI can be assumed still mapped after it. The CALLER's WIN3 is
+; saved once and restored once, at the ends -- it stays unmapped for the
+; whole run, which is safe because nothing that executes in the gaps lives
+; there (the IM2 stub and DSS's own handler are both low memory).
+palette_refresh:
+        ld      hl,(pal_src)
         di
         in      a,(WIN3_PORT)
         ld      (.saved_win3),a
+        xor     a
+.next:
+        ld      (.index),a
         ld      a,#50
         out     (WIN3_PORT),a
-        pop     hl
-        xor     a                       ; palette index 0 = background
-        call    write_palette_entry
-        ld      a,#C0
-        out     (PORT_Y),a
+        ld      a,(.index)
+        call    write_palette_entry     ; advances HL by 3
+        ld      a,#C0                   ; park PORT_Y before any EI (R3/R10:
+        out     (PORT_Y),a              ; no VRAM row selected across one)
+        ei
+        nop                             ; the Z80 accepts an interrupt only
+        di                              ; AFTER the instruction following EI
+        ld      a,(.index)
+        inc     a
+        cp      STRIPE_COUNT
+        jr      c,.next
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
         ei
         ret
 .saved_win3: DB 0
+.index:      DB 0
 
-; No arguments. Restores palette index 0 to its real "bg" colour
-; (`palette_rgb`'s own entry 0, RGB `#000000` per assets/sprinter/
-; palette.json), undoing ovl_test_signal's diagnostic green/red overwrite.
-; Called once from C's main() after substep 3's real board/label painting
-; has stood in as visible proof the CONTROL/render pipeline runs (P0-P3,
-; docs/sprinter-testnotes/S5.md) -- from that point on, ovl_test_signal's
-; own job is done, and the resident's steady-state screen should look like
-; the real game (black background), not stay parked on the diagnostic
-; tint forever, which is what the P0-P3 MAME runs actually saw before this
-; existed. Same WIN3 save/map(#50)/restore dance as ovl_test_signal and
-; video_init. Clobbers AF,BC,DE,HL.
-clear_bg_signal:
-        di
-        in      a,(WIN3_PORT)
-        ld      (.saved_win3),a
-        ld      a,#50
-        out     (WIN3_PORT),a
-        xor     a                       ; palette index 0 = background
-        ld      hl,palette_rgb
-        call    write_palette_entry
-        ld      a,#C0
-        out     (PORT_Y),a
-        ld      a,(.saved_win3)
-        out     (WIN3_PORT),a
-        ei
-        ret
-.saved_win3: DB 0
+; No arguments, both C-callable. Ramp the whole palette to black / back to
+; its own colours, one level per frame -- FADE_MAX frames, about a third of
+; a second at 50Hz. Callers put the screen rebuild BETWEEN the two, where
+; nothing is visible.
+;
+; frame_wait (im2_s1.asm) means these must not be called before im2_install:
+; it waits on a flag only the IM2 tick sets. Clobbers AF,BC,DE,HL.
+;
+; The ramp is preceded by one flush frame, and that is not a nicety. Every
+; rectangle painted since the last flip is still logged in buffers.asm's dirty
+; ring, and the frame_wait that finally clears it pays for the whole
+; front->back copy inside flip_sync -- for the dirty_all case (gfx_clear_
+; buffer, and any repaint big enough to overflow the 16-slot ring, so: every
+; screen a fade exists for) that is 320x256 bytes of LDIR plus a per-row
+; interrupt yield, hundreds of milliseconds. Left where it fell, that landed
+; on the ramp's FIRST frame_wait, which reads as the fade freezing a couple of
+; steps in and then resuming -- reported from MAME as a half-second stall
+; around 15-20% of the reveal (human tester, 2026-08-18). Spending it HERE
+; costs the same time but puts it before the first palette step, where the
+; screen still holds the level it started from: boot and the About rebuild
+; both fade IN from black, so there it is a pause on a black screen and
+; cannot be seen at all.
+;
+; Unconditional rather than guarded on flip_ring_count/flip_dirty_all. With
+; nothing pending this is one HALT to the next tick -- 20ms on a 320ms ramp,
+; against 12 bytes of test-and-branch in the tightest pool in this port. It
+; also means no future paint path can acquire a pending state this does not
+; know to look at.
+fade_out:
+        ld      c,0
+        jr      fade_to
+fade_in:
+        ld      c,FADE_MAX
+fade_to:
+        push    bc                      ; frame_wait's flip_sync clobbers BC
+        call    frame_wait
+        pop     bc
+.ramp:
+        ld      a,(fade_level)
+        cp      c
+        ret     z
+        jr      c,.brighter
+        dec     a
+        jr      .step
+.brighter:
+        inc     a
+.step:
+        ld      (fade_level),a
+        push    bc
+        call    palette_refresh
+        call    frame_wait
+        pop     bc
+        jr      .ramp
 
 ; --- board theme (S5-finish, menu THEME action, plan D12) ------------------
 ;
@@ -224,12 +280,24 @@ theme_squares_rgb:
         DB #F5,#D9,#F0
         DB #A8,#4A,#9E
 
-; C-callable (single uint8_t arg at SP+2, see ovl_test_signal's own comment
-; on this convention): theme index, taken mod THEME_COUNT so a caller never
-; needs its own range check. Rewrites palette indices 2/3 (board light/dark
-; squares) from theme_squares_rgb's matching pair. Same WIN3 save/
-; map(#50)/restore/park dance as ovl_test_signal/clear_bg_signal. Clobbers
-; AF,BC,DE,HL.
+; C-callable (single uint8_t arg at SP+2 -- z88dk's -clib=default convention
+; promotes every scalar argument to a full 16-bit stack slot regardless of C
+; type, and a single-argument call is the one case where that still lands the
+; real value at a plain SP+2, with no earlier argument's padding byte in the
+; way; overlay_loader_sprinter.asm's file banner has the verified detail and
+; the bug that shipped from assuming otherwise): theme index, taken mod
+; THEME_COUNT so a caller never needs its own range check.
+;
+; The chosen pair is written INTO palette_rgb's own entries 2/3 and the whole
+; table is then re-applied, rather than the two entries being poked straight
+; at the palette registers. palette_rgb is what every later palette write
+; re-reads -- video_init on an About dismissal, and every fade step -- so a
+; theme that lives only in the hardware registers is a theme that reverts the
+; next time anything touches the palette. It did: before the fade work
+; (2026-08-18) picking a theme and then opening and closing About put the
+; board back to CLASSIC. Going through palette_apply_from also means a theme
+; switch mid-fade lands at the current level like everything else, and costs
+; this routine its own copy of the WIN3 dance. Clobbers AF,BC,DE,HL.
 theme_set_squares:
         ld      hl,2
         add     hl,sp
@@ -250,26 +318,11 @@ theme_set_squares:
         add     hl,de
         djnz    .add6
 .at_offset:
-        push    hl                       ; hl -> {light RGB, dark RGB}
-        di
-        in      a,(WIN3_PORT)
-        ld      (.saved_win3),a
-        ld      a,#50
-        out     (WIN3_PORT),a
-        pop     hl
-        ld      a,2                      ; palette index 2 = square_light
-        call    write_palette_entry      ; hl left one past the 3 source
-                                          ; bytes (its own contract) -- that
-                                          ; is exactly the dark-square RGB
-        ld      a,3                      ; palette index 3 = square_dark
-        call    write_palette_entry
-        ld      a,#C0
-        out     (PORT_Y),a
-        ld      a,(.saved_win3)
-        out     (WIN3_PORT),a
-        ei
-        ret
-.saved_win3: DB 0
+        ld      de,palette_rgb+2*3       ; entries 2/3 = square light/dark
+        ld      bc,6
+        ldir
+        ld      hl,palette_rgb
+        jp      palette_apply_from
 
 ; --- RTC -------------------------------------------------------------------
 

@@ -165,9 +165,12 @@ PLATFORM_SYMBOLS = [
     "PANEL_CHAT_Y",
     # video.asm (production subset of video_s1.asm): palette/video_init
     # setup, and RTC sampling for the HUD clock
-    "write_palette",
     "write_palette_entry",
     "video_init",
+    # S9 follow-up (2026-08-18): screen fades. Palette-only -- see video.asm's
+    # own fade section header for why a 96-byte rewrite is the whole effect.
+    "fade_out",
+    "fade_in",
     # palette_apply_from is video_init's own body with the table passed in
     # (HL): the S9 About overlay swaps the whole 16-entry palette for its
     # image and hands back through video_init on exit. Bridged because the
@@ -182,8 +185,6 @@ PLATFORM_SYMBOLS = [
     # to dirty_all on their own, but relying on overflow is relying on a
     # ring size nobody promised -- say it outright instead.
     "flip_mark_dirty_all",
-    "ovl_test_signal",
-    "clear_bg_signal",
     "rtc_sample",
     "rtc_present",
     "rtc_valid",
@@ -459,14 +460,13 @@ def _clean_fixture() -> str:
         "PANEL_NOTICE_Y: EQU 0x000000DC\n"
         "PANEL_MOVES_Y: EQU 0x00000034\n"
         "PANEL_CHAT_Y: EQU 0x00000094\n"
-        "write_palette: EQU 0x000044F5\n"
         "write_palette_entry: EQU 0x000044CA\n"
         "video_init: EQU 0x00004600\n"
         "palette_apply_from: EQU 0x00004603\n"
         "about_page0: EQU 0x0000469A\n"
         "flip_mark_dirty_all: EQU 0x000046A0\n"
-        "ovl_test_signal: EQU 0x00004650\n"
-        "clear_bg_signal: EQU 0x00004660\n"
+        "fade_out: EQU 0x00004650\n"
+        "fade_in: EQU 0x00004660\n"
         "rtc_sample: EQU 0x000045B6\n"
         "rtc_present: EQU 0x00004700\n"
         "rtc_valid: EQU 0x00004701\n"

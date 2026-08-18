@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 
 import gen_sprinter_palette as gsp
 
-PALETTE_JSON = (
-    Path(__file__).resolve().parent.parent.parent / "assets/sprinter/palette.json"
-)
+ROOT = Path(__file__).resolve().parent.parent.parent
+PALETTE_JSON = ROOT / "assets/sprinter/palette.json"
+VIDEO_ASM = ROOT / "asm/sprinter/video.asm"
 
 _INC_ROW_RE = re.compile(
     r"DB 0x([0-9A-Fa-f]{2}),0x([0-9A-Fa-f]{2}),0x([0-9A-Fa-f]{2})\s*; (\d+) (\S+)"
@@ -111,6 +111,98 @@ class SprinterPaletteTests(unittest.TestCase):
         self.assertEqual(
             gsp.build_theme_blob(self.palette),
             gsp.build_theme_blob(gsp.load_palette_file(PALETTE_JSON)),
+        )
+
+
+class ShippedThemeTableTests(unittest.TestCase):
+    """palette.json's themes vs the table the resident actually uses.
+
+    The theme BLOB this tool packs into the assets page is read by nobody:
+    it was S4's scene demo's source, and the shipped board themes are
+    asm/sprinter/video.asm's hand-written theme_squares_rgb. So the JSON
+    is documentation for two audiences that both act on it -- the artist
+    brief quotes these square colours to judge piece contrast, and the
+    piece-set validator rejects a piece colour that repeats one -- and
+    documentation that drifts from the .asm is worse than none. Until the
+    .asm table is generated from here (port.md stage S14), this test is
+    the join."""
+
+    def _asm_themes(self) -> list[tuple[str, str, str]]:
+        text = VIDEO_ASM.read_text(encoding="utf-8", errors="replace")
+        table = text.split("theme_squares_rgb:", 1)
+        self.assertEqual(len(table), 2, "theme_squares_rgb: not found in video.asm")
+        themes: list[tuple[str, str, str]] = []
+        name: str | None = None
+        rgbs: list[str] = []
+        for line in table[1].splitlines():
+            stripped = line.strip()
+            # "; <n> <NAME>" opens a record. Guarded on n == the record we
+            # are waiting for, and on not already having a name: the first
+            # record's comment wraps onto a second "; 0 ..." line, which an
+            # unguarded match would read as a theme called "here".
+            comment = re.match(r"^;\s*(\d+)\s+([A-Za-z]+)", stripped)
+            if comment and name is None and int(comment.group(1)) == len(themes):
+                name = comment.group(2)
+                rgbs = []
+                continue
+            db = re.match(
+                r"^DB\s+#([0-9A-Fa-f]{2}),#([0-9A-Fa-f]{2}),#([0-9A-Fa-f]{2})",
+                stripped,
+            )
+            if db:
+                rgbs.append("#" + "".join(g.upper() for g in db.groups()))
+                if len(rgbs) == 2 and name is not None:
+                    themes.append((name, rgbs[0], rgbs[1]))
+                    name, rgbs = None, []
+                continue
+            if stripped and not stripped.startswith(";") and themes:
+                break          # first non-table line after the records
+        return themes
+
+    def test_json_themes_mirror_video_asm(self) -> None:
+        asm_themes = self._asm_themes()
+        palette = gsp.load_palette_file(PALETTE_JSON)
+        json_themes = [
+            (t["name"], t["entries"]["2"].upper(), t["entries"]["3"].upper())
+            for t in palette["themes"]
+        ]
+        self.assertEqual(json_themes, asm_themes)
+
+    def test_theme_count_equ_matches(self) -> None:
+        text = VIDEO_ASM.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"THEME_COUNT\s+EQU\s+(\d+)", text)
+        self.assertIsNotNone(match, "THEME_COUNT EQU not found in video.asm")
+        palette = gsp.load_palette_file(PALETTE_JSON)
+        self.assertEqual(int(match.group(1)), len(palette["themes"]))
+
+
+class PieceSetPaletteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.palette = gsp.load_palette_file(PALETTE_JSON)
+
+    def test_set_zero_equals_the_boot_palette(self) -> None:
+        by_index = {e["index"]: e["rgb"].upper() for e in self.palette["base"]}
+        for key, rgb in self.palette["piece_sets"][0]["entries"].items():
+            self.assertEqual(rgb.upper(), by_index[int(key)])
+
+    def test_every_set_owns_exactly_the_piece_entries(self) -> None:
+        for piece_set in self.palette["piece_sets"]:
+            self.assertEqual(
+                {int(k) for k in piece_set["entries"]},
+                set(gsp.PIECE_SET_INDICES),
+                piece_set["name"],
+            )
+
+    def test_inc_has_one_record_per_set(self) -> None:
+        inc = gsp.render_piece_sets_inc(self.palette)
+        self.assertIn(f"PIECE_SET_COUNT EQU {len(self.palette['piece_sets'])}", inc)
+        rows = re.findall(r"DB 0x[0-9A-F]{2},0x[0-9A-F]{2},0x[0-9A-F]{2}", inc)
+        self.assertEqual(len(rows), len(self.palette["piece_sets"]) * 4)
+
+    def test_inc_deterministic(self) -> None:
+        self.assertEqual(
+            gsp.render_piece_sets_inc(self.palette),
+            gsp.render_piece_sets_inc(gsp.load_palette_file(PALETTE_JSON)),
         )
 
 

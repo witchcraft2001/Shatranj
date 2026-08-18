@@ -96,6 +96,8 @@ extern void render_status_text(void);
 extern void render_input_line(void);
 extern void video_init(void);
 extern void video_clear_both_buffers(void);
+extern void fade_out(void);
+extern void fade_in(void);
 extern void spectrum_gui_restore_full_screen(void);
 extern void render_coord_labels(void);
 extern void render_cursor_marker(void);
@@ -2502,8 +2504,18 @@ static void net_status_refresh(void) {
    (it is what lowers the about_visible gate), and stacking the two would
    paint all 64 cells twice for nothing -- a full board paint is ~74ms on
    this hardware, the most expensive thing in this sequence by an order of
-   magnitude. */
+   magnitude.
+   The whole rebuild runs between a fade out and a fade in (2026-08-18), so
+   the pixel clear and every repaint below happen while the palette is black
+   and none of it is seen -- the third round's report was watching the screen
+   clear and the elements land one by one. video_clear_both_buffers and
+   video_init do not undo the blackout: every palette write on this port goes
+   through the fade level (video.asm), so video_init lands at level 0 like
+   anything else. The fades live here rather than in about_close's WIN1 body
+   for the same reason the rest of the sequence does -- and because six bytes
+   is more than that pool has. */
 void about_restore_screen(void) {
+    fade_out();
     video_clear_both_buffers();
     video_init();
     spectrum_gui_restore_board_area();
@@ -2514,6 +2526,7 @@ void about_restore_screen(void) {
     render_input_line();
     spectrum_gui_restore_full_screen();
     net_status_refresh();
+    fade_in();
 }
 
 void handle_menu_action(unsigned char action) {

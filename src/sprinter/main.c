@@ -135,8 +135,13 @@ extern void flip_ring_reset(void);
 extern void video_clear_both_buffers(void);
 extern unsigned char frame_wait(void);
 extern unsigned char ovl_exec(unsigned char ovl_id, unsigned char entry_id);
-extern void ovl_test_signal(unsigned char pass);
-extern void clear_bg_signal(void);
+/* S9 follow-up (2026-08-18): screen fades, palette-only -- video.asm's own
+   fade section header explains why dimming all 16 entries to black and back
+   costs no pixel work at all. Callers put a screen rebuild between the two
+   and none of it is seen. Neither may be called before im2_install (they
+   step once per frame_wait). */
+extern void fade_out(void);
+extern void fade_in(void);
 extern void render_board_full(void);
 extern void render_coord_labels(void);
 extern void render_status_clock(void);
@@ -201,7 +206,6 @@ extern void spectrum_gui_log_ply_set(uint16_t ply);
    Must run before any esx_fopen/esx_fcreate/esx_opendir path built from
    spectrum_platform_save_dir()'s result -- called once at boot, below. */
 extern void spectrum_platform_save_dir_init(void);
-extern const char *spectrum_platform_save_dir(void);
 /* S6 round 5: the raw DSS error number (dss_errors.z80's own numbering,
    e.g. 24 = write protected, 10 = no free space) behind the last esx_*
    call that failed, pre-formatted as decimal ASCIIZ in asm (dss_fileio.
@@ -768,11 +772,19 @@ static void fileui_close(void) {
 static unsigned char about_screen;
 
 static void about_open(void) {
+    /* Fade the game screen out, swap the whole screen behind a black
+       palette, fade the picture in. The overlay applies its own 16-entry
+       palette through palette_apply_from, which honours the fade level like
+       every other palette write -- so it lands black, and the fade_in below
+       is what reveals it. Without this the tester watched the picture blit
+       in over the board, band by band (2026-08-18). */
+    fade_out();
     spectrum_gui_clear_cursor_coords();
     spectrum_gui_show_fileui();
     about_screen = 1u;
     spectrum_overlay_exec_cached(SPECTRUM_OVL_ABOUT,
                                   SPECTRUM_OVL_ABOUT_RENDER);
+    fade_in();
 }
 
 static void about_close(void) {
@@ -784,7 +796,9 @@ static void about_close(void) {
        missing the move list, the chat log, the notice line, the clock and
        the turn label -- every field that is repainted from state this
        resident cannot see. Moving it to the page that owns that state fixed
-       both, and cost WIN1 nine calls rather than adding any. */
+       both, and cost WIN1 nine calls rather than adding any. It owns the
+       fade around the rebuild too (2026-08-18), for the same reason and one
+       more: the two calls are 6 bytes, and this pool has none to spare. */
     about_restore_screen();
 }
 
@@ -1037,15 +1051,14 @@ void main(void) {
 
     spectrum_board_reset();
     pass = (unsigned char)(pass && board_ovl_probe());
-    ovl_test_signal(pass);
 
     /* The probe left its own e2e4 on the board. Reset again so the game
        actually starts from the start position now that moves can be made
        by hand (S5 substep 3c): P12's "the pawn is visibly on e4" was the
        right evidence while nothing else could move a piece, but keeping a
        scripted opening move on the board would now just be a wrong
-       position to play from. The probe still runs, and still decides the
-       green/red boot signal -- only its side effect is undone. */
+       position to play from. The probe still runs, and its result is
+       reported below -- only its side effect is undone. */
     spectrum_board_reset();
 
     render_board_full();
@@ -1074,30 +1087,15 @@ void main(void) {
        dropped (right after resolve_buffers() above, and at the end of a
        completed flip_sync). */
 
-    /* Every render_*() call above must run before clear_bg_signal() below,
-       not just after: their text/label boxes paint with palette index 0
-       (bg) so they blend into whatever the background is once clear_bg_
-       signal restores it to black (render_core.asm's own COORD_COLOR/
+    /* render_cursor_marker() must run after render_board_full() so the cell
+       it overlays already has real content. Nothing else in the group above
+       has an order requirement any more: they used to have to precede
+       clear_bg_signal(), since their text/label boxes paint with palette
+       index 0 and that call was what put index 0 back to black after the
+       boot diagnostic had tinted it (render_core.asm's own COORD_COLOR/
        STATUS_COLOR/BANNER_COLOR/MENU_COLOR/STATUS_TEXT_COLOR/INPUT_COLOR
-       comments). Swapping this order would leave the boxes stuck on the
-       diagnostic tint. render_cursor_marker() does not itself depend on
-       this order (it is hardware-keyed, not a bg=0 box), but it does need
-       to run after render_board_full() so the cell it overlays already
-       has real content -- grouped with the rest of the boot paint here
-       for that reason, not the bg-blend one. */
-
-    /* ovl_test_signal's green/red background tint (above) was diagnostic
-       scaffolding for S5 substep 2, before there was any real content on
-       screen to look at (docs/sprinter-testnotes/S5.md, P0/P1). Now that
-       the board and coordinate labels have painted (P2/P3), that same
-       proof is visible in the actual game content, so the tint is
-       cleared back to the real black background here -- matching
-       video.asm's own ovl_test_signal comment ("S5 substep 3's render.c
-       replaces this with real board/panel painting ... not this palette
-       trick"). The diagnostic still ran and was visible for the ~74ms+
-       spent painting the board/labels above; only the steady-state
-       screen changes here. */
-    clear_bg_signal();
+       comments). Index 0 is never anything but black now -- see the fade
+       note below. */
 
     /* im2_install() deferred to here (2026-08-10, S5 substep 3 crash
        investigation): frame_flag/canary_check have no consumer before
@@ -1132,21 +1130,15 @@ void main(void) {
     net_set_turn_label_from_side();
     spectrum_info_show_game();
 
-    /* S6 round 5 diagnosis (docs/sprinter-testnotes/S6.md "MAME round 5"):
-       SAVE now visibly fails ("Save failed") in MAME, but round 4's static
-       audit could not tell a bad DSS AppInfo-resolved directory apart from
-       a genuine write failure against the real media -- "no amount of
-       static reading can distinguish from here" (that section's own
-       words). Surface the resolved directory once, right here, before any
-       real notice (a bad move, a save attempt) can overwrite the notice
-       line: this is the last one-time boot step, everything above it has
-       already painted, and spectrum_gui_notify_persistent's ticks=0 means
-       it stays on screen until the first later spectrum_gui_notify*
-       call -- normal play does not force one before the tester can look
-       at the very first post-boot screenshot. Truncated to the notice
-       line's own NETCHESSZX_NOTICE_TEXT_SIZE-1 budget (gui.c's strncpy);
-       an over-long path just loses its tail, not a crash. */
-    spectrum_gui_notify_persistent(spectrum_platform_save_dir());
+    /* The boot notice line used to hold spectrum_platform_save_dir()'s
+       resolved directory (S6 round 5): SAVE was failing in MAME and static
+       reading could not tell a bad DSS AppInfo-resolved path apart from a
+       real write failure against the media, so the port printed the path it
+       had actually resolved. That question is long since answered -- save
+       and load both work, and the file browser lists the same directory on
+       demand -- leaving a diagnostic string as the first thing the game says
+       on every boot (human tester, 2026-08-18). Removed; the resolver itself
+       (spectrum_platform_save_dir_init above) obviously stays. */
 
     /* S9 chat pass: the chat panel's own LOWRAM buffer is not zeroed by
        the loader (only C BSS is, and this buffer is a fixed low-RAM
@@ -1156,6 +1148,32 @@ void main(void) {
        same reasoning as the LOWRAM_RENDER_SHARED seeding at the top of
        this function. */
     spectrum_gui_reset_chat();
+
+    /* The overlay probe's verdict, now that there is somewhere to say it.
+       It used to be a green/red repaint of palette index 0 (ovl_test_signal
+       plus clear_bg_signal to undo it, both deleted here) -- S5 substep 2
+       scaffolding from before this port could put anything on screen at all,
+       and by now just a green flash across the whole background before the
+       real screen appeared (human tester, 2026-08-18). An error notice is
+       both quieter and more informative, and it stays: gui.c gives error
+       notices ticks=0, so nothing ages it out. Only on failure -- a passing
+       probe is the normal case and has nothing to report. It stays the last
+       thing boot writes to the notice line -- nothing after it may claim
+       that line, or a real failure would be reported and then hidden. Uses
+       the _persistent (fastcall, one argument) form rather than notify(text,
+       1u): sccz80 spells the two-argument call out in 13 bytes against six,
+       and this pool had four to spare, not eleven. */
+    if (!pass) {
+        spectrum_gui_notify_persistent("Overlay probe failed");
+    }
+
+    /* Everything painted so far went onto a screen whose palette is still
+       all black (video.asm's fade_level starts at 0), so none of it has been
+       seen: no flash of a half-built screen, no diagnostic tint, no board
+       appearing cell by cell. This is what reveals it. It has to come after
+       im2_install above -- a fade is one palette step per frame, and
+       frame_wait waits on a flag only the IM2 tick sets. */
+    fade_in();
 
     /* First slice of real input handling (S5 substep 3): key_poll()
        (im2_s1.asm) does a non-blocking DSS keyboard poll every frame,

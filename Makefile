@@ -902,7 +902,8 @@ endif
 # never touches the rules or artifacts of the other platforms.
 
 .PHONY: exe sprinter-check sprinter-deps-check sprinter-tools-test sprinter-smoke-image \
-        sprinter-hw-zip sprinter-layout-check sprinter-z80-test sprinter-resident-test \
+        sprinter-hw-zip sprinter-artist-assets-zip sprinter-assets-check \
+        sprinter-layout-check sprinter-z80-test sprinter-resident-test \
         sprinter-host-test \
         sprinter-gates sprinter-section-gate sprinter-crt0-check sprinter-platform-defs-check \
         sprinter-netframe-defs-check sprinter-sccz80-codegen-check \
@@ -1121,12 +1122,34 @@ SPRINTER_PIECE_PNGS := $(wildcard $(SPRINTER_PIECES_ROOT)/*/*.png)
 SPRINTER_PIECE_DIRS := $(SPRINTER_PIECES_ROOT) $(sort $(dir $(SPRINTER_PIECE_PNGS)))
 
 SPRINTER_LOGO_PNG := assets/sprinter/logo_sprinter.png
+SPRINTER_LOGO_SOURCE_PNG := assets/sprinter/source/sprinter_logo_source.png
 SPRINTER_MARKER_DOT_PNG := assets/sprinter/markers/dot.png
 SPRINTER_MARKER_RING_PNG := assets/sprinter/markers/ring.png
 SPRINTER_FRAME_CURSOR_PNG := assets/sprinter/markers/cursor.png
 SPRINTER_FRAME_SELECT_PNG := assets/sprinter/markers/select.png
 SPRINTER_UI_ASSETS_BIN := $(SPRINTER_BUILD_DIR)/ui_assets.bin
 SPRINTER_UI_ASSETS_MANIFEST := $(SPRINTER_BUILD_DIR)/ui_assets_manifest.json
+
+# Handoff package for the artist. Keep it under build/sprinter like every
+# other Sprinter artefact; it contains the exact committed PNG inputs the
+# build consumes, their palette, and the Russian editing brief.
+SPRINTER_ARTIST_ASSETS_DOC := docs/sprinter-artist-assets.md
+SPRINTER_ARTIST_ASSETS_ZIP := $(SPRINTER_BUILD_DIR)/SHATRANJ-SPRINTER-ASSETS-FOR-ARTIST.zip
+SPRINTER_MARKERS_ROOT := assets/sprinter/markers
+# The 1254x1254 master About artwork (also used by the Qt client's About
+# dialog) is not itself a Sprinter build input -- tools/prepare_sprinter_
+# about.py quantizes it by hand into about640.png, which IS the build
+# input. It ships alongside about640.png anyway so an artist repainting
+# the 512x256 quantized version has the un-quantized original for
+# reference/detail work, same rationale as shipping the logo source PNG.
+SPRINTER_ABOUT_SOURCE_PNG := assets/pc-client/about/about-shatranj.png
+SPRINTER_ARTIST_ASSETS_INPUTS := $(SPRINTER_ARTIST_ASSETS_DOC) \
+                                $(SPRINTER_PALETTE_JSON) $(SPRINTER_PIECE_PNGS) \
+                                $(SPRINTER_PIECE_DIRS) $(SPRINTER_LOGO_PNG) \
+                                $(SPRINTER_LOGO_SOURCE_PNG) $(SPRINTER_ABOUT_PNG) \
+                                $(SPRINTER_ABOUT_SOURCE_PNG) \
+                                $(SPRINTER_MARKER_DOT_PNG) $(SPRINTER_MARKER_RING_PNG) \
+                                $(SPRINTER_FRAME_CURSOR_PNG) $(SPRINTER_FRAME_SELECT_PNG)
 
 SPRINTER_VERSION_INC := $(SPRINTER_GENERATED_DIR)/sprinter_version.inc
 
@@ -1261,8 +1284,8 @@ $(SPRINTER_THEME_BIN): tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON) | 
 		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN)
 
 # VERSION is the single source of truth (CLAUDE.md rule 5: no version
-# literals in code); scene_s4.asm's banner reads sprinter_banner_msg
-# instead of embedding a string of its own. The template lives in the
+# literals in code); preload_loader.asm's boot banner reads sprinter_banner_
+# msg instead of embedding a string of its own. The template lives in the
 # generator, not here: tools/run_sprinter_z80_tests.sh needs the same file
 # in its own private generated dir, and two inline copies would drift.
 $(SPRINTER_VERSION_INC): tools/gen_sprinter_version.py VERSION | $(SPRINTER_GENERATED_DIR)
@@ -1279,7 +1302,7 @@ $(SPRINTER_VERSION_INC_Z80ASM): tools/gen_sprinter_version.py VERSION | $(SPRINT
 
 $(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DIR)/dss.inc \
                         $(SPRINTER_ASM_DIR)/manifest.inc $(SPRINTER_ASM_DIR)/hdr.inc \
-                        $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
+                        $(SPRINTER_LAYOUT_INC) $(SPRINTER_VERSION_INC) | $(SPRINTER_BUILD_DIR)
 	$(SJASMPLUS) --nologo --fullpath $(SJASMPLUS_INCLUDES) \
 		--raw=$(SPRINTER_LOADER_BIN) $(SPRINTER_ASM_DIR)/preload_loader.asm
 
@@ -2041,6 +2064,29 @@ sprinter-hw-zip: exe tools/make_sprinter_hw_zip.py
 	$(PYTHON) tools/make_sprinter_hw_zip.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_HW_ZIP)
+
+# The piece pages are a prerequisite for their side effect: the same rule
+# writes build/sprinter/preview/ -- the aspect-corrected mosaics that are
+# the only way to judge 32x16 art without loading it on real hardware, so
+# they travel with the PNGs rather than being described in the brief.
+sprinter-artist-assets-zip: $(SPRINTER_ARTIST_ASSETS_INPUTS) $(SPRINTER_PIECE_PAGE1) \
+                            | $(SPRINTER_BUILD_DIR)
+	rm -f $(SPRINTER_ARTIST_ASSETS_ZIP)
+	zip -q -r $(SPRINTER_ARTIST_ASSETS_ZIP) $(SPRINTER_ARTIST_ASSETS_DOC) \
+		$(SPRINTER_PALETTE_JSON) $(SPRINTER_PIECES_ROOT) $(SPRINTER_MARKERS_ROOT) \
+		$(SPRINTER_LOGO_PNG) \
+		$(SPRINTER_LOGO_SOURCE_PNG) $(SPRINTER_ABOUT_PNG) $(SPRINTER_ABOUT_SOURCE_PNG) \
+		$(SPRINTER_BUILD_DIR)/preview
+
+# Validate the committed artwork by re-running every packer that reads it
+# (pieces, keyed UI assets, About) plus the palette's own invariants. This
+# is what an artist's returned PNGs are checked with -- a full `make exe`
+# would say the same thing, ten times slower.
+sprinter-assets-check: $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) \
+                       $(SPRINTER_UI_ASSETS_BIN) $(SPRINTER_ABOUT_PAL) \
+                       tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON)
+	$(PYTHON) tools/gen_sprinter_palette.py --palette $(SPRINTER_PALETTE_JSON) --check
+	@printf "[OK] sprinter-assets-check: pieces, UI assets, About, palette\n"
 
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-crt0-check \

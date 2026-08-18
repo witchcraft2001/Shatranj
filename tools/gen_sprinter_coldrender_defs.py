@@ -43,6 +43,8 @@ COLD_RENDER_SYMBOLS = [
     # come from this same map: the cold page reaches them through generated
     # defc bridges, so its .map carries them alongside its own symbols.
     "_about_restore_screen",
+    "_fade_out",
+    "_fade_in",
     "video_clear_both_buffers",
     "_video_init",
     "_spectrum_gui_restore_board_area",

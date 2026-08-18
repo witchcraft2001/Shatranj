@@ -14,8 +14,9 @@
 ; What it proves: the 32 requests together cover the destination rectangle
 ; exactly once -- 128 bytes x 16 rows each, left half at byte 32 and right
 ; half at byte 160, rows 0..255 -- with the right source page and slot for
-; every one, and that the palette swap, the caption and the whole-screen
-; invalidation each happen exactly once.
+; every one, and that the palette swap and the whole-screen invalidation
+; each happen exactly once, and the caption prints exactly twice (the
+; version line, then the fixed port-credit line under it).
 ;
 ; What it canNOT prove: that the accelerator then puts the right pixels on
 ; a real screen (unverifiable outside MAME/hardware, the same caveat
@@ -126,7 +127,7 @@ start:
         ld      a,3
         call    t_expect_z
         ld      a,(TXTCNT)
-        cp      1
+        cp      2                       ; version line + port-credit line
         ld      a,4
         call    t_expect_z
         ld      a,(DIRTYCNT)

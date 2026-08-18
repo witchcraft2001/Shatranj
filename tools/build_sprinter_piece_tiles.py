@@ -12,9 +12,10 @@ fork of extern/sprinter-libs/gfx640/tools/tilepack.py's conventions (row-
 major packed 4bpp, high nibble = left pixel), not that script itself: the
 donor takes one already-indexed PNG per output page, this tool takes 12
 already-separate RGBA piece PNGs per set and must precompose+pack them
-itself, plus validate every opaque pixel against the shared
-assets/sprinter/palette.json reference colours rather than an arbitrary
-input palette.
+itself, plus validate every opaque pixel against the palette entries a
+piece is allowed to use -- the set's OWN four colours (palette.json's
+"piece_sets") plus the shared accents, PIECE_ALLOWED_INDICES below --
+rather than against an arbitrary input palette.
 
 Slot layout (asm/sprinter's tile-ref convention, slot*256 = byte offset
 within a 16384-byte, 64-slot page -- see tools/make_sprinter_assets_page.py
@@ -82,10 +83,57 @@ KINDS = ["K", "Q", "R", "B", "N", "P"]
 PIECE_ORDER = [f"{side}{kind}" for side in SIDES for kind in KINDS]  # 12 keys
 BACKGROUND_ORDER = ["light", "dark"]  # -> palette indices 2, 3
 BACKGROUND_INDICES = [2, 3]
-PIECE_REF_INDICES = [4, 5, 6, 7]
 
 # S9 move-flash: one extra tile per piece, precomposed on hud_select.
 FLASH_BACKGROUND_INDEX = 8
+
+# Two adjacent index-15 pixels pack into a 0xFF byte, which the hardware
+# reads as the transparency key wherever the data is drawn through the
+# keyed VRAM alias. Piece tiles are blitted opaque, so that byte would in
+# fact be harmless here -- but build_pages refuses 0xFF outright rather
+# than relying on the caller's choice of alias, so keeping 15 out of the
+# source art turns "your PNG happened to produce a forbidden byte" into a
+# rule an artist can follow by looking at the colour picker.
+KEY_NIBBLE_INDEX = 15
+
+# Entries 4-7 belong to the SET, not to the palette as a whole: each set
+# in assets/sprinter/palette.json's "piece_sets" gives them its own four
+# RGB values, and picking a set re-writes those four palette registers
+# (port.md section 3.5). So a PNG in set X is validated against set X's
+# colours -- the tile bytes are identical either way, since a tile stores
+# the index and the palette supplies the colour.
+PIECE_SET_INDICES = [4, 5, 6, 7]
+
+# Which palette entries an opaque pixel of a piece PNG may use.
+#
+# NOT "the four piece colours": a piece tile is ordinary opaque 4bpp data
+# in the screen's shared 16-entry palette, so every entry that is not
+# structurally unusable is the artist's to spend, HUD colours included
+# (port.md section 3.6). Exactly three kinds of entry are excluded:
+#
+#   2, 3  the light/dark board square. precompose_tile paints these UNDER
+#         the piece, so a pixel in a square's own colour is invisible on
+#         that square -- and both are re-tinted by the board theme, which
+#         would drag the piece's colours along with it.
+#   8     hud_select, the move-flash background: same argument, for the
+#         duration of the flash tile.
+#   15    see KEY_NIBBLE_INDEX.
+#
+# assets/sprinter/palette.json carries the same list under
+# "piece_allowed_indices" (it ships to the artist with the PNGs);
+# tests/tools/test_sprinter_piece_tiles.py fails if the two drift apart.
+PIECE_EXCLUDED_INDICES = (
+    set(BACKGROUND_INDICES) | {FLASH_BACKGROUND_INDEX, KEY_NIBBLE_INDEX}
+)
+PIECE_ALLOWED_INDICES = [
+    i for i in range(gsp.REQUIRED_BASE_COUNT) if i not in PIECE_EXCLUDED_INDICES
+]
+# The allowed entries that are NOT the set's own: shared with the rest of
+# the screen, same RGB in every set, and the artist borrows them as
+# accents (port.md section 3.6).
+PIECE_SHARED_INDICES = [
+    i for i in PIECE_ALLOWED_INDICES if i not in set(PIECE_SET_INDICES)
+]
 SLOTS_PER_PAGE = PAGE_SIZE // SLOT_SIZE                   # 64
 TILES_PER_SET = len(PIECE_ORDER) * len(BACKGROUND_ORDER)  # 24
 FLASH_TILES_PER_SET = len(PIECE_ORDER)                    # 12
@@ -133,6 +181,31 @@ def _rgb_set(palette: dict, indices: list[int]) -> dict[tuple[int, int, int], in
     return {gsp._parse_rgb(by_index[i], "palette"): i for i in indices}
 
 
+def piece_colours(palette: dict, set_name: str) -> dict[tuple[int, int, int], int]:
+    """The {rgb: index} map a given set's PNGs are validated and packed
+    against: that set's own four colours plus the shared accents."""
+    by_name = {entry["name"]: entry for entry in palette["piece_sets"]}
+    if set_name not in by_name:
+        fail(f"piece set {set_name!r} has no palette in the palette JSON "
+             f'("piece_sets" lists {sorted(by_name)}) -- the set list and the '
+             "palette are the same decision and must name the same sets")
+    colours = _rgb_set(palette, PIECE_SHARED_INDICES)
+    for index in PIECE_SET_INDICES:
+        rgb = gsp._parse_rgb(by_name[set_name]["entries"][str(index)], "piece set")
+        colours[rgb] = index
+    return colours
+
+
+def _describe_colours(rgb_to_index: dict) -> str:
+    """The allowed colours as "index #RRGGBB" pairs, index order. The
+    diagnostic below is read by whoever repainted the PNG, so it names the
+    colours they can pick, not the raw tuples the tool compares."""
+    return ", ".join(
+        f"{index} #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        for rgb, index in sorted(rgb_to_index.items(), key=lambda kv: kv[1])
+    )
+
+
 def load_and_validate_piece(path: Path, cell_w: int, cell_h: int,
                              ref_rgb_to_index: dict) -> Image.Image:
     if not path.is_file():
@@ -149,8 +222,8 @@ def load_and_validate_piece(path: Path, cell_w: int, cell_h: int,
                      "opaque nor fully transparent (no anti-aliasing allowed)")
             if a == 255 and (r, g, b) not in ref_rgb_to_index:
                 fail(f"{path}: pixel ({x},{y}) RGB #{r:02X}{g:02X}{b:02X} is "
-                     "not one of the reference piece colours "
-                     f"{sorted(ref_rgb_to_index)}")
+                     "not one of the palette colours a piece may use "
+                     f"({_describe_colours(ref_rgb_to_index)})")
     return image
 
 
@@ -183,7 +256,17 @@ def build_pages(pieces_root: Path, sets: list[str], palette: dict,
     if TILES_PER_SET * SLOT_SIZE > PAGE_SIZE:
         fail(f"{TILES_PER_SET} tiles/set do not fit in one {PAGE_SIZE}-byte page")
 
-    piece_ref = _rgb_set(palette, PIECE_REF_INDICES)
+    # Set order is a contract, not a coincidence: the resident indexes the
+    # palette records by the same ordinal it uses for the tile slot base,
+    # so a set list that disagrees with the palette's order would draw one
+    # set's tiles through another's colours.
+    palette_set_names = [entry["name"] for entry in palette["piece_sets"]]
+    if palette_set_names != list(sets):
+        fail(f"set list {list(sets)} does not match the palette's piece_sets "
+             f"{palette_set_names} (same names, same order -- the resident "
+             "picks a set's palette record and its tile slot base by the same "
+             "index)")
+
     bg_ref = _rgb_set(palette, BACKGROUND_INDICES)
     bg_rgb_by_order = [
         next(rgb for rgb, idx in bg_ref.items() if idx == pi)
@@ -202,6 +285,7 @@ def build_pages(pieces_root: Path, sets: list[str], palette: dict,
         page_no = set_index // SETS_PER_PAGE          # 0-based page index
         slot_base = (set_index % SETS_PER_PAGE) * TILES_PER_SET
         page = pages[page_no]
+        piece_ref = piece_colours(palette, set_name)
         piece_images: dict[str, Image.Image] = {}
         for key in PIECE_ORDER:
             png_path = pieces_root / set_name / f"{key}.png"
@@ -233,6 +317,11 @@ def build_pages(pieces_root: Path, sets: list[str], palette: dict,
             "name": set_name,
             "asset_page_index": page_no + 1,  # 1-based: matches HDR order
             "slot_base": slot_base,
+            "palette": {
+                str(index): "#{:02X}{:02X}{:02X}".format(*rgb)
+                for rgb, index in sorted(piece_ref.items(), key=lambda kv: kv[1])
+                if index in set(PIECE_SET_INDICES)
+            },
         })
 
     # Flash blocks, packed after the last set's normal block and continuing
@@ -259,7 +348,7 @@ def build_pages(pieces_root: Path, sets: list[str], palette: dict,
             slot = cursor_slot + p_index
             tile = precompose_tile(
                 piece_images_by_set[set_name][key], cell_w, cell_h,
-                flash_ref, flash_rgb, piece_ref
+                flash_ref, flash_rgb, piece_colours(palette, set_name)
             )
             offset = slot * SLOT_SIZE
             page[offset:offset + len(tile)] = tile
@@ -291,7 +380,9 @@ def build_manifest(sets_info: dict, cell_w: int, cell_h: int, stride: int,
         "piece_order": PIECE_ORDER,
         "background_order": BACKGROUND_ORDER,
         "background_palette_indices": BACKGROUND_INDICES,
-        "piece_reference_indices": PIECE_REF_INDICES,
+        "piece_allowed_indices": PIECE_ALLOWED_INDICES,
+        "piece_set_indices": PIECE_SET_INDICES,
+        "piece_shared_indices": PIECE_SHARED_INDICES,
         "sets": sets_info["sets"],
         "sha256": {
             "palette_json": hashlib.sha256(palette_path.read_bytes()).hexdigest(),
@@ -308,7 +399,7 @@ def aspect_corrected(image: Image.Image, scale: int = 6) -> Image.Image:
 
 def build_preview(pieces_root: Path, set_name: str, palette: dict,
                    cell_w: int, cell_h: int, out_path: Path) -> None:
-    piece_ref = _rgb_set(palette, PIECE_REF_INDICES)
+    piece_ref = piece_colours(palette, set_name)
     # The flash background gets its own preview row, so the artist sees every
     # variant the build actually ships, not just the light/dark pair.
     bg_ref = _rgb_set(palette, BACKGROUND_INDICES + [FLASH_BACKGROUND_INDEX])

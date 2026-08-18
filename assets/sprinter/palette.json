@@ -19,12 +19,21 @@
         {"index": 14, "name": "accent",        "rgb": "#00BEFE", "desc": "Accent -- sampled from the real Sprinter logo's brand blue."},
         {"index": 15, "name": "cursor",        "rgb": "#FF3D7F", "desc": "Input-line cursor / active-field highlight. Not a transparency reservation -- see the format note above."}
     ],
-    "piece_ref_indices": [4, 5, 6, 7],
+    "_piece_comment": "piece_allowed_indices: every palette entry an opaque pixel of a piece PNG may use. Pieces are NOT limited to a four-colour ramp -- a piece tile is ordinary opaque 4bpp data in this same 16-entry palette, so the HUD colours are available to piece art too. The four entries left out are the ones the packer paints UNDER the piece (2/3 board square, 8 move flash), where a piece pixel of that colour would be invisible, and 15, whose adjacent pairs pack to the 0xFF hardware key byte. tools/build_sprinter_piece_tiles.py derives the same list and tests/tools/test_sprinter_piece_tiles.py fails if the two drift apart. piece_import_quantize_indices: the smaller set tools/rasterize_sprinter_pieces.py quantizes a freshly imported SVG down to -- a starting point for hand editing, not a limit on the finished art.",
+    "piece_allowed_indices": [0, 1, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14],
+    "piece_import_quantize_indices": [4, 5, 6, 7],
+    "_theme_comment": "The five board themes the resident ships, mirroring asm/sprinter/video.asm's theme_squares_rgb table verbatim -- tests/tools/test_sprinter_palette.py parses that table back out of the .asm and fails if the two drift. The table is still hand-written on the Z80 side; generating it from here is part of the piece-set palette work (port.md section 3.5).",
     "themes": [
-        {"name": "BROWN", "entries": {"2": "#F0D9B5", "3": "#B58863"}},
-        {"name": "BLUE",  "entries": {"2": "#DEE3E6", "3": "#8CA2AD"}},
-        {"name": "GREEN", "entries": {"2": "#FFFFDD", "3": "#86A666"}},
-        {"name": "WOOD",  "entries": {"2": "#D9A55A", "3": "#8A5A2B"}},
-        {"name": "GRAY",  "entries": {"2": "#DCDCDC", "3": "#8C8C8C"}}
+        {"name": "CLASSIC", "entries": {"2": "#F0D9B5", "3": "#B58863"}},
+        {"name": "BLUE",    "entries": {"2": "#D9E6F5", "3": "#5A78B5"}},
+        {"name": "GREEN",   "entries": {"2": "#E2F0D9", "3": "#6B9E5A"}},
+        {"name": "CYAN",    "entries": {"2": "#D9F5F0", "3": "#4AA8A0"}},
+        {"name": "MAGENTA", "entries": {"2": "#F5D9F0", "3": "#A84A9E"}}
+    ],
+    "_piece_sets_comment": "One palette per piece set: the four entries 4-7 are re-written when the player picks a set, exactly as a theme re-writes 2/3 (port.md section 3.5). Names and order must match assets/lichess/selected_next_sets.json's \"selected\" list -- tools/build_sprinter_piece_tiles.py validates each set's PNGs against ITS OWN four colours. Set 0 must equal the base palette (it is what boots). The four colours of a set must not collide with each other or with any other colour that can be on screen at the same time (0, 1, 8-15 and every theme's square colours): the packers invert the palette into an {rgb: index} map, so a shared value makes an index unreachable -- and on screen it would mean a piece the colour of the board or of a marker.",
+    "piece_sets": [
+        {"name": "california", "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}},
+        {"name": "mpchess",    "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}},
+        {"name": "totoy",      "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}}
     ]
 }
