@@ -250,6 +250,21 @@ static void render_game_timer_only(void)
     char game_timer_line[24];
     uint8_t force;
 
+#if defined(NETCHESSZX_SPRINTER)
+    /* A modal screen owns the whole display on this port: the About picture
+       covers all 640x256. This repaint runs once a second and does not go
+       through any of the board-area paths that already consult the gate, so
+       it punched the GAME/TURN line straight through the artwork (human
+       tester, MAME, 2026-08-17). The timers keep RUNNING underneath --
+       spectrum_gui_tick still advances them, so the values are correct the
+       moment the screen is dismissed and the caller repaints; only the
+       painting is held back. Sprinter-only: ZX/Next's own About does not
+       cover this row, and their artifacts must stay byte-identical. */
+    if (about_visible) {
+        return;
+    }
+#endif
+
     if (menu_visible) {
         /* Timer pixels are shared between menu/closed states; the taboption
            open/close paths only retint attrs, so no forced redraw needed. */
@@ -276,6 +291,14 @@ static void render_clock_only(void)
 {
     char clock_time[7];
     char clock_line[8];
+
+#if defined(NETCHESSZX_SPRINTER)
+    /* Same reason as render_game_timer_only above -- this one paints the
+       wall clock into the status bar the About screen covers. */
+    if (about_visible) {
+        return;
+    }
+#endif
 
     if (clock_valid) {
         put_timer_digit(clock_time, clock_hour);
@@ -1077,6 +1100,46 @@ void spectrum_gui_draw_status(void)
     }
 }
 #endif /* !NETCHESSZX_SPRINTER */
+
+#if defined(NETCHESSZX_SPRINTER)
+/* Sprinter-only: repaint everything this file owns outside the board area,
+   from this file's own stored state, after a caller has pixel-cleared the
+   screen. The About picture covers all 640x256 here (ZX/Next's covers only
+   the board), so dismissing it means rebuilding the whole display, not just
+   the board -- see session_sprinter.c's about_restore_screen, the only
+   caller, for the rest of the sequence.
+   This is spectrum_gui_restore_side_panels plus spectrum_gui_draw_status
+   plus spectrum_gui_draw_board's own force-redraw tail, fused into one
+   function rather than three: all three are guarded out of this build as
+   app.c-only (see their own comments), and one Sprinter entry point costs
+   one WIN1 thunk where three would cost three.
+   The two force flags are load-bearing. render_clock_only and render_game_
+   timer_only are both delta painters -- they compare against last_clock_
+   line/last_game_timer_line and paint nothing when the text is unchanged.
+   After a pixel clear the text IS unchanged (only the pixels went away), so
+   without forcing them the clock and the GAME/TURN line would stay blank
+   until their next differing second. */
+void spectrum_gui_restore_full_screen(void)
+{
+    about_visible = 0u;
+    side_panels_visible = 1u;
+    spectrum_info_show_game();
+    spectrum_render_moves(move_lines);
+    spectrum_render_chat(chat_lines);
+    clock_force_redraw = 1u;
+    timer_force_redraw = 1u;
+    render_clock_only();
+    render_game_timer_only();
+    spectrum_gui_set_connected(connected_state);
+    if (notice_error) {
+        spectrum_render_notice_error(notice_text);
+    } else if (notice_success) {
+        spectrum_render_notice_success(notice_text);
+    } else {
+        spectrum_render_notice(notice_text);
+    }
+}
+#endif /* NETCHESSZX_SPRINTER */
 
 #if !defined(NETCHESSZX_SPRINTER)
 /* S9 budget valve: no caller anywhere (app.c-only) and not in

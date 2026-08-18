@@ -303,6 +303,9 @@ extern void net_retry_tick(void);
 extern void handle_menu_action(unsigned char action);
 extern void net_control_key(unsigned char key);
 extern void net_set_turn_label_from_side(void);
+/* S9 About (second MAME round): the whole post-About screen rebuild, one
+   call -- see about_close below for why it is over there and not here. */
+extern void about_restore_screen(void);
 
 /* Networked play (S7 step 5). Zero while the port is in its original
    hot-seat mode, which is still the boot state. Still WIN1-resident --
@@ -741,6 +744,50 @@ static void fileui_close(void) {
     saveload_full_redraw();
 }
 
+/* --- About screen (S9 About pass) -------------------------------------------
+ *
+ * A full-screen picture with the version caption, drawn by the ABOUT
+ * overlay (asm/sprinter/zcc/about_sprinter.asm -- see its header for why it
+ * stays in the ordinary 640x256 mode instead of switching to 320x256x8bpp).
+ *
+ * It deliberately reuses the FILE browser's own "a modal screen owns the
+ * display" machinery rather than adding a second one: gui.c's about_visible
+ * gate already suppresses every board-area repaint path, and it is shared
+ * source with ZX/Next, so giving Sprinter its own value there would mean
+ * editing a shared file for one platform -- and the ZX/Next artifacts must
+ * stay byte-identical. spectrum_gui_show_fileui() therefore raises the gate
+ * for both screens and this one byte says WHICH of them is up. The cost is
+ * one flag; the alternative was ~40 bytes of duplicated gate code on a cold
+ * page that had none to give.
+ *
+ * The screen is a STATE, not a blocking loop: the frame loop keeps running
+ * underneath, so a networked game's link stays alive (and its clock keeps
+ * ticking) while About is on screen -- a blocking wait would stall the
+ * session and could drop it.
+ */
+static unsigned char about_screen;
+
+static void about_open(void) {
+    spectrum_gui_clear_cursor_coords();
+    spectrum_gui_show_fileui();
+    about_screen = 1u;
+    spectrum_overlay_exec_cached(SPECTRUM_OVL_ABOUT,
+                                  SPECTRUM_OVL_ABOUT_RENDER);
+}
+
+static void about_close(void) {
+    about_screen = 0u;
+    /* The whole rebuild is one call on the cold page (session_sprinter.c).
+       It started here, as ten calls into that page, and grew wrong twice:
+       the first MAME run came back to a correct board framed by leftover
+       picture (no pixel clear at all), the second to a cleared screen
+       missing the move list, the chat log, the notice line, the clock and
+       the turn label -- every field that is repainted from state this
+       resident cannot see. Moving it to the page that owns that state fixed
+       both, and cost WIN1 nine calls rather than adding any. */
+    about_restore_screen();
+}
+
 static void fileui_process_key(unsigned char key) {
     unsigned char action;
 
@@ -852,10 +899,6 @@ static void menu_cycle_theme(void) {
    dots must still show, now at their flipped screen positions, which is
    exactly what render_hint_markers_all in the shared tail gives it. */
 extern void menu_flip_board(void);
-
-static void menu_not_available(void) {
-    spectrum_gui_notify("Not available", 0u);
-}
 
 /* --- chat (S9 chat pass) ----------------------------------------------
  *
@@ -1226,7 +1269,15 @@ void main(void) {
                     }
                 } else if (spectrum_gui_fileui_visible()) {
                     key_code = 0u;
-                    fileui_process_key(key);
+                    if (about_screen) {
+                        /* About is a picture, not a UI: ANY key dismisses
+                           it. Both screens share gui.c's modal gate (see
+                           about_open above), so this flag is what tells
+                           them apart here. */
+                        about_close();
+                    } else {
+                        fileui_process_key(key);
+                    }
                 } else {
                     /* S9 chat pass: TAB closes an open chat line before the
                        menu toggle below runs -- gui.c's own spectrum_gui_

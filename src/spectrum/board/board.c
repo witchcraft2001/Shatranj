@@ -137,6 +137,13 @@ void spectrum_board_reset(void)
     ep_square = NO_EP;
 }
 
+#if !defined(NETCHESSZX_SPRINTER)
+/* S9 budget valve (About pass): no caller on Sprinter. Every board reset on
+   this port goes through spectrum_board_reset (a fresh game) or
+   spectrum_board_snapshot_restore (load/undo) -- an EMPTY board is only ever
+   wanted by the setup/editor paths, which are app.c's, and app.c is not
+   linked here (D8). Not in COLD_THUNK_SYMBOLS or COLD_RESIDENT_SYMBOLS
+   either. Same pattern as the valves in src/spectrum/ui/gui.c. */
 void spectrum_board_clear(void)
 {
     uint8_t i;
@@ -149,6 +156,7 @@ void spectrum_board_clear(void)
     castle_rights = 0u;
     ep_square = NO_EP;
 }
+#endif /* !NETCHESSZX_SPRINTER */
 
 #ifdef NETCHESSZX_HOST_TEST
 void spectrum_board_test_set(const char cells[64],

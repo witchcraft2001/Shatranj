@@ -191,6 +191,12 @@ COLD_THUNK_SYMBOLS = [
     "net_control_key",
     "net_poll_once",
     "handle_menu_action",
+    # S9 About, second MAME round: about_close (main.c) is frame-loop state
+    # and stays on WIN1, but the screen rebuild it triggers repaints fields
+    # only the cold page can see (gui.c's stored notice/clock/connection,
+    # session_sprinter.c's own status and turn label), so the rebuild itself
+    # lives there and this is the one stub that reaches it.
+    "about_restore_screen",
     # --- S8 relief pass, second cut -----------------------------------------
     # main.c's own save/load/file-browser/simple-menu-action code (moved
     # BACK to WIN1 once the whole-driver move above overran the cold page's

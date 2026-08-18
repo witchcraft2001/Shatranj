@@ -149,10 +149,12 @@ COLD_RESIDENT_SYMBOLS = [
     "saveload_snapshot",
     "saveload_b64_pending",
     "fileui_open",
+    # S9 About pass: the ABOUT menu tab, same shape as fileui_open above
+    # (frame-loop state lives in main.c, the menu dispatch lives here).
+    "about_open",
     "net_apply_loaded_snapshot",
     "menu_cycle_theme",
     "menu_flip_board",
-    "menu_not_available",
     "saveload_full_redraw",
     # --- S8 relief pass, third cut ------------------------------------------
     # apply_takeback_snapshot through net_send_takeback_wire (main.c, ahead

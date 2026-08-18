@@ -104,6 +104,25 @@ bench_init:
 .have_ovl_win3_page2:
         ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+5)
         ld      (ovl_win3_page2),a
+
+        ; The four About image pages (S9 About pass) are the SEVENTH through
+        ; TENTH, appended last for the same reason page 2 was: every index
+        ; ahead of them keeps its meaning. Unlike the singles above these are
+        ; copied as a block -- they are consumed as a block too (the About
+        ; overlay walks all four in order), and one guard on the count covers
+        ; the set. about_page0 alone carries the #FF "unavailable" sentinel
+        ; the overlay checks, matching every other page cell's convention.
+        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
+        cp      10
+        jr      nc,.have_about_pages
+        ld      a,#FF
+        ld      (about_page0),a
+        ret
+.have_about_pages:
+        ld      hl,HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+6
+        ld      de,about_page0
+        ld      bc,4
+        ldir
         ret
 bench_asset_page: DB #FF
 piece_page1: DB #FF
@@ -111,6 +130,12 @@ piece_page2: DB #FF
 ovl_win3_page: DB #FF
 cold_win3_page: DB #FF
 ovl_win3_page2: DB #FF
+; Four consecutive bytes: bench_init LDIRs the HDR block straight in, and
+; the About overlay indexes them as about_page0[n]. Keep them adjacent.
+about_page0: DB #FF
+about_page1: DB #FF
+about_page2: DB #FF
+about_page3: DB #FF
 
 ; Reads RGMOD once and stores both buffer bases: front = currently
 ; displayed, back = the other. Clobbers AF, HL.

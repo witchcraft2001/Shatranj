@@ -96,6 +96,7 @@ OVL_WIN3_RESTORE_ORG  EQU 0xDE00
 OVL_WIN3_FILEUI_ORG   EQU 0xEA00
 OVL_WIN3_NET_ORG      EQU 0xC000  ; page 2's own first slot, restarts at WIN3_BASE
 OVL_WIN3_INPUT_EDIT_ORG EQU 0xE000 ; page 2's second slot (S9 chat pass)
+OVL_WIN3_ABOUT_ORG    EQU 0xF000 ; page 2's third slot (S9 About pass)
 
 ovl_atlas_table:
     defw OVL_WIN3_RULES_ORG       ; id 0  (RULES)
@@ -110,7 +111,7 @@ ovl_atlas_table:
     defw OVL_WIN3_INPUT_EDIT_ORG  ; id 9  (INPUT_EDIT)  -- S9 chat pass, page 2
     defw OVL_WIN3_SAVELOAD_ORG    ; id 10 (SAVELOAD)    -- S6, not yet linked
     defw OVL_WIN3_RESTORE_ORG     ; id 11 (RESTORE)     -- S6, not yet linked
-    defw 0x0000   ; id 12 (ABOUT)       -- S9 scope
+    defw OVL_WIN3_ABOUT_ORG       ; id 12 (ABOUT)       -- S9 About pass, page 2
     defw OVL_WIN3_FILEUI_ORG      ; id 13 (FILEUI)      -- S6, not yet linked
     defw 0x2400   ; id 14 (CONTROL)     -- real, assets-page slot 36 (36*256)
 
@@ -133,7 +134,7 @@ ovl_atlas_mode_table:
     defb OVL_MODE_WIN3   ; id 9  (INPUT_EDIT)  -- S9 chat pass, page 2
     defb OVL_MODE_WIN3   ; id 10 (SAVELOAD)    -- S6, slot not yet linked
     defb OVL_MODE_WIN3   ; id 11 (RESTORE)     -- S6, slot not yet linked
-    defb OVL_MODE_COPY   ; id 12 (ABOUT)       -- placeholder
+    defb OVL_MODE_WIN3   ; id 12 (ABOUT)       -- S9 About pass, page 2
     defb OVL_MODE_WIN3   ; id 13 (FILEUI)      -- S6, slot not yet linked
     defb OVL_MODE_COPY   ; id 14 (CONTROL)     -- real, unchanged
 
@@ -157,6 +158,6 @@ ovl_atlas_page_table:
     defw ovl_win3_page2   ; id 9  (INPUT_EDIT)  -- page 2 (S9 chat pass)
     defw ovl_win3_page    ; id 10 (SAVELOAD)
     defw ovl_win3_page    ; id 11 (RESTORE)
-    defw ovl_win3_page    ; id 12 (ABOUT)       -- unused (mode 0)
+    defw ovl_win3_page2   ; id 12 (ABOUT)       -- page 2 (S9 About pass)
     defw ovl_win3_page    ; id 13 (FILEUI)
     defw ovl_win3_page    ; id 14 (CONTROL)     -- unused (mode 0)

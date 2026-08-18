@@ -168,6 +168,20 @@ PLATFORM_SYMBOLS = [
     "write_palette",
     "write_palette_entry",
     "video_init",
+    # palette_apply_from is video_init's own body with the table passed in
+    # (HL): the S9 About overlay swaps the whole 16-entry palette for its
+    # image and hands back through video_init on exit. Bridged because the
+    # overlay lives in WIN3 and so cannot be mapped while the palette
+    # registers are -- see video.asm's own comment.
+    "palette_apply_from",
+    # buffers.asm's four About image page cells (S9 About pass). The overlay
+    # reads them to know which physical pages to blit from.
+    "about_page0",
+    # Explicit whole-screen invalidation for the About screen. The 32
+    # gfx_draw_tile calls it makes would overflow the flip ring and promote
+    # to dirty_all on their own, but relying on overflow is relying on a
+    # ring size nobody promised -- say it outright instead.
+    "flip_mark_dirty_all",
     "ovl_test_signal",
     "clear_bg_signal",
     "rtc_sample",
@@ -448,6 +462,9 @@ def _clean_fixture() -> str:
         "write_palette: EQU 0x000044F5\n"
         "write_palette_entry: EQU 0x000044CA\n"
         "video_init: EQU 0x00004600\n"
+        "palette_apply_from: EQU 0x00004603\n"
+        "about_page0: EQU 0x0000469A\n"
+        "flip_mark_dirty_all: EQU 0x000046A0\n"
         "ovl_test_signal: EQU 0x00004650\n"
         "clear_bg_signal: EQU 0x00004660\n"
         "rtc_sample: EQU 0x000045B6\n"

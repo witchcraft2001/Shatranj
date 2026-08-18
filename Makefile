@@ -1079,6 +1079,28 @@ SPRINTER_OVL_RESTORE_BIN := $(SPRINTER_BUILD_DIR)/overlay_restore_sprinter.bin
 SPRINTER_OVL_FILEUI_BIN := $(SPRINTER_BUILD_DIR)/overlay_fileui_sprinter.bin
 SPRINTER_OVL_NET_BIN := $(SPRINTER_BUILD_DIR)/overlay_net_sprinter.bin
 SPRINTER_OVL_INPUT_EDIT_BIN := $(SPRINTER_BUILD_DIR)/overlay_input_edit_sprinter.bin
+SPRINTER_OVL_ABOUT_BIN := $(SPRINTER_BUILD_DIR)/overlay_about_sprinter.bin
+
+# About screen artwork (S9 About pass): the committed, already-palettised
+# PNG plus everything tools/build_sprinter_about.py derives from it. The
+# four image pages become asset pages 7-10; the palette is emitted twice,
+# once as raw bytes (unused by the build, kept for inspection) and once as a
+# z80asm source include the ABOUT overlay assembles in.
+SPRINTER_ABOUT_PNG := assets/sprinter/about640.png
+SPRINTER_ABOUT_PAL := $(SPRINTER_BUILD_DIR)/about_pal.bin
+SPRINTER_ABOUT_PAL_INC := $(SPRINTER_GENERATED_DIR)/about_palette.inc
+SPRINTER_ABOUT_MANIFEST := $(SPRINTER_BUILD_DIR)/about_manifest.json
+SPRINTER_ABOUT_PAGE_PREFIX := $(SPRINTER_BUILD_DIR)/about_page
+SPRINTER_ABOUT_PAGE0 := $(SPRINTER_ABOUT_PAGE_PREFIX)0.bin
+SPRINTER_ABOUT_PAGE1 := $(SPRINTER_ABOUT_PAGE_PREFIX)1.bin
+SPRINTER_ABOUT_PAGE2 := $(SPRINTER_ABOUT_PAGE_PREFIX)2.bin
+SPRINTER_ABOUT_PAGE3 := $(SPRINTER_ABOUT_PAGE_PREFIX)3.bin
+SPRINTER_ABOUT_DEPS := tools/build_sprinter_about.py $(SPRINTER_ABOUT_PNG)
+SPRINTER_ABOUT_BUILD = $(PYTHON) tools/build_sprinter_about.py \
+		--input $(SPRINTER_ABOUT_PNG) --palette-out $(SPRINTER_ABOUT_PAL) \
+		--palette-inc-out $(SPRINTER_ABOUT_PAL_INC) \
+		--pages-out-prefix $(SPRINTER_ABOUT_PAGE_PREFIX) \
+		--manifest-out $(SPRINTER_ABOUT_MANIFEST)
 
 SPRINTER_PALETTE_JSON := assets/sprinter/palette.json
 SPRINTER_PALETTE_INC := $(SPRINTER_GENERATED_DIR)/palette_base.inc
@@ -1106,10 +1128,6 @@ SPRINTER_FRAME_SELECT_PNG := assets/sprinter/markers/select.png
 SPRINTER_UI_ASSETS_BIN := $(SPRINTER_BUILD_DIR)/ui_assets.bin
 SPRINTER_UI_ASSETS_MANIFEST := $(SPRINTER_BUILD_DIR)/ui_assets_manifest.json
 
-SPRINTER_ABOUT_PNG := assets/sprinter/about.png
-SPRINTER_ABOUT_PALETTE := $(SPRINTER_BUILD_DIR)/about_palette.bin
-SPRINTER_ABOUT_PAGE_PREFIX := $(SPRINTER_BUILD_DIR)/about_page
-
 SPRINTER_VERSION_INC := $(SPRINTER_GENERATED_DIR)/sprinter_version.inc
 
 sprinter-deps-check: tools/check_sprinter_deps.py
@@ -1125,7 +1143,7 @@ sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
                      tests/tools/test_prepare_sprinter_logo.py tools/prepare_sprinter_logo.py \
                      tests/tools/test_make_sprinter_markers.py tools/make_sprinter_markers.py \
                      tests/tools/test_sprinter_ui_assets.py tools/build_sprinter_ui_assets.py \
-                     tests/tools/test_sprinter_about.py tools/make_sprinter_about.py \
+                     tests/tools/test_sprinter_about.py tools/build_sprinter_about.py \
                      tests/tools/test_sprinter_version.py tools/gen_sprinter_version.py \
                      tools/sprinter_echo_server.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
@@ -1251,6 +1269,14 @@ $(SPRINTER_VERSION_INC): tools/gen_sprinter_version.py VERSION | $(SPRINTER_GENE
 	$(PYTHON) tools/gen_sprinter_version.py --version-file VERSION \
 		--inc-out $(SPRINTER_VERSION_INC)
 
+# Same string, z88dk-z80asm dialect, for the ABOUT overlay's caption (the
+# overlays under asm/sprinter/zcc are not assembled by sjasmplus).
+SPRINTER_VERSION_INC_Z80ASM := $(SPRINTER_GENERATED_DIR)/sprinter_version_z80asm.asm
+
+$(SPRINTER_VERSION_INC_Z80ASM): tools/gen_sprinter_version.py VERSION | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/gen_sprinter_version.py --version-file VERSION \
+		--mode z80asm --inc-out $(SPRINTER_VERSION_INC_Z80ASM)
+
 $(SPRINTER_LOADER_BIN): $(SPRINTER_ASM_DIR)/preload_loader.asm $(SPRINTER_ASM_DIR)/dss.inc \
                         $(SPRINTER_ASM_DIR)/manifest.inc $(SPRINTER_ASM_DIR)/hdr.inc \
                         $(SPRINTER_LAYOUT_INC) | $(SPRINTER_BUILD_DIR)
@@ -1314,6 +1340,26 @@ $(SPRINTER_PIECE_TILES_MANIFEST): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUIL
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
+
+# About artwork. Mirror rules again, one per output, for the same GNU make
+# 3.81 reason the piece-tile rules above spell out (no grouped targets).
+$(SPRINTER_ABOUT_PAGE0): $(SPRINTER_ABOUT_DEPS) | $(SPRINTER_BUILD_DIR) $(SPRINTER_GENERATED_DIR)
+	$(SPRINTER_ABOUT_BUILD)
+
+$(SPRINTER_ABOUT_PAGE1): $(SPRINTER_ABOUT_DEPS) | $(SPRINTER_BUILD_DIR) $(SPRINTER_GENERATED_DIR)
+	$(SPRINTER_ABOUT_BUILD)
+
+$(SPRINTER_ABOUT_PAGE2): $(SPRINTER_ABOUT_DEPS) | $(SPRINTER_BUILD_DIR) $(SPRINTER_GENERATED_DIR)
+	$(SPRINTER_ABOUT_BUILD)
+
+$(SPRINTER_ABOUT_PAGE3): $(SPRINTER_ABOUT_DEPS) | $(SPRINTER_BUILD_DIR) $(SPRINTER_GENERATED_DIR)
+	$(SPRINTER_ABOUT_BUILD)
+
+$(SPRINTER_ABOUT_PAL): $(SPRINTER_ABOUT_DEPS) | $(SPRINTER_BUILD_DIR) $(SPRINTER_GENERATED_DIR)
+	$(SPRINTER_ABOUT_BUILD)
+
+$(SPRINTER_ABOUT_PAL_INC): $(SPRINTER_ABOUT_DEPS) | $(SPRINTER_BUILD_DIR) $(SPRINTER_GENERATED_DIR)
+	$(SPRINTER_ABOUT_BUILD)
 
 # --- z88dk bridge: trampoline + platform primitives + C image + splice ----
 # (plan D1, port.md section 3.10/S5). Three independent builds, agreeing
@@ -1826,6 +1872,38 @@ $(SPRINTER_OVL_INPUT_EDIT_BIN): $(SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM) src/sprinte
 
 sprinter-overlay-input-edit-check: $(SPRINTER_OVL_INPUT_EDIT_BIN)
 
+# ABOUT (SPECTRUM_OVL_ABOUT=12u, S9 About pass): the full-screen artwork
+# painter. Also page 2, in the first half of what was left of RESERVE2.
+# Pure asm (see about_sprinter.asm's own header for why), so unlike the
+# overlays above there is no zcc step -- but it does need two GENERATED
+# sources: the artwork's palette as z80asm defb's, and the version string
+# in the same dialect. Needs platform_defs.asm (it reaches gfx_draw_tile,
+# text_print, palette_apply_from and the tile_* block through it) but not
+# overlay_defs_sprinter.asm -- it calls no resident C at all.
+SPRINTER_OVL_ABOUT_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_about_sprinter.asm
+SPRINTER_OVL_ABOUT_BODY_ASM := $(SPRINTER_ASM_DIR)/zcc/about_sprinter.asm
+
+$(SPRINTER_OVL_ABOUT_BIN): $(SPRINTER_OVL_ABOUT_ENTRY_ASM) $(SPRINTER_OVL_ABOUT_BODY_ASM) \
+                         $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_ABOUT_PAL_INC) \
+                         $(SPRINTER_VERSION_INC_Z80ASM) \
+                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+	$(Z80ASM) $(SPRINTER_OVL_ABOUT_ENTRY_ASM)
+	$(Z80ASM) $(SPRINTER_OVL_ABOUT_BODY_ASM)
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) $(SPRINTER_ABOUT_PAL_INC)
+	$(Z80ASM) $(SPRINTER_VERSION_INC_Z80ASM)
+	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org ABOUT) \
+		-o=$(SPRINTER_OVL_ABOUT_BIN) \
+		$(SPRINTER_ASM_DIR)/zcc/entry_about_sprinter.o $(SPRINTER_ASM_DIR)/zcc/about_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o \
+		$(SPRINTER_GENERATED_DIR)/about_palette.o \
+		$(SPRINTER_GENERATED_DIR)/sprinter_version_z80asm.o
+	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_about_sprinter.o $(SPRINTER_ASM_DIR)/zcc/about_sprinter.o \
+		$(SPRINTER_GENERATED_DIR)/platform_defs.o $(SPRINTER_GENERATED_DIR)/about_palette.o \
+		$(SPRINTER_GENERATED_DIR)/sprinter_version_z80asm.o
+
+sprinter-overlay-about-check: $(SPRINTER_OVL_ABOUT_BIN)
+
 # WIN3 overlay page 1 (tools/make_sprinter_overlay_page.py, plan D7-bis, S6
 # plan step 2): RULES/BOARD/SAVELOAD/RESTORE/FILEUI's own bytes, each linked
 # at its own ORG inside #C000-#FFFF and packed per that tool's declarative
@@ -1854,10 +1932,11 @@ $(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RU
 SPRINTER_OVL_WIN3_PAGE2 := $(SPRINTER_BUILD_DIR)/ovl_win3_page2.bin
 
 $(SPRINTER_OVL_WIN3_PAGE2): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_NET_BIN) \
-                       $(SPRINTER_OVL_INPUT_EDIT_BIN) | $(SPRINTER_BUILD_DIR)
+                       $(SPRINTER_OVL_INPUT_EDIT_BIN) $(SPRINTER_OVL_ABOUT_BIN) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_overlay_page.py --page 2 \
 		--net-bin $(SPRINTER_OVL_NET_BIN) \
 		--input_edit-bin $(SPRINTER_OVL_INPUT_EDIT_BIN) \
+		--about-bin $(SPRINTER_OVL_ABOUT_BIN) \
 		--output $(SPRINTER_OVL_WIN3_PAGE2)
 
 $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) \
@@ -1872,6 +1951,8 @@ $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) 
 $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
                  $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) $(SPRINTER_OVL_WIN3_PAGE) \
                  $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_WIN3_PAGE2) \
+                 $(SPRINTER_ABOUT_PAGE0) $(SPRINTER_ABOUT_PAGE1) \
+                 $(SPRINTER_ABOUT_PAGE2) $(SPRINTER_ABOUT_PAGE3) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
@@ -1879,6 +1960,8 @@ $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSE
 		--assets $(SPRINTER_PIECE_PAGE1) --assets $(SPRINTER_PIECE_PAGE2) \
 		--assets $(SPRINTER_OVL_WIN3_PAGE) --assets $(SPRINTER_COLD_WIN3_PAGE) \
 		--assets $(SPRINTER_OVL_WIN3_PAGE2) \
+		--assets $(SPRINTER_ABOUT_PAGE0) --assets $(SPRINTER_ABOUT_PAGE1) \
+		--assets $(SPRINTER_ABOUT_PAGE2) --assets $(SPRINTER_ABOUT_PAGE3) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -1958,14 +2041,6 @@ sprinter-hw-zip: exe tools/make_sprinter_hw_zip.py
 	$(PYTHON) tools/make_sprinter_hw_zip.py --exe $(SPRINTER_EXE) \
 		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
 		--output $(SPRINTER_HW_ZIP)
-
-# Not part of sprinter-check/exe: the About screen is not embedded in the
-# EXE until S9 (port.md section 4/S4 decision D4). Convenience target only.
-sprinter-about: tools/make_sprinter_about.py $(SPRINTER_ABOUT_PNG)
-	$(PYTHON) tools/make_sprinter_about.py --input $(SPRINTER_ABOUT_PNG) \
-		--palette-out $(SPRINTER_ABOUT_PALETTE) \
-		--pages-out-prefix $(SPRINTER_ABOUT_PAGE_PREFIX) \
-		--preview-out $(SPRINTER_BUILD_DIR)/preview/about_preview.png
 
 sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-gates sprinter-section-gate sprinter-crt0-check \

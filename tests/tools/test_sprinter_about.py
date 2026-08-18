@@ -1,114 +1,146 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/make_sprinter_about.py (S4 About screen packer).
+"""Unit tests for tools/build_sprinter_about.py (S9 About screen packer).
 
-Structural tests only, deliberately no pinned sha256 of the quantized
-output: Pillow's MEDIANCUT implementation is not guaranteed byte-stable
-across versions, and the About screen is not embedded in the EXE or the
-smoke image (port.md section 4/S4 decision D4), so this suite checks
-shape/format invariants and same-process determinism instead.
+Unlike the S4 packer this replaces, the quantiser is NOT part of the build
+any more (tools/prepare_sprinter_about.py runs by hand and its result is
+committed), so this suite can and does pin exact bytes: the packing is pure
+bit-shuffling and must be reproducible for `make sprinter-check`'s smoke
+image determinism gate to mean anything.
+
+The committed-asset tests are the ones that would catch an artist's repaint
+breaking the contract -- wrong size, a stray index in the two reserved
+caption entries, or a palette that no longer has 16 usable entries.
 """
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import unittest
 from pathlib import Path
 
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
 
-import make_sprinter_about as msa
+import build_sprinter_about as bsa  # noqa: E402
 
-ABOUT_PNG = (
-    Path(__file__).resolve().parent.parent.parent / "assets/sprinter/about.png"
-)
+ABOUT_PNG = ROOT / "assets/sprinter/about640.png"
 
 
-def _synthetic_source() -> Image.Image:
-    img = Image.new("RGB", (msa.TARGET_W, msa.TARGET_H))
-    px = img.load()
-    for y in range(msa.TARGET_H):
-        for x in range(msa.TARGET_W):
-            px[x, y] = (x % 256, y % 256, (x + y) % 256)
+def _synthetic() -> Image.Image:
+    """Every pixel encodes its own position, so a transposed half, a
+    flipped nibble or an off-by-one row is visible in the output."""
+    img = Image.new("P", (bsa.IMAGE_W, bsa.IMAGE_H))
+    img.putpalette([(i * 7) % 256 for i in range(bsa.PALETTE_SIZE)])
+    px = bytearray(bsa.IMAGE_W * bsa.IMAGE_H)
+    for y in range(bsa.IMAGE_H):
+        for x in range(bsa.IMAGE_W):
+            px[y * bsa.IMAGE_W + x] = (x + y) % bsa.PALETTE_COLORS
+    img.frombytes(bytes(px))
     return img
 
 
-class QuantizeTests(unittest.TestCase):
-    def test_wrong_size_is_rejected(self) -> None:
-        img = Image.new("RGB", (100, 100))
-        with self.assertRaises(SystemExit):
-            msa.quantize(img)
-
-    def test_output_is_mode_p_at_target_size(self) -> None:
-        quantized = msa.quantize(_synthetic_source())
-        self.assertEqual(quantized.mode, "P")
-        self.assertEqual(quantized.size, (msa.TARGET_W, msa.TARGET_H))
-
-
-class PaletteTests(unittest.TestCase):
-    def test_palette_is_exactly_1024_bytes_rgb0_quads(self) -> None:
-        quantized = msa.quantize(_synthetic_source())
-        palette = msa.build_palette_bytes(quantized)
-        self.assertEqual(len(palette), msa.PALETTE_SIZE)
-        self.assertEqual(msa.PALETTE_SIZE, 256 * 4)
-        for i in range(256):
-            self.assertEqual(palette[i * 4 + 3], 0, f"entry {i}'s 4th byte is not zero")
-
-    def test_deterministic_within_one_process(self) -> None:
-        quantized = msa.quantize(_synthetic_source())
-        p1 = msa.build_palette_bytes(quantized)
-        p2 = msa.build_palette_bytes(quantized)
-        self.assertEqual(p1, p2)
-
-
-class PixelPageTests(unittest.TestCase):
-    def test_exactly_five_pages_of_16384_bytes(self) -> None:
-        quantized = msa.quantize(_synthetic_source())
-        pages = msa.build_pixel_pages(quantized)
-        self.assertEqual(len(pages), 5)
+class PackingTests(unittest.TestCase):
+    def test_exactly_four_pages_of_16384_bytes(self) -> None:
+        pages = bsa.build_pages(_synthetic())
+        self.assertEqual(len(pages), 4)
         for page in pages:
-            self.assertEqual(len(page), msa.PAGE_SIZE)
+            self.assertEqual(len(page), bsa.PAGE_SIZE)
 
-    def test_total_payload_covers_every_pixel_plus_padding(self) -> None:
-        quantized = msa.quantize(_synthetic_source())
-        pages = msa.build_pixel_pages(quantized)
-        total = b"".join(pages)
-        self.assertEqual(len(total), 5 * msa.PAGE_SIZE)
-        self.assertEqual(msa.PIXEL_TOTAL, msa.TARGET_W * msa.TARGET_H)
-        # Padding past the real pixel data (81920..81920+.. ) must be zero.
-        self.assertEqual(total[msa.PIXEL_TOTAL:], bytes(len(total) - msa.PIXEL_TOTAL))
+    def test_pages_cover_every_pixel_with_no_padding(self) -> None:
+        # 512*256 pixels at 2 per byte is exactly 4 * 16384.
+        self.assertEqual(bsa.IMAGE_W * bsa.IMAGE_H // 2,
+                         4 * bsa.PAGE_SIZE)
 
-    def test_deterministic_within_one_process(self) -> None:
-        quantized = msa.quantize(_synthetic_source())
-        pages1 = msa.build_pixel_pages(quantized)
-        pages2 = msa.build_pixel_pages(quantized)
-        self.assertEqual(pages1, pages2)
+    def test_high_nibble_is_the_left_pixel(self) -> None:
+        pages = bsa.build_pages(_synthetic())
+        # Right half (pages 2/3), row 5, image column 300.
+        y, x = 5, 300
+        byte = pages[2][y * bsa.HALF_BYTES + (x - bsa.HALF_W) // 2]
+        self.assertEqual(byte >> 4, (x + y) % bsa.PALETTE_COLORS)
+        self.assertEqual(byte & 0x0F, (x + 1 + y) % bsa.PALETTE_COLORS)
+
+    def test_page_order_is_left_top_left_bottom_right_top_right_bottom(self) -> None:
+        """The overlay derives BOTH the destination column and the starting
+        row from the page index alone (bit 1 = half, bit 0 = top/bottom), so
+        this order is load-bearing, not cosmetic."""
+        img = Image.new("P", (bsa.IMAGE_W, bsa.IMAGE_H))
+        img.putpalette([0] * bsa.PALETTE_SIZE)
+        px = bytearray(bsa.IMAGE_W * bsa.IMAGE_H)
+        # Mark one pixel per quadrant with a distinct index.
+        marks = {
+            (0, 0): 1,                                   # left half, top
+            (0, bsa.IMAGE_H - 1): 2,                     # left half, bottom
+            (bsa.HALF_W, 0): 3,                          # right half, top
+            (bsa.HALF_W, bsa.IMAGE_H - 1): 4,            # right half, bottom
+        }
+        for (x, y), v in marks.items():
+            px[y * bsa.IMAGE_W + x] = v
+        img.frombytes(bytes(px))
+        pages = bsa.build_pages(img)
+        self.assertEqual(pages[0][0] >> 4, 1)
+        self.assertEqual(pages[1][(bsa.ROWS_PER_PAGE - 1) * bsa.HALF_BYTES] >> 4, 2)
+        self.assertEqual(pages[2][0] >> 4, 3)
+        self.assertEqual(pages[3][(bsa.ROWS_PER_PAGE - 1) * bsa.HALF_BYTES] >> 4, 4)
+
+    def test_palette_is_16_rgb_triples(self) -> None:
+        pal = bsa.build_palette(_synthetic())
+        self.assertEqual(len(pal), bsa.PALETTE_SIZE)
+        self.assertEqual(bsa.PALETTE_SIZE, 48)
+
+    def test_packing_is_deterministic(self) -> None:
+        img = _synthetic()
+        first = bsa.build_pages(img)
+        self.assertEqual(bsa.build_pages(img), first)
+        self.assertEqual(bsa.build_palette(img), bsa.build_palette(img))
 
 
-class RoundTripTests(unittest.TestCase):
-    def test_reconstruct_preview_matches_quantized_source_exactly(self) -> None:
-        source = _synthetic_source()
-        quantized = msa.quantize(source)
-        palette = msa.build_palette_bytes(quantized)
-        pages = msa.build_pixel_pages(quantized)
-        preview = msa.reconstruct_preview(palette, pages)
-        self.assertEqual(preview.size, (msa.TARGET_W, msa.TARGET_H))
-        self.assertEqual(preview.convert("RGB").tobytes(), quantized.convert("RGB").tobytes())
+class InputValidationTests(unittest.TestCase):
+    def test_rgb_input_is_rejected(self) -> None:
+        path = ROOT / "assets/pc-client/about/about-shatranj.png"
+        if not path.is_file():
+            self.skipTest("master artwork not present")
+        with self.assertRaises(SystemExit):
+            bsa.load_indexed(path)
+
+    def test_reserved_caption_indices_are_enforced(self) -> None:
+        img = _synthetic()          # uses indices 0..15, including 14/15
+        out = ROOT / "build/sprinter/_test_about_reserved.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.save(out)
+        try:
+            with self.assertRaises(SystemExit):
+                bsa.load_indexed(out)
+        finally:
+            out.unlink(missing_ok=True)
 
 
-class RealAboutPngTests(unittest.TestCase):
-    def test_committed_about_png_is_the_right_size(self) -> None:
-        self.assertTrue(ABOUT_PNG.is_file(), f"missing {ABOUT_PNG}")
-        img = Image.open(ABOUT_PNG)
-        self.assertEqual(img.size, (msa.TARGET_W, msa.TARGET_H))
+class CommittedAssetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if not ABOUT_PNG.is_file():
+            self.skipTest(f"{ABOUT_PNG} not present")
 
-    def test_committed_about_png_packs_without_error(self) -> None:
-        quantized = msa.quantize(Image.open(ABOUT_PNG))
-        palette = msa.build_palette_bytes(quantized)
-        pages = msa.build_pixel_pages(quantized)
-        self.assertEqual(len(palette), msa.PALETTE_SIZE)
-        self.assertEqual(len(pages), 5)
+    def test_committed_asset_matches_the_contract(self) -> None:
+        image = bsa.load_indexed(ABOUT_PNG)   # raises on any violation
+        self.assertEqual(image.size, (bsa.IMAGE_W, bsa.IMAGE_H))
+        self.assertLess(max(image.tobytes()), bsa.IMAGE_COLORS)
+
+    def test_committed_asset_packs_reproducibly(self) -> None:
+        image = bsa.load_indexed(ABOUT_PNG)
+        a = [hashlib.sha256(p).hexdigest() for p in bsa.build_pages(image)]
+        b = [hashlib.sha256(p).hexdigest()
+             for p in bsa.build_pages(bsa.load_indexed(ABOUT_PNG))]
+        self.assertEqual(a, b)
+
+    def test_caption_entries_are_black_and_light(self) -> None:
+        pal = bsa.build_palette(bsa.load_indexed(ABOUT_PNG))
+        bg = tuple(pal[bsa.CAPTION_BG_INDEX * 3:bsa.CAPTION_BG_INDEX * 3 + 3])
+        fg = tuple(pal[bsa.CAPTION_FG_INDEX * 3:bsa.CAPTION_FG_INDEX * 3 + 3])
+        self.assertEqual(bg, (0, 0, 0))
+        # Readable means "clearly brighter than its own background".
+        self.assertGreater(sum(fg), 3 * 128)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,38 @@ COLD_RENDER_SYMBOLS = [
     "frame_oy",
     "_spectrum_gui_board_flipped",
     "_netchesszx_movement_hints",
+    # S9 About, second MAME round: what tests/sprinter/z80/t_about_restore.asm
+    # drives and intercepts while running the shipped about_restore_screen.
+    # The entry under test, then every paint it is supposed to reach -- the
+    # test replaces each one with a recorder and asserts the resulting call
+    # log. The WIN1/WIN2 addresses among them (video_init, net_status_idle)
+    # come from this same map: the cold page reaches them through generated
+    # defc bridges, so its .map carries them alongside its own symbols.
+    "_about_restore_screen",
+    "video_clear_both_buffers",
+    "_video_init",
+    "_spectrum_gui_restore_board_area",
+    "_render_coord_labels",
+    "render_banner",
+    "render_menu_bar",
+    "render_status_text",
+    "render_input_line",
+    "_spectrum_info_show_game",
+    "_spectrum_render_moves",
+    "_spectrum_render_chat",
+    "_spectrum_render_clock",
+    "_spectrum_render_game_timer_clear",
+    "_spectrum_render_notice",
+    "_spectrum_gui_set_connected",
+    "_spectrum_gui_set_turn_label",
+    "_net_status_idle",
+    # State the test seeds so the run takes one determinate path through
+    # gui.c, plus the modal gate it checks was lowered.
+    "_net_active",
+    "_about_visible",
+    "_menu_visible",
+    "_notice_error",
+    "_notice_success",
 ]
 
 # From build/sprinter/platform_primitives.sym (sjasmplus "name: EQU 0x..."):
@@ -42,11 +74,22 @@ COLD_RENDER_SYMBOLS = [
 # buffer cells draw_frame_at consults. The blit test inspects these to see
 # what render_hint_marker actually handed the blitter.
 PLATFORM_SYMBOLS = [
+    # S9 About pass: what tests/sprinter/z80/t_about_blit.asm stubs and
+    # inspects while running the shipped ABOUT overlay.
+    "about_page0",
+    "palette_apply_from",
+    "text_print",
+    "flip_mark_dirty_all",
     "bench_asset_page",
     "back_base",
     "gfx_draw_tile",
+    "gfx_blit_rows",
+    "gfx_fill_rect",
     "tile_src_page",
     "tile_src_slot",
+    "tile_x_byte",
+    "tile_x_hi",
+    "tile_y",
     "tile_stride",
     "tile_width",
     "tile_rows",
@@ -107,27 +150,34 @@ def render(symbols: dict[str, int],
 
 
 def self_test() -> int:
-    fixture = (
-        "render_hint_marker              = $F32A ; addr, public\n"
-        "render_cursor_marker            = $F3F0 ; addr, public\n"
-        "draw_frame_at_slot              = $F238 ; addr, local\n"
-        "frame_tw                        = $F234 ; addr, local\n"
-        "frame_th                        = $F235 ; addr, local\n"
-        "frame_ox                        = $F236 ; addr, local\n"
-        "frame_oy                        = $F237 ; addr, local\n"
-        "_spectrum_gui_board_flipped     = $B400 ; const, local\n"
-        "_netchesszx_movement_hints      = $7D5F ; const, public\n"
+    # Both fixtures are derived from the allowlists, not hand-written: each
+    # list grows every time a test needs another symbol, and a literal table
+    # here would break on every addition without saying anything useful
+    # about the generator.
+    fixture = "".join(
+        f"{n}{' ' * max(1, 32 - len(n))}= ${0xC100 + i:04X} ; addr, public\n"
+        for i, n in enumerate(COLD_RENDER_SYMBOLS)
     )
     sym_fixture = "".join(
         f"{n}: EQU 0x0000{0x8200 + i:04X}\n"
         for i, n in enumerate(PLATFORM_SYMBOLS)
     )
     out = render(parse_map(fixture), parse_sym(sym_fixture))
-    assert "render_hint_marker: EQU 0x0000F32A" in out, out
-    assert "frame_oy: EQU 0x0000F237" in out, out
-    assert "tile_src_slot: EQU 0x00008204" in out, out
+    for probe in ("render_hint_marker", "frame_oy", "_about_restore_screen"):
+        expect = 0xC100 + COLD_RENDER_SYMBOLS.index(probe)
+        assert f"{probe}: EQU 0x{expect:08X}" in out, out
+    expect = 0x8200 + PLATFORM_SYMBOLS.index("tile_src_slot")
+    assert f"tile_src_slot: EQU 0x{expect:08X}" in out, out
     assert render(parse_map(fixture), parse_sym(sym_fixture)) == out, \
         "not deterministic"
+    # A map missing one of the required names must fail loudly, not emit a
+    # file the test would then fail to assemble.
+    try:
+        render(parse_map("render_hint_marker = $F32A ; addr, public\n"))
+    except SystemExit:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("incomplete map was accepted")
     # A sym file missing one of the required names must fail loudly rather
     # than silently emitting a file the test would then fail to assemble.
     try:

@@ -405,7 +405,14 @@ static const char *net_ui_backend_name(void)
     if (ng_backend == NET_UI_BACKEND_RTL) {
         return "RTL (UNETRTL.DLL)";
     }
-    return "-- (SET NET=WIFI OR RTL)";
+    /* No backend selected yet. Just "--": the row is a STATUS readout, and
+       the "SET NET=..." hint that used to be appended here read as UI noise
+       to the human tester (2026-08-17). The same advice still reaches anyone
+       who actually needs it, from the preflight failure text that names the
+       stage ("NO NET ENV (SET NET=WIFI|RTL)", net_ui_preflight_reason
+       above) -- which is where it is actionable, rather than on a row that
+       is merely reporting the current state. */
+    return "--";
 }
 
 /* LASTERR is the DLL's own diagnostic text. Empty is normal for failures
@@ -799,7 +806,7 @@ unsigned char net_join_ui_ovl(void)
 {
     net_ui_frame();
     net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM,
-              "UP/DN LR EDIT  ENTER CONNECT  ESC CANCEL");
+              "UP/DN SELECT  L/R CHANGE  ENTER CONNECT  ESC CANCEL");
     key_code = 0u;
 
     for (;;) {
@@ -820,7 +827,7 @@ unsigned char net_join_ui_ovl(void)
             }
             net_ui_frame();
             net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM,
-                      "UP/DN LR EDIT  ENTER CONNECT  ESC CANCEL");
+                      "UP/DN SELECT  L/R CHANGE  ENTER CONNECT  ESC CANCEL");
             continue;
         }
         if (key_code == NET_UI_KEY_UP) {

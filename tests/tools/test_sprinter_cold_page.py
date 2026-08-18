@@ -239,6 +239,7 @@ class ColdPageSourceAgreementTest(unittest.TestCase):
     # prefix check below (that file's own header has the full byte-budget
     # history of why each one is public rather than static).
     SESSION_SPRINTER_C_SIDE = frozenset({
+        "about_restore_screen",
         "board_select_or_move",
         "handle_menu_action",
         "net_control_key",

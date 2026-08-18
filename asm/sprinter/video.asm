@@ -66,9 +66,15 @@ write_palette_entry:
 
 ; Writes all 16 entries to both palette banks (R10: SetVMod for screen 1
 ; then 0 is the loader's job; the palette itself must still land in both
-; banks or one screen shows stale colours). Clobbers AF, BC, DE, HL.
+; banks or one screen shows stale colours).
+;
+; HL -> 16 x 3 RGB8 bytes. Passed in rather than hardwired to palette_rgb
+; since the S9 About screen: that screen is a full-screen takeover and owns
+; all 16 entries while it is up, so it swaps in its OWN table (packed by
+; tools/build_sprinter_about.py in exactly this layout) and hands back to
+; video_init below on exit. Caller must already have WIN3 mapped to VRAM,
+; same precondition write_palette_entry documents. Clobbers AF, BC, DE, HL.
 write_palette:
-        ld      hl,palette_rgb
         ld      b,0
 .next:  ld      a,b
         call    write_palette_entry
@@ -82,8 +88,22 @@ write_palette:
 ; main()) and again after any mode switch (which resets the palette).
 ; Unlike the S1 stand's video_init, does NOT touch VRAM contents -- the
 ; stand's debug grid is gone; the real board/panel painting is C's job.
+; This is also the RESTORE path the S9 About screen returns through.
 ; Clobbers AF,BC,DE,HL.
 video_init:
+        ld      hl,palette_rgb
+        ; falls through
+
+; Same, for an arbitrary 16 x 3 RGB8 table (HL). Split out of video_init
+; rather than duplicated because the WIN3 save/map(#50)/park/restore dance
+; around it is the whole routine, and the S9 About overlay needs exactly
+; that dance for its own palette: the overlay itself lives in WIN3 and so
+; cannot be mapped while the palette registers are, which is why this has
+; to be a resident entry point and not overlay-local code. The table must
+; therefore sit somewhere still addressable with VRAM in WIN3 -- the
+; About overlay stages its copy into LOWRAM_OVERLAY_SCRATCH (WIN2) first.
+; Clobbers AF,BC,DE,HL.
+palette_apply_from:
         di
         in      a,(WIN3_PORT)
         ld      (.saved_win3),a

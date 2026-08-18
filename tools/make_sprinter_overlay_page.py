@@ -65,7 +65,17 @@ this_packing pins the two together):
 Slot layout, page 2:
     #C000  NET         (SPECTRUM_OVL_NET_CONNECT=3u)  8192 bytes
     #E000  INPUT_EDIT  (SPECTRUM_OVL_INPUT_EDIT=9u)   4096 bytes
-    #F000  reserved (RESERVE2)                        4096 bytes
+    #F000  ABOUT       (SPECTRUM_OVL_ABOUT=12u)       2048 bytes
+    #F800  reserved (RESERVE2)                        2048 bytes
+
+S9 About pass takes the first half of what was left of RESERVE2. ABOUT is
+small for what it draws because it draws almost nothing itself: the picture
+is blitted by the RESIDENT gfx_draw_tile, 16 rows per call, and the only
+things that live in this slot are the loop that walks the four image pages,
+the 48-byte palette the screen swaps in, and the caption text. It had to go
+on a WIN3 page rather than into the resident or the cold page because both
+of those were already full when it was written (WIN1 8 bytes free, WIN2 40,
+cold page 0).
 
 Page 1 is published to HDR as the fourth asset page
 (HDR_ASSET_PAGE0_OFFSET+3); page 2 as the sixth
@@ -104,7 +114,8 @@ LAYOUT = [
 LAYOUT2 = [
     ("NET", 8192),
     ("INPUT_EDIT", 4096),
-    ("RESERVE2", 4096),
+    ("ABOUT", 2048),
+    ("RESERVE2", 2048),
 ]
 
 # Page number -> that page's LAYOUT. Order of this dict is not significant;

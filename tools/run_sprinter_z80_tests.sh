@@ -120,6 +120,20 @@ for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
     ran=$((ran - 1))
     continue
   fi
+  if [[ "$name" == "t_about_blit" ]] &&
+     { [[ ! -f "$generated_dir/coldrender_test_defs.inc" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/overlay_about_sprinter.bin" ]]; }; then
+    echo "SKIP $name: build/sprinter/overlay_about_sprinter.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
+  if [[ "$name" == "t_about_restore" ]] &&
+     { [[ ! -f "$generated_dir/coldrender_test_defs.inc" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/cold_win3_page.bin" ]]; }; then
+    echo "SKIP $name: build/sprinter/cold_win3_page.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
   if [[ "$name" == "t_hint_blit" ]] &&
      { [[ ! -f "$generated_dir/coldrender_test_defs.inc" ]] ||
        [[ ! -f "$repo_root/build/sprinter/cold_win3_page.bin" ]]; }; then

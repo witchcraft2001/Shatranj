@@ -81,6 +81,22 @@
  * that file before this move) -- these are not part of any shared header
  * because, before this file existed, nothing else needed to see them. */
 extern void render_board_full(void);
+/* S9 About (second MAME round): the rest of the boot-time paint sequence,
+   needed by about_restore_screen below -- dismissing a screen-sized modal
+   is the only thing on this port that has to rebuild the whole display.
+   video_init/video_clear_both_buffers are the palette and pixel halves of
+   that rebuild (video.asm in WIN2 and render_core_cold.asm on this page
+   respectively; the first deliberately does not do the second, see its own
+   comment). spectrum_gui_restore_full_screen is gui.c's Sprinter-only
+   companion on this same page -- declared here rather than in gui.h so the
+   shared ZX/Next header stays byte-identical. */
+extern void render_banner(void);
+extern void render_menu_bar(void);
+extern void render_status_text(void);
+extern void render_input_line(void);
+extern void video_init(void);
+extern void video_clear_both_buffers(void);
+extern void spectrum_gui_restore_full_screen(void);
 extern void render_coord_labels(void);
 extern void render_cursor_marker(void);
 extern void render_select_marker(void);
@@ -127,10 +143,33 @@ extern unsigned char key_code;
    answer, applied here to plain literals that do not need a function
    (severity still varies per call site, so each caller still supplies its
    own 0u/1u). */
+static const char STATUS_WAITING[] = "WAITING";
 static const char NOTICE_WAITING_FOR_ACK[] = "Waiting for ACK";
 static const char NOTICE_WAITING_RESIGN_ACK[] = "Waiting resign ACK";
 static const char NOTICE_GAME_OVER[] = "Game already over";
 static const char NOTICE_BAD_MOVE[] = "Bad move";
+
+/* S10 budget valve (same reasoning one level up: the CALL is now the
+   duplicated bytes, not the string). spectrum_gui_notify takes two stack
+   arguments, and sccz80 spells every one of this file's 45 call sites out
+   in full -- ld hl,text / push hl / ld hl,sev / push hl / call / pop bc /
+   pop bc, 13 bytes, of which only the first three carry information.
+   Every one of those sites passes a compile-time-constant severity, so
+   routing them through a __z88dk_fastcall shim per severity turns each
+   into ld hl,text / call, 6 bytes, for 11 bytes of shim apiece. gui.c's
+   own spectrum_gui_notify_persistent/_success are exactly this shape
+   already (fastcall, severity baked in); these two just complete the set
+   for the plain notice line, and stay Sprinter-local because the shared
+   ZX/Next builds must not see a byte of change. */
+static void notify_info(const char *text) __z88dk_fastcall
+{
+    spectrum_gui_notify(text, 0u);
+}
+
+static void notify_error(const char *text) __z88dk_fastcall
+{
+    spectrum_gui_notify(text, 1u);
+}
 
 /* WIN1 (main.c): the one piece of this file's state the resident frame
  * loop reads directly (see this file's own header for why it cannot move
@@ -540,7 +579,7 @@ void board_select_or_move(void) {
        this port has already shipped once). */
     if (net_active && !netchesszx_session_has_local_turn(
             (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
-        spectrum_gui_notify("Not your turn", 0u);
+        notify_info("Not your turn");
         return;
     }
 
@@ -549,7 +588,7 @@ void board_select_or_move(void) {
        moves until it does. Hot-seat never sets game_over (resign is
        networked-only, matching ZX), so this is a no-op there. */
     if (net_active && game_over) {
-        spectrum_gui_notify(NOTICE_GAME_OVER, 0u);
+        notify_info(NOTICE_GAME_OVER);
         return;
     }
 
@@ -561,7 +600,7 @@ void board_select_or_move(void) {
                rather than ZX's dynamic "Empty e4"/"You play white" square-
                naming text -- info-severity (auto-expires), matching
                notify_internal's own ticks=250 info default. */
-            spectrum_gui_notify(piece == '.' ? "Empty square" : "Not your piece", 0u);
+            notify_info(piece == '.' ? "Empty square" : "Not your piece");
             return;
         }
         selection_set(cursor_row, cursor_col);
@@ -596,7 +635,7 @@ void board_select_or_move(void) {
            here, not invented, since it needs no square-name interpolation.
            Error severity: notify_internal makes this persistent until
            replaced, unlike the info notices above. */
-        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
+        notify_error(NOTICE_BAD_MOVE);
         return;                 /* keep the selection: pick another target */
     }
 
@@ -616,7 +655,7 @@ void board_select_or_move(void) {
                are S8 step 6's own addition to the same one-operation
                invariant). Keep the selection so the player can simply try
                again once it resolves. */
-            spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
+            notify_info(NOTICE_WAITING_FOR_ACK);
             return;
         }
         {
@@ -673,7 +712,7 @@ void board_select_or_move(void) {
     }
 
     if (!spectrum_board_apply_trusted_move(move)) {
-        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
+        notify_error(NOTICE_BAD_MOVE);
         return;
     }
 
@@ -758,12 +797,16 @@ extern void saveload_full_redraw(void);
  * relief cut (main.c's own comment ahead of pending_local_ply). */
 extern void menu_cycle_theme(void);
 extern void menu_flip_board(void);
-extern void menu_not_available(void);
 
 /* Bridged from main.c (WIN1): handle_menu_action's FILE tab (below) --
  * fileui_open moved back with the rest of the file-browser code (main.c's
  * own local_load_game/fileui_process_key own the rest of that flow). */
 extern void fileui_open(void);
+/* Same bridge, same reason (S9 About pass): the About screen's open/close
+   pair lives in main.c because it is frame-loop state, and this cold page
+   reaches it through gen_sprinter_cold_defs.py like every other resident
+   entry point. */
+extern void about_open(void);
 
 /* Bridged from main.c (WIN1): a third relief cut moved the takeback-apply/
  * move-send/move-repaint cluster back too, once the second cut alone still
@@ -940,7 +983,7 @@ void net_drop(const char *why) {
        restore_net_clear just above, none of which survive a dropped
        link either. */
     spectrum_gui_reset_chat();
-    spectrum_gui_notify(why, 1u);
+    notify_error(why);
 }
 
 /* "MOVE <ply> <coords>" -- byte-for-byte app.c's own send_move_wire
@@ -1055,19 +1098,19 @@ static void net_give_up_pending(void) {
     if (control_pending == CONTROL_PENDING_RESET) {
         control_pending_clear();
         (void)spectrum_link_send_text(NETCHESS_PROTO_CANCEL_RESET);
-        spectrum_gui_notify("Reset cancelled", 1u);
+        notify_error("Reset cancelled");
         return;
     }
     if (control_pending == CONTROL_PENDING_DRAW_SENT) {
         control_pending_clear();
         (void)spectrum_link_send_text(NETCHESS_PROTO_CANCEL_DRAW);
-        spectrum_gui_notify("Draw cancelled", 1u);
+        notify_error("Draw cancelled");
         return;
     }
     if ((restore_rx_mask & RESTORE_TX_PENDING) != 0u) {
         restore_net_clear();
         (void)spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RN);
-        spectrum_gui_notify("Load cancelled", 1u);
+        notify_error("Load cancelled");
         return;
     }
     net_drop(net_link_down_why());
@@ -1103,7 +1146,7 @@ void net_retry_tick(void) {
    instead of two identical three-line blocks (S9 budget valve). */
 static void nack_illegal_move(const char *ply) {
     (void)netchesszx_session_send_nack_move(ply);
-    spectrum_gui_notify("Peer sent an illegal move", 1u);
+    notify_error("Peer sent an illegal move");
 }
 
 /* Shared by net_apply_remote_move's two "something else is already
@@ -1111,7 +1154,7 @@ static void nack_illegal_move(const char *ply) {
    the pending_local_ply crossed-move case) -- same NACK/notice pair,
    one copy instead of two identical three-line blocks. */
 static void nack_move_busy(const char *ply) {
-    spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 1u);
+    notify_error(NOTICE_WAITING_FOR_ACK);
     (void)netchesszx_session_send_nack_move(ply);
 }
 
@@ -1128,7 +1171,7 @@ static void net_apply_remote_move(const char *payload) {
     }
     incoming_ply = net_parse_u16(ply);
     if (incoming_ply == 0u) {
-        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
+        notify_error(NOTICE_BAD_MOVE);
         (void)netchesszx_session_send_nack_move(ply);
         return;
     }
@@ -1171,12 +1214,12 @@ static void net_apply_remote_move(const char *payload) {
     }
     if (netchesszx_session_has_local_turn(
             (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
-        spectrum_gui_notify("Opponent's turn", 1u);
+        notify_error("Opponent's turn");
         (void)netchesszx_session_send_nack_move(ply);
         return;
     }
     if (incoming_ply != (uint16_t)(spectrum_gui_log_ply_get() + 1u)) {
-        spectrum_gui_notify(NOTICE_BAD_MOVE, 1u);
+        notify_error(NOTICE_BAD_MOVE);
         if (!net_send_nack_sync(ply)) {
             net_send_failed();
         }
@@ -1272,7 +1315,7 @@ static void net_apply_hello(const char *payload) {
            dead RX path were the same picture. Now they are not -- silence
            still means nothing arrived, and this notice means something
            did and we turned it down. */
-        spectrum_gui_notify("Bad HELLO from opponent", 1u);
+        notify_error("Bad HELLO from opponent");
         return;
     }
     netchesszx_session_peer_mark_ready();
@@ -1436,7 +1479,7 @@ static const char *net_link_down_why(void) {
 static void net_send_failed(void) {
     if (net_send_busy) {
         pending_retry_timer = PENDING_RETRY_TICKS;
-        spectrum_gui_notify("Link busy - retrying", 1u);
+        notify_error("Link busy - retrying");
         return;
     }
     net_drop(net_link_down_why());
@@ -1457,8 +1500,8 @@ static void net_mqtt_peer_lost(const char *why) {
     selection_clear();
     spectrum_gui_game_timer_stop();
     spectrum_gui_set_connected(1u);
-    spectrum_gui_set_status("WAITING");
-    spectrum_gui_notify(why, 1u);
+    spectrum_gui_set_status(STATUS_WAITING);
+    notify_error(why);
 }
 
 /* The guest's whole handshake, driven off the host's "H <colour> <sid>" on
@@ -1480,7 +1523,7 @@ static void net_mqtt_host_event(const char *payload, unsigned char retained) {
     flags = netchesszx_session_mqtt_host_flags(payload, 0u, retained,
                                                &bad_color);
     if (bad_color) {
-        spectrum_gui_notify("Bad host colour", 1u);
+        notify_error("Bad host colour");
         return;
     }
     if (flags & NETCHESSZX_SESSION_MQTT_HOST_COLOR_CHANGED) {
@@ -1537,7 +1580,7 @@ static unsigned char net_handle_mqtt_event(unsigned char event,
         return 1u;
     }
     if (event == NETCHESSZX_SESSION_EVENT_MQTT_TEXT) {
-        spectrum_gui_notify(payload, 0u);
+        notify_info(payload);
         return 1u;
     }
     if (event == NETCHESSZX_SESSION_EVENT_MQTT_PEER_OFFLINE) {
@@ -1560,7 +1603,7 @@ static unsigned char net_handle_mqtt_event(unsigned char event,
         /* Another host announced itself in the room we are hosting. Say so
            and keep waiting -- whichever guest arrives first settles it. */
         if (!netchesszx_session_peer_ready_state) {
-            spectrum_gui_notify("Room already hosted", 1u);
+            notify_error("Room already hosted");
         }
         return 1u;
     }
@@ -1660,10 +1703,10 @@ static void net_handle_event(unsigned char event, const char *payload,
             if (takeback_pending_ply != 0u && nack_ply == takeback_pending_ply &&
                 takeback_snapshot_local) {
                 takeback_pending_ply = 0u;
-                spectrum_gui_notify("Takeback rejected", 1u);
+                notify_error("Takeback rejected");
             } else if (pending_local_ply != 0u && nack_ply == pending_local_ply) {
                 pending_local_clear();
-                spectrum_gui_notify("Move rejected by opponent", 1u);
+                notify_error("Move rejected by opponent");
             }
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_TAKEBACK) {
@@ -1703,8 +1746,7 @@ static void net_handle_event(unsigned char event, const char *payload,
             (void)netchesszx_session_send_nack_move(ply_text);
         } else {
             takeback_pending_ply = requested_ply;
-            spectrum_gui_notify(
-                "Opponent wants takeback: Y/N", 0u);
+            notify_info("Opponent wants takeback: Y/N");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_CHAT) {
         /* S9 chat pass: lands in the chat panel now, byte-for-byte app.c's
@@ -1760,7 +1802,7 @@ static void net_handle_event(unsigned char event, const char *payload,
     } else if (event == NETCHESSZX_SESSION_EVENT_NACK_RESET) {
         if (control_pending == CONTROL_PENDING_RESET) {
             control_pending_clear();
-            spectrum_gui_notify("Reset rejected", 1u);
+            notify_error("Reset rejected");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESIGN) {
         /* RESIGN is unilateral and idempotent (docs/session-core-contract.
@@ -1830,7 +1872,7 @@ static void net_handle_event(unsigned char event, const char *payload,
             (void)netchesszx_session_send_nack_move("DRAW");
         } else {
             control_pending = CONTROL_PENDING_DRAW_INCOMING;
-            spectrum_gui_notify("Opponent offers a draw: Y/N", 0u);
+            notify_info("Opponent offers a draw: Y/N");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_ACK_DRAW) {
         /* Our own offer was accepted -- this side drives the rematch
@@ -1842,7 +1884,7 @@ static void net_handle_event(unsigned char event, const char *payload,
     } else if (event == NETCHESSZX_SESSION_EVENT_NACK_DRAW) {
         if (control_pending == CONTROL_PENDING_DRAW_SENT) {
             control_pending_clear();
-            spectrum_gui_notify("Draw declined", 1u);
+            notify_error("Draw declined");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_CANCEL_DRAW) {
         /* The peer withdrew an offer we have not answered yet -- clear the
@@ -1850,7 +1892,7 @@ static void net_handle_event(unsigned char event, const char *payload,
            itself ACKed/NACKed by the wire grammar). */
         if (control_pending == CONTROL_PENDING_DRAW_INCOMING) {
             control_pending_clear();
-            spectrum_gui_notify("Draw offer withdrawn", 1u);
+            notify_error("Draw offer withdrawn");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESTORE_RQ) {
         /* S8 step 6: the peer wants to push a loaded game to us. app.c's
@@ -1880,8 +1922,7 @@ static void net_handle_event(unsigned char event, const char *payload,
             return;
         }
         restore_prompt_pending = 1u;
-        spectrum_gui_notify(
-            "Opponent wants to load a game: Y/N", 0u);
+        notify_info("Opponent wants to load a game: Y/N");
     } else if (event == NETCHESSZX_SESSION_EVENT_RESTORE_RY) {
         /* Our own pending RQ was accepted -- start sending chunks. A
            stray RY with nothing of ours pending is ignored. */
@@ -1898,7 +1939,7 @@ static void net_handle_event(unsigned char event, const char *payload,
            survives it. A stray RN with nothing pending is a no-op. */
         if (restore_rx_mask != 0u || restore_prompt_pending) {
             restore_net_clear();
-            spectrum_gui_notify("Load cancelled", 1u);
+            notify_error("Load cancelled");
         }
     } else if (event == NETCHESSZX_SESSION_EVENT_RESTORE_RS) {
         /* One of the two fixed 30-byte chunks (docs/wire-contract.md:
@@ -2021,11 +2062,11 @@ static void net_resign_request(void) {
         return;
     }
     if (game_over) {
-        spectrum_gui_notify(NOTICE_GAME_OVER, 0u);
+        notify_info(NOTICE_GAME_OVER);
         return;
     }
     if (!net_active || !netchesszx_session_peer_ready_state) {
-        spectrum_gui_notify("Not connected", 0u);
+        notify_info("Not connected");
         return;
     }
     resign_confirm = 1u;
@@ -2041,7 +2082,7 @@ static void net_resign_confirm_reply(unsigned char accept) {
     }
     resign_confirm = 0u;
     if (!accept) {
-        spectrum_gui_notify("Resign cancelled", 0u);
+        notify_info("Resign cancelled");
         return;
     }
     if (!spectrum_link_send_text(NETCHESS_PROTO_RESIGN)) {
@@ -2077,7 +2118,7 @@ static unsigned char net_op_busy_reject(void) {
     if (!net_op_busy()) {
         return 0u;
     }
-    spectrum_gui_notify(NOTICE_WAITING_FOR_ACK, 0u);
+    notify_info(NOTICE_WAITING_FOR_ACK);
     return 1u;
 }
 
@@ -2091,7 +2132,7 @@ static void net_draw_offer(void) {
     }
     control_pending = CONTROL_PENDING_DRAW_SENT;
     arm_retry();
-    spectrum_gui_notify("Draw offered", 0u);
+    notify_info("Draw offered");
 }
 
 static void net_draw_reply(unsigned char accept) {
@@ -2110,7 +2151,7 @@ static void net_draw_reply(unsigned char accept) {
         spectrum_gui_notify_persistent("Draw agreed - new game");
     } else {
         (void)netchesszx_session_send_nack_move("DRAW");
-        spectrum_gui_notify("Draw declined", 0u);
+        notify_info("Draw declined");
     }
 }
 
@@ -2124,7 +2165,7 @@ static void net_takeback_request(void) {
         return;
     }
     if (!takeback_snapshot_local || takeback_snapshot_ply == 0u) {
-        spectrum_gui_notify("Nothing to take back", 0u);
+        notify_info("Nothing to take back");
         return;
     }
     if (!net_send_takeback_wire(takeback_snapshot_ply)) {
@@ -2133,7 +2174,7 @@ static void net_takeback_request(void) {
     }
     takeback_pending_ply = takeback_snapshot_ply;
     arm_retry();
-    spectrum_gui_notify("Takeback requested", 0u);
+    notify_info("Takeback requested");
 }
 
 /* Answers an INCOMING takeback request (takeback_pending_ply set by
@@ -2157,7 +2198,7 @@ static void net_takeback_reply(unsigned char accept) {
         last_accepted_takeback_ply = ply;
     } else {
         (void)netchesszx_session_send_nack_move(ply_text);
-        spectrum_gui_notify("Takeback declined", 0u);
+        notify_info("Takeback declined");
     }
 }
 
@@ -2175,10 +2216,10 @@ static void net_restore_reply(unsigned char accept) {
             net_send_failed();
             return;
         }
-        spectrum_gui_notify("Waiting for saved game", 0u);
+        notify_info("Waiting for saved game");
     } else {
         (void)spectrum_link_send_text(NETCHESS_PROTO_RESTORE_RN);
-        spectrum_gui_notify("Load request declined", 0u);
+        notify_info("Load request declined");
     }
 }
 
@@ -2217,10 +2258,10 @@ void net_control_key(unsigned char key) {
             netchesszx_movement_hints == 0u ? 1u : 0u);
         if (netchesszx_movement_hints == 0u) {
             hints_clear();
-            spectrum_gui_notify("Hints off", 0u);
+            notify_info("Hints off");
         } else {
             hints_show();
-            spectrum_gui_notify("Hints on", 0u);
+            notify_info("Hints on");
         }
         return;
     }
@@ -2337,7 +2378,7 @@ static void menu_reset_game(void) {
         }
         control_pending = CONTROL_PENDING_RESET;
         arm_retry();
-        spectrum_gui_notify("Reset requested", 0u);
+        notify_info("Reset requested");
         return;
     }
     spectrum_board_reset();
@@ -2387,7 +2428,7 @@ static void menu_network(void) {
     saveload_full_redraw();
 
     if (!joined) {
-        spectrum_gui_notify("Not connected", 1u);
+        notify_error("Not connected");
         return;
     }
 
@@ -2408,8 +2449,71 @@ static void menu_network(void) {
     net_active = 1u;
 
     spectrum_gui_set_connected(netchesszx_transport_is_mqtt() ? 1u : 2u);
-    spectrum_gui_set_status("WAITING");
+    spectrum_gui_set_status(STATUS_WAITING);
     spectrum_gui_notify_persistent("Waiting for opponent");
+}
+
+/* The status band's left cell and the panel's turn label are the two HUD
+   fields gui.c does NOT keep a repaintable copy of: spectrum_gui_set_status
+   builds its line into a caller stack local and paints it, and spectrum_gui_
+   set_turn_label just forwards a mode byte. Every other field survives a
+   repaint out of gui.c's own state (spectrum_gui_restore_full_screen). So
+   the one place that knows what they should say is here, and it derives them
+   from the same live session state their original call sites used:
+   net_status_idle for no session (main.c's own hot-seat pair, connected=0 +
+   "HOT SEAT"), net_session_begin's pair once the peer is known, and menu_
+   network/net_mqtt_peer_lost's pair while a session is up but unpaired. */
+static void net_status_refresh(void) {
+    if (!net_active) {
+        net_status_idle();
+    } else if (net_peer_known) {
+        spectrum_gui_set_connected(2u);
+        spectrum_gui_set_status(netchesszx_local_side_name());
+    } else {
+        spectrum_gui_set_connected(netchesszx_transport_is_mqtt() ? 1u : 2u);
+        spectrum_gui_set_status(STATUS_WAITING);
+    }
+    net_set_turn_label_from_side();
+}
+
+/* S9 About, second MAME round (2026-08-17). The About picture covers all
+   640x256 on this port, so dismissing it is a whole-screen rebuild, not the
+   board-area repaint the FILE browser and the NET screen get away with.
+   main.c's about_close used to spell this out as ten WIN1 calls into the
+   cold page and still missed the move list, the chat log, the notice line,
+   the clock and the turn label; it lives here now because every routine it
+   calls is on THIS page (plain 3-byte calls, no thunks) and because the two
+   session-derived fields above cannot be reached from WIN1 at all.
+   Order is load-bearing twice:
+     - clear before video_init, so the artwork is never displayed through
+       the theme palette. It goes black under its own colours instead, and
+       the palette swap then has nothing left on screen to garble;
+     - render_status_text before net_status_refresh, since the former paints
+       the boot-time "NO SESSION" placeholder into the very cell the latter
+       overwrites with the live status.
+   gui.c's own about_visible gate needs no ordering here: the two painters
+   that consult it (render_clock_only/render_game_timer_only, both of which
+   return early while a modal screen is up) are reached only from inside
+   spectrum_gui_restore_full_screen, which lowers the gate itself before
+   calling either.
+   The board goes through spectrum_gui_restore_board_area plus a coord-label
+   repaint rather than saveload_full_redraw, which is the same four paints
+   with the labels already inside it: restore_board_area is needed anyway
+   (it is what lowers the about_visible gate), and stacking the two would
+   paint all 64 cells twice for nothing -- a full board paint is ~74ms on
+   this hardware, the most expensive thing in this sequence by an order of
+   magnitude. */
+void about_restore_screen(void) {
+    video_clear_both_buffers();
+    video_init();
+    spectrum_gui_restore_board_area();
+    render_coord_labels();
+    render_banner();
+    render_menu_bar();
+    render_status_text();
+    render_input_line();
+    spectrum_gui_restore_full_screen();
+    net_status_refresh();
 }
 
 void handle_menu_action(unsigned char action) {
@@ -2424,6 +2528,6 @@ void handle_menu_action(unsigned char action) {
     } else if (action == SPECTRUM_GUI_KEY_MENU_DISCC) {
         menu_network();
     } else if (action == SPECTRUM_GUI_KEY_MENU_ABOUT) {
-        menu_not_available();
+        about_open();
     }
 }
