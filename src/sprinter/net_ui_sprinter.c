@@ -1,8 +1,12 @@
 /*
  * NETWORK screen (S7 step 5's DIRECT-only join panel; S8 step 8e turns it
  * into the transport/role switcher + broker/port/room editor the plan
- * calls for). Lives on the NET overlay's own WIN3 page (S8 step 8b -- see
- * that step's own header for why it moved off the WIN3 cold page).
+ * calls for; S9's NETWORK SETUP pass, 2026-08-18, makes DIRECT's HOST/PORT
+ * rows editable the same way, instead of a read-only NETHOST/NETPORT
+ * readout -- see net_ui_try_connect()'s own comment for why ROLE is fixed
+ * to JOIN under DIRECT regardless). Lives on the NET overlay's own WIN3
+ * page (S8 step 8b -- see that step's own header for why it moved off the
+ * WIN3 cold page).
  *
  * It IS the Sprinter implementation of ZX/Next's NET_CONNECT overlay id
  * (src/spectrum/overlay/overlay.h, SPECTRUM_OVL_NET_CONNECT=3) -- entry
@@ -41,7 +45,18 @@
  * toggle a switcher row's value, printable ASCII edits the focused text
  * field, BS deletes, ENTER attempts to connect with the current settings,
  * ESC cancels the whole screen. No sub-mode, no "press ENTER to start
- * editing" -- a focused field is always live.
+ * editing" -- a focused field is always live. DIRECT's HOST/PORT fields
+ * (S9) are edited through this exact same mechanism as MQTT's BROKER/
+ * PORT/ROOM -- net_ui_focused_field() is the one place that resolves
+ * "which field is focused" per transport, so both share one edit/paint
+ * path (net_ui_edit_field/net_ui_paint_focus_row) rather than a second
+ * copy of the editing logic.
+ *
+ * Field editing/validation logic itself (net_ui_edit_field, the per-field
+ * character filters, net_ui_port_value, net_ui_ipv4_ok) lives in
+ * src/sprinter/net_ui_fields.{c,h}, not this file -- pulled out so it can
+ * be proven by a plain host test (tests/sprinter/host/test_net_ui_fields.c)
+ * instead of only ever running for the first time inside MAME.
  */
 #include "spectrum/ui/render.h"
 #include "spectrum/ui/gui.h"
@@ -49,6 +64,7 @@
 #include "spectrum/config/session.h"
 #include "spectrum/transport/link.h"
 #include "spectrum/platform/text.h"
+#include "sprinter/net_ui_fields.h"
 
 #include <string.h>
 
@@ -59,18 +75,21 @@
 extern void ng_up(void);
 extern void ng_close(void);
 extern void ng_lasterr_fetch(void);
-extern void ng_c_connect(void);
 extern char *ng_env_nethost(void);
 extern char *ng_env_netport(void);
 extern unsigned char ng_up_reason;
 extern unsigned char ng_backend;
-/* ng_env_nethost/ng_env_netport return one of these when DSS did not have
-   the variable, which is how this screen can say "(DEFAULT)". */
-extern char ng_default_host[];
-extern char ng_default_port[];
 extern unsigned char ng_v_call_status;
 extern unsigned char ng_v_call_cf;
 extern char ng_buf_lasterr[];
+
+/* ng_c_connect_at (S8 step 8c, reused here since S9's NETWORK SETUP pass):
+   connects to a caller-supplied host/port instead of resolving NETHOST/
+   NETPORT itself -- exactly the mechanism net_mqtt_ui_sprinter.c already
+   uses for its own editable BROKER field. */
+extern void ng_c_connect_at(void);
+extern char *ng_c_connect_host;
+extern char *ng_c_connect_port;
 
 /* S8 step 8c's generic env resolver -- MQTTHOST/MQTTPORT/MQTTROOM defaults
    for the editor below, the same "ask DSS, fall back to the compiled-in
@@ -178,25 +197,6 @@ static void net_ui_row(unsigned char row, unsigned char attr, const char *text)
     spectrum_render_ikkle_at(net_ui_spec);
 }
 
-/* Two-part row, for "HOST: <env>:<env>" -- avoids a second scratch buffer
-   just to concatenate. */
-static void net_ui_row3(unsigned char row,
-                        unsigned char attr,
-                        const char *a,
-                        const char *b,
-                        const char *c)
-{
-    unsigned char at;
-
-    net_ui_spec[0] = (char)row;
-    net_ui_spec[1] = (char)NET_UI_COL;
-    net_ui_spec[2] = (char)attr;
-    at = net_ui_append(3u, a);
-    at = net_ui_append(at, b);
-    (void)net_ui_append(at, c);
-    spectrum_render_ikkle_at(net_ui_spec);
-}
-
 /* Focus-marked row: "> " when focused, "  " otherwise, then label, then
    value, then an optional trailing "_" caret (editable fields only, only
    while focused). See this file's own header for why this replaces the
@@ -236,6 +236,14 @@ static uint8_t net_ui_focus;
 static char net_ui_field_broker[NETCHESSZX_MQTT_HOST_MAX + 1u];
 static char net_ui_field_port[6];
 static char net_ui_field_room[NETCHESSZX_MQTT_CODE_MAX + 1u];
+/* DIRECT's own editable HOST/PORT (S9). NOT netchesszx_direct_host/port
+   (config/session.c) -- on Sprinter nothing reads those, and giving this
+   overlay its own statics avoids the cross-page bridging a resident global
+   would need for no benefit (this screen is the only reader/writer of the
+   value for the whole run). Sized like session.h's own DIRECT_HOST_MAX
+   (IPv4 dotted-quad length), not the MQTT broker's larger hostname cap. */
+static char net_ui_field_host[NETCHESSZX_DIRECT_HOST_MAX + 1u];
+static char net_ui_field_dport[6];
 static uint8_t net_ui_fields_seeded;
 
 /* DSS ENVIRON, falling back to the compiled-in default -- MQTTHOST/
@@ -244,20 +252,26 @@ static uint8_t net_ui_fields_seeded;
 static void net_ui_env_default(const char *name, char *dest, uint8_t cap,
                                const char *compiled_default)
 {
-    uint8_t i;
-
     ng_c_env_name = (char *)name;
     ng_c_env_dest = dest;
     ng_c_env_get();
     if (ng_c_env_found) {
         return;
     }
-    for (i = 0u; i < (uint8_t)(cap - 1u) && compiled_default[i] != '\0'; ++i) {
-        dest[i] = compiled_default[i];
-    }
-    dest[i] = '\0';
+    net_ui_copy_capped(dest, cap, compiled_default);
 }
 
+/* Seeds MQTT's broker/port/room from MQTTHOST/MQTTPORT/MQTTROOM (env, then
+   a compiled default) and DIRECT's host/port from NETHOST/NETPORT the same
+   way ng_env_nethost/ng_env_netport already resolve them for the old
+   read-only display -- capped through net_ui_copy_capped so an env value
+   longer than the field can hold is truncated rather than overrunning this
+   overlay's own BSS (net_ui_env_default's own unbounded copy is an
+   accepted risk there; not repeated here, see net_ui_fields.h). Runs once
+   per session (net_ui_fields_seeded), for BOTH transports on every call --
+   so a value typed under one transport survives switching to the other and
+   back, and NETHOST/NETPORT become seed-only inputs rather than being
+   re-read on every DIRECT connect attempt. */
 static void net_ui_seed_fields(void)
 {
     if (net_ui_fields_seeded) {
@@ -270,109 +284,10 @@ static void net_ui_seed_fields(void)
                        sizeof(net_ui_field_port), "1883");
     net_ui_env_default("MQTTROOM", net_ui_field_room,
                        sizeof(net_ui_field_room), netchesszx_mqtt_code);
-}
-
-/* su_room_char-shaped validators (entry_setup.asm:713-748's own rule set,
-   ported to this screen's own three fields): room is A-Z/0-9 with the
-   lowercase half folded up; broker is 0-9/a-z/A-Z/./-; port is digits
-   only. Returns 0 to reject the character outright (silently dropped,
-   same as su_room_char's own convention). */
-static char net_ui_filter_room(char c)
-{
-    if (c >= 'a' && c <= 'z') {
-        c = (char)(c - 'a' + 'A');
-    }
-    if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
-        return c;
-    }
-    return 0;
-}
-
-static char net_ui_filter_broker(char c)
-{
-    if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-        (c >= 'A' && c <= 'Z') || c == '.' || c == '-') {
-        return c;
-    }
-    return 0;
-}
-
-/* Spelled out as an if, not `(c >= '0' && c <= '9') ? c : 0` -- sccz80
-   miscompiles a ternary whose condition contains && or ||, always taking the
-   false branch, which here silently made the PORT field reject every digit
-   typed into it (2026-08-15; tools/check_sccz80_codegen.py is the gate). */
-static char net_ui_filter_port(char c)
-{
-    if (c >= '0' && c <= '9') {
-        return c;
-    }
-    return 0;
-}
-
-static uint8_t net_ui_field_len(const char *field)
-{
-    uint8_t len = 0u;
-
-    while (field[len] != '\0') {
-        ++len;
-    }
-    return len;
-}
-
-/* Applies `key` to `field` (capacity `cap` including the NUL) through
-   `filter`. Printable ASCII is filtered and appended if there is room;
-   BS removes the last character; anything else is a no-op -- the caller
-   only forwards keys already known to be relevant to the focused field. */
-static void net_ui_edit_field(char *field, uint8_t cap, char (*filter)(char),
-                              unsigned char key)
-{
-    uint8_t len;
-
-    if (key == NET_UI_KEY_BS) {
-        len = net_ui_field_len(field);
-        if (len != 0u) {
-            field[len - 1u] = '\0';
-        }
-        return;
-    }
-    if (key < 0x20u || key > 0x7eu) {
-        return;
-    }
-    len = net_ui_field_len(field);
-    if (len >= (uint8_t)(cap - 1u)) {
-        return;
-    }
-    {
-        char filtered = filter((char)key);
-
-        if (filtered == 0) {
-            return;
-        }
-        field[len] = filtered;
-        field[len + 1u] = '\0';
-    }
-}
-
-/* Port range check -- entry_setup.asm's own contract for the DIRECT port
-   field, applied here to the MQTT one: non-empty, <=5 digits (net_ui_
-   filter_port already keeps it numeric-only), value inside uint16_t. */
-static uint8_t net_ui_port_value(const char *field, uint16_t *out)
-{
-    uint32_t value = 0u;
-    uint8_t len = net_ui_field_len(field);
-    uint8_t i;
-
-    if (len == 0u || len > 5u) {
-        return 0u;
-    }
-    for (i = 0u; i < len; ++i) {
-        value = value * 10u + (uint8_t)(field[i] - '0');
-    }
-    if (value > 65535u) {
-        return 0u;
-    }
-    *out = (uint16_t)value;
-    return 1u;
+    net_ui_copy_capped(net_ui_field_host, sizeof(net_ui_field_host),
+                       ng_env_nethost());
+    net_ui_copy_capped(net_ui_field_dport, sizeof(net_ui_field_dport),
+                       ng_env_netport());
 }
 
 /* ng_up's own NG_UP_ERR_* codes (net_gate.asm). Kept as a switch of short
@@ -494,19 +409,86 @@ static void net_ui_show_mqtt_failure(void)
 
 static uint8_t net_ui_max_focus(void)
 {
-    return net_ui_transport == NETCHESSZX_TRANSPORT_MQTT ? 4u : 1u;
+    return net_ui_transport == NETCHESSZX_TRANSPORT_MQTT ? 4u : 3u;
 }
 
-/* Repaints exactly one focus row (TRANSPORT/ROLE/one MQTT field), not the
-   whole screen. net_ui_frame() calls spectrum_render_fileui_frame() (redraws
-   the whole panel border) plus every row -- fine once per screen entry or
+/* Index 1 (ROLE) is not focusable under DIRECT -- uNet has no listen/accept
+   (this file's own header), so DIRECT can only ever dial out and the ROLE
+   switcher would offer a choice the wire can never honour. `dir` says which
+   way the focus was just moving (<0 up, >=0 down/entering); it only matters
+   when focus has landed exactly on the skipped index, in which case it
+   continues one more step the same direction (0 going up, 2 going down)
+   instead of stopping on a row that cannot be focused. net_ui_focus is a
+   file static that survives both screen re-entry and a TRANSPORT switch
+   (net_join_ui_ovl's own header/comment), so every place that can move it
+   calls this afterwards rather than trusting it stayed valid. */
+static void net_ui_focus_normalize(signed char dir)
+{
+    if (net_ui_transport != NETCHESSZX_TRANSPORT_DIRECT) {
+        return;
+    }
+    if (net_ui_focus == 1u) {
+        net_ui_focus = dir < 0 ? 0u : 2u;
+    }
+    if (net_ui_focus > net_ui_max_focus()) {
+        net_ui_focus = net_ui_max_focus();
+    }
+}
+
+/* Resolves which text field (if any) net_ui_focus currently names, for
+   whichever transport is active -- the one place that maps a focus index
+   to a field/capacity/filter triple, so the keystroke handler in
+   net_join_ui_ovl() does not need a second copy of this per transport.
+   Returns 0 (fields untouched) for TRANSPORT/ROLE or an index the current
+   transport has no field at (MQTT's ROOM index under DIRECT). */
+static uint8_t net_ui_focused_field(char **field, uint8_t *cap, char (**filter)(char))
+{
+    if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT) {
+        if (net_ui_focus == 2u) {
+            *field = net_ui_field_host;
+            *cap = (uint8_t)sizeof(net_ui_field_host);
+            *filter = net_ui_filter_ip;
+            return 1u;
+        }
+        if (net_ui_focus == 3u) {
+            *field = net_ui_field_dport;
+            *cap = (uint8_t)sizeof(net_ui_field_dport);
+            *filter = net_ui_filter_port;
+            return 1u;
+        }
+        return 0u;
+    }
+    if (net_ui_focus == 2u) {
+        *field = net_ui_field_broker;
+        *cap = (uint8_t)sizeof(net_ui_field_broker);
+        *filter = net_ui_filter_broker;
+        return 1u;
+    }
+    if (net_ui_focus == 3u) {
+        *field = net_ui_field_port;
+        *cap = (uint8_t)sizeof(net_ui_field_port);
+        *filter = net_ui_filter_port;
+        return 1u;
+    }
+    if (net_ui_focus == 4u) {
+        *field = net_ui_field_room;
+        *cap = (uint8_t)sizeof(net_ui_field_room);
+        *filter = net_ui_filter_room;
+        return 1u;
+    }
+    return 0u;
+}
+
+/* Repaints exactly one focus row (TRANSPORT/ROLE/one field), not the whole
+   screen. net_ui_frame() calls spectrum_render_fileui_frame() (redraws the
+   whole panel border) plus every row -- fine once per screen entry or
    layout change, but MAME testing showed it visibly lagging when called on
    every single keystroke while typing BROKER/ROOM (2026-08-14 finding). The
    high-frequency inputs (UP/DOWN, ROLE toggle, one character typed/deleted)
    only ever change ONE row's text/attr/caret, so they repaint just that row
    through this helper instead. net_ui_frame() itself is still used whenever
-   the row SET changes -- TRANSPORT toggle adds/removes the three MQTT field
-   rows and changes what the backend row means. */
+   the row SET changes -- TRANSPORT toggle adds/removes/relabels rows and
+   changes what the backend row means. */
 static void net_ui_paint_focus_row(uint8_t idx, uint8_t focused)
 {
     if (idx == 0u) {
@@ -516,12 +498,29 @@ static void net_ui_paint_focus_row(uint8_t idx, uint8_t focused)
               net_ui_transport == NETCHESSZX_TRANSPORT_MQTT ? "< MQTT >" : "< DIRECT >");
         net_ui_field_row(NET_UI_ROW_TRANSPORT, focused, "TRANSPORT: ", transport_text, 0u);
     } else if (idx == 1u) {
-        char role_text[16];
+        if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT) {
+            /* Fixed, dim, never focused -- see net_ui_focus_normalize's own
+               comment for why the row itself cannot be reached, and
+               net_ui_try_connect's for why the session is pinned to JOIN
+               regardless of net_ui_role's own stored value. The suffix is
+               the whole point: it is the only thing on screen that tells
+               the tester WHY there is no HOST option here. */
+            net_ui_field_row(NET_UI_ROW_ROLE, 0u, "ROLE: ",
+                             "JOIN  (DIRECT: DIAL-OUT ONLY)", 0u);
+        } else {
+            char role_text[16];
 
-        strcpy(role_text,
-              net_ui_role == NETCHESSZX_SESSION_ROLE_HOST ? "< HOST >" : "< JOIN >");
-        net_ui_field_row(NET_UI_ROW_ROLE, focused, "ROLE: ", role_text, 0u);
-    } else if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT) {
+            strcpy(role_text,
+                  net_ui_role == NETCHESSZX_SESSION_ROLE_HOST ? "< HOST >" : "< JOIN >");
+            net_ui_field_row(NET_UI_ROW_ROLE, focused, "ROLE: ", role_text, 0u);
+        }
+    } else if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT) {
+        if (idx == 2u) {
+            net_ui_field_row(NET_UI_ROW_FIELD0, focused, "HOST: ", net_ui_field_host, 1u);
+        } else if (idx == 3u) {
+            net_ui_field_row(NET_UI_ROW_FIELD1, focused, "PORT: ", net_ui_field_dport, 1u);
+        }
+    } else {
         if (idx == 2u) {
             net_ui_field_row(NET_UI_ROW_FIELD0, focused, "BROKER: ", net_ui_field_broker, 1u);
         } else if (idx == 3u) {
@@ -532,12 +531,12 @@ static void net_ui_paint_focus_row(uint8_t idx, uint8_t focused)
     }
 }
 
-/* Full repaint: title, the two switcher rows, the three-or-two field rows
-   (DIRECT shows read-only env host/port, matching S7's own screen;
-   MQTT shows the editable broker/port/room), and the backend line. */
+/* Full repaint: title, the two switcher rows, the field rows (DIRECT's own
+   HOST/PORT are editable exactly like MQTT's BROKER/PORT/ROOM, S9 --
+   net_ui_paint_focus_row is the single source of truth for both), and the
+   backend line. */
 static void net_ui_frame(void)
 {
-    char role_text[16];
     char transport_text[16];
 
     spectrum_render_fileui_frame();
@@ -548,19 +547,13 @@ static void net_ui_frame(void)
     net_ui_field_row(NET_UI_ROW_TRANSPORT, net_ui_focus == 0u,
                      "TRANSPORT: ", transport_text, 0u);
 
-    strcpy(role_text,
-          net_ui_role == NETCHESSZX_SESSION_ROLE_HOST ? "< HOST >" : "< JOIN >");
-    net_ui_field_row(NET_UI_ROW_ROLE, net_ui_focus == 1u,
-                     "ROLE: ", role_text, 0u);
+    net_ui_seed_fields();
+    net_ui_paint_focus_row(1u, net_ui_focus == 1u);
+    net_ui_paint_focus_row(2u, net_ui_focus == 2u);
+    net_ui_paint_focus_row(3u, net_ui_focus == 3u);
 
     if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT) {
-        net_ui_seed_fields();
-        net_ui_field_row(NET_UI_ROW_FIELD0, net_ui_focus == 2u,
-                         "BROKER: ", net_ui_field_broker, 1u);
-        net_ui_field_row(NET_UI_ROW_FIELD1, net_ui_focus == 3u,
-                         "PORT: ", net_ui_field_port, 1u);
-        net_ui_field_row(NET_UI_ROW_FIELD2, net_ui_focus == 4u,
-                         "ROOM: ", net_ui_field_room, 1u);
+        net_ui_paint_focus_row(4u, net_ui_focus == 4u);
         /* Same backend line DIRECT shows -- ng_backend is set by ng_up(),
            which the MQTT connect flow also calls (net_mqtt_ui_sprinter.c's
            net_mqtt_connect_start_ovl). Leaving this blank was the source of
@@ -568,14 +561,8 @@ static void net_ui_frame(void)
            and which one" after a failed connect attempt. */
         net_ui_row(NET_UI_ROW_BACKEND, NET_UI_ATTR_DIM, net_ui_backend_name());
     } else {
-        const char *value;
-
-        value = ng_env_nethost();
-        net_ui_row3(NET_UI_ROW_FIELD0, NET_UI_ATTR_DIM, "  HOST ", value,
-                    value == ng_default_host ? "  (DEFAULT)" : "");
-        value = ng_env_netport();
-        net_ui_row3(NET_UI_ROW_FIELD1, NET_UI_ATTR_DIM, "  PORT ", value,
-                    value == ng_default_port ? "  (DEFAULT)" : "");
+        /* No fifth row under DIRECT -- blank it out so a ROOM value left
+           over from a prior MQTT visit does not linger on screen. */
         net_ui_row(NET_UI_ROW_FIELD2, NET_UI_ATTR_DIM, "");
         net_ui_row(NET_UI_ROW_BACKEND, NET_UI_ATTR_DIM, net_ui_backend_name());
     }
@@ -614,9 +601,14 @@ static unsigned char net_ui_wait_retry(void)
     }
 }
 
-/* DIRECT connect attempt -- unchanged from S7/step 8b's own flow, just
-   renamed (it used to be the whole overlay entry; now it is the DIRECT
-   branch net_join_ui_ovl's ENTER handling dispatches to). */
+/* DIRECT connect attempt. Dials net_ui_field_host/net_ui_field_dport (S9 --
+   both already validated by net_ui_try_connect() before this is reached)
+   through ng_c_connect_at(), the same caller-supplied-address mechanism
+   net_mqtt_ui_sprinter.c's own connect flow uses for BROKER. The pointers
+   are safe to hand across: ng_connect (net_gate.asm) copies both ASCIIZ
+   strings into its own WIN2 staging buffers before ever dispatching to the
+   DLL, so nothing depends on this overlay's own BSS surviving past the
+   call. */
 static unsigned char net_ui_direct_connect(void)
 {
     for (;;) {
@@ -642,7 +634,9 @@ static unsigned char net_ui_direct_connect(void)
         }
 
         net_ui_state("CONNECTING...");
-        ng_c_connect();
+        ng_c_connect_host = net_ui_field_host;
+        ng_c_connect_port = net_ui_field_dport;
+        ng_c_connect_at();
         if (ng_v_call_cf || ng_v_call_status != NET_UI_NERR_OK) {
             net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, "CONNECT FAILED");
             net_ui_show_lasterr(NET_UI_ROW_DETAIL);
@@ -726,10 +720,20 @@ static unsigned char net_ui_mqtt_connect(void)
     }
 }
 
-/* ENTER handling: validate the MQTT fields (DIRECT has none of its own --
-   its host/port come from NETHOST/NETPORT, unchanged since S7), commit
-   them into the mutable session globals, configure the session, and
-   dispatch the chosen transport's own connect flow.
+/* ENTER handling: validate the focused transport's own fields (MQTT's
+   broker/port/room, or DIRECT's host/port since S9), commit them into the
+   mutable session globals, configure the session, and dispatch the chosen
+   transport's own connect flow.
+
+   ROLE UNDER DIRECT: uNet has no listen/accept (port.md section 3.7,
+   unet_link.c's spectrum_net_listen()/spectrum_net_wait_pc_connect() are
+   unreachable stubs) -- Sprinter can only ever dial out, so the listening
+   side of any DIRECT session (Qt Host, ZX CREATE) is always the session
+   HOST. net_ui_role's own toggle is not reachable while DIRECT is selected
+   (net_ui_focus_normalize keeps it off index 1), but `role` is still
+   pinned here explicitly rather than trusted to already be JOIN -- this is
+   the single place a live session actually gets configured, and the one
+   spot a future change to the focus rules must not silently break.
 
    Session-configure order is deliberate, not incidental -- this is S7's
    own trap in MQTT clothing (S8 step 8d's plan section has the full
@@ -742,6 +746,8 @@ static unsigned char net_ui_mqtt_connect(void)
    this same fix (2026-08-13 MAME finding). */
 static unsigned char net_ui_try_connect(void)
 {
+    uint8_t role = net_ui_role;
+
     if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT) {
         uint16_t port_value;
 
@@ -763,12 +769,26 @@ static unsigned char net_ui_try_connect(void)
         strcpy(netchesszx_mqtt_host, net_ui_field_broker);
         netchesszx_mqtt_port = port_value;
         strcpy(netchesszx_mqtt_code, net_ui_field_room);
+    } else {
+        uint16_t port_value;
+
+        if (!net_ui_ipv4_ok(net_ui_field_host)) {
+            net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, "BAD IP");
+            (void)net_ui_wait_retry();
+            return 0u;
+        }
+        if (!net_ui_port_value(net_ui_field_dport, &port_value)) {
+            net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, "BAD PORT");
+            (void)net_ui_wait_retry();
+            return 0u;
+        }
+        role = NETCHESSZX_SESSION_ROLE_JOIN;
     }
 
-    netchesszx_session_configure(net_ui_role,
+    netchesszx_session_configure(role,
                                  net_ui_transport,
                                  NETCHESSZX_COLOR_WHITE);
-    if (net_ui_role == NETCHESSZX_SESSION_ROLE_JOIN) {
+    if (role == NETCHESSZX_SESSION_ROLE_JOIN) {
         netchesszx_host_color_ready = 0u;
     }
     /* app.c's session_setup_start does exactly this, and skipping it was a
@@ -784,7 +804,7 @@ static unsigned char net_ui_try_connect(void)
        this, and caught the first draft of these four lines). */
     netchesszx_mqtt_session_id = 0u;
     if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT &&
-        net_ui_role == NETCHESSZX_SESSION_ROLE_HOST) {
+        role == NETCHESSZX_SESSION_ROLE_HOST) {
         netchesszx_mqtt_session_id = net_mqtt_new_session_id();
     }
 
@@ -804,6 +824,13 @@ static unsigned char net_ui_try_connect(void)
    read from it. */
 unsigned char net_join_ui_ovl(void)
 {
+    /* net_ui_focus/net_ui_transport are file statics that survive both a
+       previous visit to this screen and a mid-visit TRANSPORT switch (this
+       file's own header) -- normalize once on entry so a focus left on the
+       DIRECT-unreachable ROLE index by some earlier revision of this code
+       (or a future change to the navigation above) cannot silently persist
+       into this visit. */
+    net_ui_focus_normalize(1);
     net_ui_frame();
     net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM,
               "UP/DN SELECT  L/R CHANGE  ENTER CONNECT  ESC CANCEL");
@@ -834,6 +861,7 @@ unsigned char net_join_ui_ovl(void)
             uint8_t old_focus = net_ui_focus;
 
             net_ui_focus = net_ui_focus == 0u ? net_ui_max_focus() : (uint8_t)(net_ui_focus - 1u);
+            net_ui_focus_normalize(-1);
             key_code = 0u;
             net_ui_paint_focus_row(old_focus, 0u);
             net_ui_paint_focus_row(net_ui_focus, 1u);
@@ -843,6 +871,7 @@ unsigned char net_join_ui_ovl(void)
             uint8_t old_focus = net_ui_focus;
 
             net_ui_focus = net_ui_focus == net_ui_max_focus() ? 0u : (uint8_t)(net_ui_focus + 1u);
+            net_ui_focus_normalize(1);
             key_code = 0u;
             net_ui_paint_focus_row(old_focus, 0u);
             net_ui_paint_focus_row(net_ui_focus, 1u);
@@ -850,18 +879,23 @@ unsigned char net_join_ui_ovl(void)
         }
         if (key_code == NET_UI_KEY_LEFT || key_code == NET_UI_KEY_RIGHT) {
             if (net_ui_focus == 0u) {
-                /* TRANSPORT toggle changes which rows exist (MQTT's three
-                   fields, the backend row's meaning) -- full repaint. */
+                /* TRANSPORT toggle changes which rows exist/mean (MQTT's
+                   ROOM row, ROLE's focusability, the backend row) -- full
+                   repaint. */
                 net_ui_transport = net_ui_transport == NETCHESSZX_TRANSPORT_MQTT
                     ? NETCHESSZX_TRANSPORT_DIRECT
                     : NETCHESSZX_TRANSPORT_MQTT;
                 if (net_ui_focus > net_ui_max_focus()) {
                     net_ui_focus = net_ui_max_focus();
                 }
+                net_ui_focus_normalize(1);
                 key_code = 0u;
                 net_ui_frame();
             } else if (net_ui_focus == 1u) {
-                /* ROLE toggle only changes its own row's text. */
+                /* ROLE toggle only changes its own row's text. Unreachable
+                   under DIRECT -- net_ui_focus never rests on 1 there (see
+                   net_ui_focus_normalize) -- so this only ever runs for
+                   MQTT, exactly as before. */
                 net_ui_role = net_ui_role == NETCHESSZX_SESSION_ROLE_HOST
                     ? NETCHESSZX_SESSION_ROLE_JOIN
                     : NETCHESSZX_SESSION_ROLE_HOST;
@@ -873,28 +907,17 @@ unsigned char net_join_ui_ovl(void)
             continue;
         }
 
-        /* Printable ASCII or BS on one of the three MQTT fields -- repaint
-           only that field's row (this loop's own hot path: one call per
-           keystroke while typing BROKER/PORT/ROOM). */
-        if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT) {
-            switch (net_ui_focus) {
-            case 2u:
-                net_ui_edit_field(net_ui_field_broker, sizeof(net_ui_field_broker),
-                                  net_ui_filter_broker, key_code);
-                net_ui_paint_focus_row(2u, 1u);
-                break;
-            case 3u:
-                net_ui_edit_field(net_ui_field_port, sizeof(net_ui_field_port),
-                                  net_ui_filter_port, key_code);
-                net_ui_paint_focus_row(3u, 1u);
-                break;
-            case 4u:
-                net_ui_edit_field(net_ui_field_room, sizeof(net_ui_field_room),
-                                  net_ui_filter_room, key_code);
-                net_ui_paint_focus_row(4u, 1u);
-                break;
-            default:
-                break;
+        /* Printable ASCII or BS on the focused text field, for either
+           transport -- repaint only that field's row (this loop's own hot
+           path: one call per keystroke while typing). */
+        {
+            char *field;
+            uint8_t cap;
+            char (*filter)(char);
+
+            if (net_ui_focused_field(&field, &cap, &filter)) {
+                net_ui_edit_field(field, cap, filter, key_code);
+                net_ui_paint_focus_row(net_ui_focus, 1u);
             }
         }
         key_code = 0u;

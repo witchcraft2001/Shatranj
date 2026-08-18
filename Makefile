@@ -1054,6 +1054,15 @@ SPRINTER_COLD_IMAGE_MAP := $(SPRINTER_BUILD_DIR)/cold_page_image.map
 SPRINTER_COLD_WIN3_PAGE := $(SPRINTER_BUILD_DIR)/cold_win3_page.bin
 
 SPRINTER_LAYOUT_JSON := src/sprinter/fixed_layout.json
+# WIN3 overlay page 1/2 slot layout (tools/make_sprinter_overlay_page.py's
+# own LAYOUT/LAYOUT2): every WIN3-mapped overlay's link rule reads its ORG
+# from this tool via `--print-org NAME` at recipe-execution time, which
+# Make cannot see as a dependency on its own -- a layout change (a budget
+# resized, a slot added/removed) would silently leave every overlay AFTER
+# the change linked at its old, now-wrong address until something else
+# forced a rebuild. Listing the tool itself as a prerequisite on every such
+# rule closes that gap.
+SPRINTER_OVERLAY_PAGE_TOOL := tools/make_sprinter_overlay_page.py
 SPRINTER_GENERATED_DIR := $(SPRINTER_BUILD_DIR)/generated
 SPRINTER_PLATFORM_DEFS_ASM := $(SPRINTER_GENERATED_DIR)/platform_defs.asm
 SPRINTER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/fixed_layout.inc
@@ -1699,7 +1708,7 @@ SPRINTER_OVL_RULES_STUB_ASM := $(SPRINTER_ASM_DIR)/zcc/rules_stub_sprinter.asm
 
 $(SPRINTER_OVL_RULES_BIN): $(SPRINTER_OVL_RULES_ENTRY_ASM) $(SPRINTER_OVL_RULES_STUB_ASM) \
                            $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_H) \
-                           $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                           $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) | $(SPRINTER_BUILD_DIR)
 	$(Z80ASM) $(SPRINTER_OVL_RULES_ENTRY_ASM)
 	$(Z80ASM) $(SPRINTER_OVL_RULES_STUB_ASM)
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
@@ -1729,7 +1738,8 @@ SPRINTER_OVL_BOARD_HELPERS_C := $(SPRINTER_ASM_DIR)/zcc/board_helpers_sprinter.c
 $(SPRINTER_OVL_BOARD_BIN): $(SPRINTER_OVL_BOARD_ENTRY_ASM) src/spectrum/overlay/board_apply_ovl.c \
                            $(SPRINTER_OVL_BOARD_HELPERS_C) $(SPRINTER_OVERLAY_DEFS_ASM) \
                            $(SPRINTER_PLATFORM_DEFS_ASM) \
-                           $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                           $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                           | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/board_apply_ovl.c \
 		-o $(SPRINTER_BUILD_DIR)/board_apply_ovl.o
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c $(SPRINTER_OVL_BOARD_HELPERS_C) \
@@ -1759,7 +1769,8 @@ SPRINTER_OVL_SAVELOAD_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_saveload_sprint
 
 $(SPRINTER_OVL_SAVELOAD_BIN): $(SPRINTER_OVL_SAVELOAD_ENTRY_ASM) src/spectrum/overlay/saveload_ovl.c \
                               $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
-                              $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                              $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                              | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/saveload_ovl.c \
 		-o $(SPRINTER_BUILD_DIR)/saveload_ovl.o
 	$(Z80ASM) $(SPRINTER_OVL_SAVELOAD_ENTRY_ASM)
@@ -1786,7 +1797,8 @@ SPRINTER_OVL_RESTORE_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_restore_sprinter
 
 $(SPRINTER_OVL_RESTORE_BIN): $(SPRINTER_OVL_RESTORE_ENTRY_ASM) src/spectrum/overlay/restore_ovl.c \
                              $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
-                             $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                             $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                             | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/restore_ovl.c \
 		-o $(SPRINTER_BUILD_DIR)/restore_ovl.o
 	$(Z80ASM) $(SPRINTER_OVL_RESTORE_ENTRY_ASM)
@@ -1812,7 +1824,8 @@ SPRINTER_OVL_FILEUI_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_fileui_sprinter.a
 
 $(SPRINTER_OVL_FILEUI_BIN): $(SPRINTER_OVL_FILEUI_ENTRY_ASM) src/spectrum/overlay/fileui_ovl.c \
                             $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
-                            $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                            $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                            | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/fileui_ovl.c \
 		-o $(SPRINTER_BUILD_DIR)/fileui_ovl.o
 	$(Z80ASM) $(SPRINTER_OVL_FILEUI_ENTRY_ASM)
@@ -1848,19 +1861,23 @@ SPRINTER_OVL_NET_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.asm
 
 $(SPRINTER_OVL_NET_BIN): $(SPRINTER_OVL_NET_ENTRY_ASM) src/sprinter/net_ui_sprinter.c \
                          src/sprinter/net_mqtt_ui_sprinter.c \
+                         src/sprinter/net_ui_fields.c src/sprinter/net_ui_fields.h \
                          $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
-                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                         | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_ui_sprinter.c \
 		-o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_mqtt_ui_sprinter.c \
 		-o $(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_ui_fields.c \
+		-o $(SPRINTER_BUILD_DIR)/net_ui_fields.o
 	$(Z80ASM) $(SPRINTER_OVL_NET_ENTRY_ASM)
 	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
 	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org NET) \
 		-o=$(SPRINTER_OVL_NET_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
 		$(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o \
-		$(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o \
+		$(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o $(SPRINTER_BUILD_DIR)/net_ui_fields.o \
 		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
 		$(SPRINTER_GENERATED_DIR)/platform_defs.o
 	rm -f $(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.o $(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
@@ -1882,7 +1899,8 @@ SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_input_edit_sp
 
 $(SPRINTER_OVL_INPUT_EDIT_BIN): $(SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM) src/sprinter/chat_sprinter.c \
                          $(SPRINTER_OVERLAY_DEFS_ASM) \
-                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                         | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/chat_sprinter.c \
 		-o $(SPRINTER_BUILD_DIR)/chat_sprinter.o
 	$(Z80ASM) $(SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM)
@@ -1909,7 +1927,8 @@ SPRINTER_OVL_ABOUT_BODY_ASM := $(SPRINTER_ASM_DIR)/zcc/about_sprinter.asm
 $(SPRINTER_OVL_ABOUT_BIN): $(SPRINTER_OVL_ABOUT_ENTRY_ASM) $(SPRINTER_OVL_ABOUT_BODY_ASM) \
                          $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_ABOUT_PAL_INC) \
                          $(SPRINTER_VERSION_INC_Z80ASM) \
-                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
+                         $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
+                         | $(SPRINTER_BUILD_DIR)
 	$(Z80ASM) $(SPRINTER_OVL_ABOUT_ENTRY_ASM)
 	$(Z80ASM) $(SPRINTER_OVL_ABOUT_BODY_ASM)
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
@@ -2028,8 +2047,21 @@ $(SPRINTER_NET_FRAME_HOST_TEST): $(SPRINTER_NET_FRAME_HOST_TEST_SRC) \
                                   src/spectrum/transport/mqtt_min.h | $(SPRINTER_BUILD_DIR)
 	$(CC) $(CFLAGS) $(SPRINTER_NET_FRAME_HOST_TEST_SRC) -o $@
 
-sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST)
+# net_ui_fields.c (S9 NETWORK SETUP pass): the NET overlay's field-editing
+# and validation helpers, extracted specifically so they can be proven here
+# instead of only ever running for the first time inside MAME -- same
+# rationale as SPRINTER_NET_FRAME_HOST_TEST above.
+SPRINTER_NET_UI_FIELDS_HOST_TEST := $(SPRINTER_BUILD_DIR)/netchesszx_sprinter_net_ui_fields_test.exe
+SPRINTER_NET_UI_FIELDS_HOST_TEST_SRC := src/sprinter/net_ui_fields.c \
+                                        tests/sprinter/host/test_net_ui_fields.c
+
+$(SPRINTER_NET_UI_FIELDS_HOST_TEST): $(SPRINTER_NET_UI_FIELDS_HOST_TEST_SRC) \
+                                      src/sprinter/net_ui_fields.h | $(SPRINTER_BUILD_DIR)
+	$(CC) $(CFLAGS) $(SPRINTER_NET_UI_FIELDS_HOST_TEST_SRC) -o $@
+
+sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST) $(SPRINTER_NET_UI_FIELDS_HOST_TEST)
 	./$(SPRINTER_NET_FRAME_HOST_TEST)
+	./$(SPRINTER_NET_UI_FIELDS_HOST_TEST)
 
 SPRINTER_SIZE_REPORT_JSON := $(SPRINTER_BUILD_DIR)/size_report.json
 SPRINTER_SIZE_REPORT_MD := $(SPRINTER_BUILD_DIR)/size_report.md
@@ -2098,6 +2130,7 @@ sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-overlay-board-check sprinter-overlay-saveload-check \
                 sprinter-overlay-restore-check sprinter-overlay-fileui-check \
                 sprinter-overlay-net-check sprinter-overlay-input-edit-check \
+                sprinter-overlay-about-check \
                 sprinter-z80-test sprinter-resident-test sprinter-host-test \
                 sprinter-size-report sprinter-smoke-image
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \

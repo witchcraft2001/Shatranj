@@ -64,9 +64,13 @@
 ; S9 chat pass: INPUT_EDIT (id 9) lands on the same page 2, in what used to
 ; be RESERVE2's own slot (tools/make_sprinter_overlay_page.py's LAYOUT2) --
 ; the only unfragmented room left, see that tool's own header.
-;     #C000  NET         (id 3, page 2)   8192 bytes
-;     #E000  INPUT_EDIT  (id 9, page 2)   4096 bytes
-;     #F000  reserved    (page 2)         4096 bytes
+;
+; S9's NETWORK SETUP pass (editable DIRECT host/port, 2026-08-18) grows NET
+; from 8192 to 10240 bytes, absorbing the rest of what RESERVE2 used to be;
+; INPUT_EDIT and ABOUT shift up by the same 2048 bytes, budgets unchanged:
+;     #C000  NET         (id 3, page 2)   10240 bytes
+;     #E800  INPUT_EDIT  (id 9, page 2)   4096 bytes
+;     #F800  ABOUT       (id 12, page 2)  2048 bytes
 ;
 ; Id 14 (CONTROL) stays mode 0: src/spectrum/overlay/control_ovl.c, embedded
 ; at assets-page slot 36 (tools/make_sprinter_assets_page.py's OVERLAY_SLOT),
@@ -95,8 +99,8 @@ OVL_WIN3_SAVELOAD_ORG EQU 0xD400
 OVL_WIN3_RESTORE_ORG  EQU 0xDE00
 OVL_WIN3_FILEUI_ORG   EQU 0xEA00
 OVL_WIN3_NET_ORG      EQU 0xC000  ; page 2's own first slot, restarts at WIN3_BASE
-OVL_WIN3_INPUT_EDIT_ORG EQU 0xE000 ; page 2's second slot (S9 chat pass)
-OVL_WIN3_ABOUT_ORG    EQU 0xF000 ; page 2's third slot (S9 About pass)
+OVL_WIN3_INPUT_EDIT_ORG EQU 0xE800 ; page 2's second slot (S9 chat pass); NET grew to 10240 in the S9 NETWORK SETUP pass, shifting this up from 0xE000
+OVL_WIN3_ABOUT_ORG    EQU 0xF800 ; page 2's third slot (S9 About pass); shifted up from 0xF000 for the same reason
 
 ovl_atlas_table:
     defw OVL_WIN3_RULES_ORG       ; id 0  (RULES)

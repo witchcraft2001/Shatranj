@@ -47,6 +47,15 @@ the chat log's word-wrap, no per-cell cursor rendering -- see chat_
 sprinter.c's own header), leaving a second RESERVE2 half still free for
 whatever S9 UI work needs page 2 room next.
 
+S9's NETWORK SETUP pass (editable DIRECT host/port, 2026-08-18) spends that
+second half: NET grows from 8192 to 10240 bytes to hold the new editable
+HOST/PORT rows and their validators, absorbing the whole RESERVE2 slot --
+NET is the only overlay on this page still growing (6350 bytes in S8 ->
+8096 in S9), while INPUT_EDIT (1421 bytes free) and ABOUT (1605 bytes free)
+both still have their own headroom. There is no reserve left on page 2
+after this; the next overlay that needs page 2 room must either fit inside
+an existing slot's margin or grow the page layout again.
+
 Both pages map into the SAME #C000-#FFFF hardware window (WIN3), just via a
 different physical bank OUT -- so page 2's own slot orgs restart at #C000
 exactly like page 1's, they are never both mapped at once.
@@ -63,10 +72,9 @@ this_packing pins the two together):
     #FE00  reserved                                 512 bytes
 
 Slot layout, page 2:
-    #C000  NET         (SPECTRUM_OVL_NET_CONNECT=3u)  8192 bytes
-    #E000  INPUT_EDIT  (SPECTRUM_OVL_INPUT_EDIT=9u)   4096 bytes
-    #F000  ABOUT       (SPECTRUM_OVL_ABOUT=12u)       2048 bytes
-    #F800  reserved (RESERVE2)                        2048 bytes
+    #C000  NET         (SPECTRUM_OVL_NET_CONNECT=3u)  10240 bytes
+    #E800  INPUT_EDIT  (SPECTRUM_OVL_INPUT_EDIT=9u)   4096 bytes
+    #F800  ABOUT       (SPECTRUM_OVL_ABOUT=12u)       2048 bytes
 
 S9 About pass takes the first half of what was left of RESERVE2. ABOUT is
 small for what it draws because it draws almost nothing itself: the picture
@@ -112,10 +120,9 @@ LAYOUT = [
 ]
 
 LAYOUT2 = [
-    ("NET", 8192),
+    ("NET", 10240),
     ("INPUT_EDIT", 4096),
     ("ABOUT", 2048),
-    ("RESERVE2", 2048),
 ]
 
 # Page number -> that page's LAYOUT. Order of this dict is not significant;
@@ -153,7 +160,7 @@ _PAGE_OF_NAME = {name: page for page, layout in PAGES.items() for name, _ in lay
 # packs exactly one 16384-byte page per call and the two pages' budgets
 # would overflow a single page if combined.
 OVERLAY_NAMES = [name for name, _ in LAYOUT if name != "RESERVE"]
-OVERLAY_NAMES2 = [name for name, _ in LAYOUT2 if name != "RESERVE2"]
+OVERLAY_NAMES2 = [name for name, _ in LAYOUT2]
 
 
 def fail(message: str) -> None:

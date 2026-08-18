@@ -2,11 +2,17 @@
  * link.h contract over uNet (S7, port.md section 3.7; MQTT half added S8
  * step 8c). Mechanics (libman/net_gate.asm/the DLL call convention) are
  * already proven by the S3 echo stand; this file is only the contract
- * adapter. DIRECT's role is still hardcoded to JOIN (host/listen stays out
- * of reach until S9's SETUP port) and its host/port still always resolve
- * from the NETHOST/NETPORT env vars (port.md section 3.7) -- MQTT is the
- * new transport this step adds, role and broker chosen by the NET screen
- * (src/sprinter/net_ui_sprinter.c, S8 step 8e).
+ * adapter. DIRECT's role is hardcoded to JOIN, permanently -- not a
+ * placeholder pending a future port: uNet has no listen/accept at all
+ * (spectrum_net_listen()/spectrum_net_wait_pc_connect() below are
+ * unreachable stubs), so Sprinter can only ever dial out, and the
+ * listening side of any DIRECT session (Qt Host, ZX CREATE) is always the
+ * session HOST (the NET screen's own net_ui_try_connect() pins the role
+ * for exactly this reason). Its host/port used to always resolve from the
+ * NETHOST/NETPORT env vars; since S9's NETWORK SETUP pass those are only
+ * the seed for an editable pair of fields on the NET screen
+ * (src/sprinter/net_ui_sprinter.c) -- MQTT's broker/room are chosen the
+ * same screen, role too, added S8 step 8e.
  *
  * Every call into net_gate.asm crosses into WIN2-resident code/state that
  * survives a blocking libman l_call with WIN1 mapped to the DLL (R5); this

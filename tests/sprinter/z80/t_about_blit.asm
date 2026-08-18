@@ -34,7 +34,7 @@
 ; LAYOUT2). The INCBIN below places the overlay here, so if this and the
 ; link ORG ever disagree the overlay's own absolute jumps land nowhere and
 ; the assertions fail loudly rather than silently testing the wrong bytes.
-ABOUT_ORG       EQU #F000
+ABOUT_ORG       EQU #F800
 
 EXPECT_CALLS    EQU 32
 EXPECT_WIDTH    EQU 128

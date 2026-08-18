@@ -486,7 +486,7 @@ EXE, затем текущий каталог. `SETOPT CANCELKEYS=1` обяза�
 | --- | --- |
 | `spectrum_net_start_uart` | load DLL → l_info/GETCAPS → CANCELKEYS → `NETINIT` (экран preflight с прогрессом и отменой) |
 | `spectrum_net_connect_host` | `CONNECT`(chan 0, host, port ASCIIZ из staging) |
-| `spectrum_net_listen`/`wait_pc_connect` | заглушка `unsupported`; setup-оверлей скрывает DIRECT-host на Sprinter |
+| `spectrum_net_listen`/`wait_pc_connect` | заглушка `unsupported`, вызывателей нет: uNet не умеет слушать/принимать, поэтому DIRECT на Sprinter — только исходящий набор; экран NETWORK (не SETUP) с S9 фиксирует ROLE=JOIN и не даёт выбрать HOST под DIRECT (`net_ui_try_connect`, `net_ui_sprinter.c`) |
 | `spectrum_net_read_payload` | `RECV` chan 0 бюджетом, сохраняющим тик-математику сессии (пустое чтение = 2 тика по 20 мс, как на ZX) |
 | `spectrum_net_send_text/send_ping` | `SEND` chan 0; на RTL перед SEND — дренаж (`NERR_BUSY` ⇒ RECV и повтор) |
 | `spectrum_net_background_drain` | `RECV IY=0` |
@@ -3493,7 +3493,9 @@ ZX/Next/Qt побайтно не изменились. **В MAME/на живом
       Аддитивная Sprinter-ветка в `check_mqtt_client_id.py`.
     - **8e**: единый экран NETWORK — переключатели TRANSPORT/ROLE,
       редактор BROKER/PORT/ROOM для MQTT (для DIRECT — как раньше,
-      только чтение NETHOST/NETPORT из окружения). Ввод немодальный
+      только чтение NETHOST/NETPORT из окружения; редактор HOST/PORT для
+      DIRECT и фиксация ROLE=JOIN там же — отдельный проход S9, см. ниже).
+      Ввод немодальный
       (UP/DOWN — фокус, LEFT/RIGHT — переключатели, печатные символы —
       правка поля, BS/ENTER/ESC). **Отступление от плана, найденное по
       факту реализации**: план предлагал `spectrum_render_fileui_select`
@@ -3673,6 +3675,59 @@ ZX/Next/Qt побайтно не изменились. **В MAME/на живом
   сессию через `net_give_up_pending`, когда бюджет повторов реально
   исчерпан. Заодно 20 литералов `"Link down"` заменены на
   `net_link_down_why()` — теперь на экране виден слой, принявший решение.
+- **NETWORK SETUP: редактируемые HOST/PORT для DIRECT (сделано,
+  2026-08-18, MAME/железо ещё не прогонялись).** Замыкает пункт,
+  отложенный в 8e/S8.md: до этого прохода DIRECT-поля HOST/PORT на
+  экране NETWORK были read-only выводом `NETHOST`/`NETPORT`, а тестер был
+  обязан набирать `SET NETHOST=…`/`SET NETPORT=…` в DSS-шелле до запуска.
+  Теперь оба поля — такие же живые поля, как BROKER/PORT/ROOM у MQTT
+  (фокус `> `, каретка `_`, набор/BS, `net_ui_focused_field()` — общий
+  резолвер поля для обоих транспортов); `SET NETHOST/NETPORT` стал только
+  посевом (RAM-only, без файла настроек — решение пользователя
+  2026-08-18, паритет с ZX/Next). Подключение теперь идёт через
+  `ng_c_connect_at()` (тот же путь, что уже использует редактируемый
+  BROKER у MQTT) вместо `ng_c_connect()`, который сам резолвил
+  NETHOST/NETPORT.
+  **ROLE `< HOST >` под DIRECT была мёртвой комбинацией** — uNet не умеет
+  слушать/принимать (`spectrum_net_listen`/`wait_pc_connect` — заглушки
+  без вызывателей), поэтому Sprinter в DIRECT всегда набирает исходящий
+  TCP, а слушающая сторона (Qt Host, ZX CREATE) всегда является
+  сессионным HOST. Строка ROLE под DIRECT теперь зафиксирована — не
+  всплывающая ошибка, а постоянная, невыбираемая подпись `ROLE: JOIN
+  (DIRECT: DIAL-OUT ONLY)` (серым, без фокуса), и `net_ui_focus_
+  normalize()` пропускает эту позицию при навигации UP/DOWN, так что
+  выбрать HOST под DIRECT физически невозможно — тот же приём, каким
+  ZX/Next-экран SETUP делает IP-строку read-only под HOST+DIRECT
+  (`check_overlay_entry_abi.py`'s `check_setup_editability()`).
+  IPv4/порт проверяются по ENTER (`BAD IP`/`BAD PORT`, тот же рисунок,
+  что и `BAD PORT` у MQTT) — `net_ui_ipv4_ok()` порт `su_validate_ip`
+  (`entry_setup.asm`), `net_ui_port_value()` теперь отвергает `0`, как и
+  ZX-шный `su_parse_port`.
+  Портируемая логика полей (`net_ui_edit_field`, фильтры, `net_ui_port_
+  value`, `net_ui_ipv4_ok`, `net_ui_copy_capped`) вынесена в новую пару
+  `src/sprinter/net_ui_fields.{c,h}` и покрыта отдельным host-тестом
+  (`tests/sprinter/host/test_net_ui_fields.c`, часть `sprinter-host-test`)
+  — так же, как `net_frame.c`.
+  **Бюджет**: слот NET на второй WIN3-странице оверлеев вырос
+  8192→10240 байт, поглотив весь бывший RESERVE2 (INPUT_EDIT/ABOUT
+  сдвинулись на те же 2048 байт, их собственные бюджеты не менялись) —
+  `tools/make_sprinter_overlay_page.py`. По факту сборки: NET
+  **8730/10240 (1510 своб.)**, INPUT_EDIT **2675/4096 (1421 своб.)**,
+  ABOUT **443/2048 (1605 своб.)**; WIN1-резидент, холодная страница и
+  `net_frame_c` не задеты (**15985/16000**, **16384/16384**,
+  **4713/4736** — те же числа, что и до этого прохода). ZX/Next/Qt
+  артефакты байт-идентичны (sha256 `.tap`/`.OVL`/`.DAT`/`.nex` совпадают
+  с базовыми).
+  **Попутно найден и исправлен пред­существующий дефект Makefile**:
+  правила линковки WIN3-mapped оверлеев (`--print-org NAME`, все восемь:
+  RULES/BOARD/SAVELOAD/RESTORE/FILEUI/NET/INPUT_EDIT/ABOUT) не были
+  завязаны на `tools/make_sprinter_overlay_page.py` как на зависимость —
+  Make не видел, что смена раскладки должна инвалидировать уже собранный
+  `.bin`, и `t_about_blit` тихо тестировал байты от старого ORG (`#F000`
+  вместо нового `#F800`), пока адрес не поменяли. Добавлена явная
+  зависимость (`SPRINTER_OVERLAY_PAGE_TOOL`) на всех восьми правилах, и
+  `sprinter-overlay-about-check` — в список `sprinter-check` (его там не
+  было вовсе).
 - Тесты: чек-лист всех экранов по тестер-ноутс S9.
 - DoD: ревью UI-паритета с Next-клиентом (по списку экранов).
 - **HW-pending:** About-переключение режимов на железе (без мусора при
