@@ -1327,11 +1327,16 @@ void main(void) {
                             unsigned char rc = chat_key(key);
 
                             key_code = 0u;
-                            /* Every outcome except BLOCKED closes the line
-                               -- hoisted here once instead of repeating it
-                               in three of the four arms below (WIN1 budget
-                               valve). */
-                            if (rc != CHAT_SPRINTER_KEY_BLOCKED) {
+                            /* Closing the line is hoisted here once instead
+                               of being repeated in the arms below (WIN1
+                               budget valve) -- through the header's own
+                               predicate, NOT an open-coded "everything
+                               except BLOCKED": OPEN keeps the line open too
+                               and has no arm of its own down there, so the
+                               open-coded version closed the line on the
+                               first typed character (chat_sprinter.h has
+                               the full post-mortem). */
+                            if (!CHAT_SPRINTER_KEY_KEEPS_LINE_OPEN(rc)) {
                                 chat_input_mode = 0u;
                             }
                             if (rc == CHAT_SPRINTER_KEY_LINK_DOWN) {

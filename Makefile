@@ -1446,7 +1446,8 @@ $(SPRINTER_PLATFORM_DEFS_ASM): tools/gen_sprinter_platform_defs.py $(SPRINTER_PL
 # SPRINTER_PLATFORM_DEFS_ASM is linked in here too (defc's only, zero
 # bytes contributed), the same generated bridge resident_c.bin already
 # uses for the same call surface.
-SPRINTER_NET_FRAME_C_DEPS := $(SPRINTER_NET_FRAME_C_SRC) $(SPRINTER_NET_CORE_CRT0) \
+SPRINTER_NET_FRAME_C_DEPS := $(SPRINTER_NET_FRAME_C_SRC) $(SPRINTER_C_HEADERS) \
+                             $(SPRINTER_NET_CORE_CRT0) \
                              $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_LAYOUT_INC)
 
 $(SPRINTER_NET_FRAME_C_BIN): $(SPRINTER_NET_FRAME_C_DEPS) | $(SPRINTER_BUILD_DIR)
@@ -1532,7 +1533,8 @@ $(SPRINTER_COLD_DEFS_ASM): tools/gen_sprinter_cold_defs.py $(SPRINTER_RESIDENT_C
 # The verify step is part of this recipe, not a separate target: it reads
 # the .map this very link just produced and fails the build if the entry
 # table did not land where the already-linked WIN1 stubs call.
-$(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_COLD_PAGE_CRT0) \
+$(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_COLD_PAGE_SRC) $(SPRINTER_C_HEADERS) \
+                            $(SPRINTER_COLD_PAGE_CRT0) \
                             $(SPRINTER_COLD_ENTRY_TABLE) $(SPRINTER_COLD_DEFS_ASM) \
                             $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_NETFRAME_DEFS_ASM) \
                             $(SPRINTER_LAYOUT_INC) \
@@ -1618,9 +1620,24 @@ SPRINTER_OVERLAY_ATLAS_TABLE_ASM := $(SPRINTER_ASM_DIR)/zcc/overlay_atlas_table_
 SPRINTER_RENDER_SHIM_ASM := $(SPRINTER_ASM_DIR)/zcc/render_shim.asm
 SPRINTER_RESIDENT_C_MAP := $(SPRINTER_BUILD_DIR)/resident_c.map
 
+# Every checked-in header any Sprinter C target can include. The rules below
+# listed .c files only, so editing a header changed nothing Make could see
+# and the affected .bin was silently NOT rebuilt -- a stale-artifact hazard
+# of exactly the kind this port has already paid for twice (see
+# SPRINTER_OVERLAY_PAGE_TOOL above, and docs/sprinter-testnotes/S9.md's
+# chat-key round). Found again 2026-08-18: a chat_sprinter.h fix appeared to
+# cost 0 bytes because resident_c.bin had not actually been recompiled.
+# Deliberately a coarse wildcard rather than a hand-maintained per-target
+# list: over-rebuilding costs seconds, under-rebuilding ships wrong bytes,
+# and a hand-maintained list is one more thing that drifts silently. The
+# GENERATED headers are not here -- they have their own variables
+# ($(SPRINTER_LAYOUT_H)) and are already listed where they matter.
+SPRINTER_C_HEADERS := $(wildcard src/*.h src/*/*.h src/*/*/*.h)
+
 # C_IMAGE_ENTRY_ADDR read from the JSON at recipe time (not hand-duplicated)
 # so trampoline.asm's JP target and zcc's CRT_ORG_CODE can never drift apart.
-$(SPRINTER_RESIDENT_C_BIN): $(SPRINTER_RESIDENT_C_SRC) $(SPRINTER_RESIDENT_CRT0) \
+$(SPRINTER_RESIDENT_C_BIN): $(SPRINTER_RESIDENT_C_SRC) $(SPRINTER_C_HEADERS) \
+                            $(SPRINTER_RESIDENT_CRT0) \
                             $(SPRINTER_OVERLAY_LOADER_ASM) $(SPRINTER_OVERLAY_ATLAS_TABLE_ASM) \
                             $(SPRINTER_RENDER_SHIM_ASM) $(SPRINTER_COLD_THUNKS_ASM) \
                             $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_NETFRAME_DEFS_ASM) \
@@ -1679,6 +1696,7 @@ SPRINTER_Z88DK_ROOT := $(patsubst %/bin/,%,$(dir $(shell command -v $(ZCC))))
 SPRINTER_OVL_LIBDIRS := -L$(SPRINTER_Z88DK_ROOT)/lib/clibs
 
 $(SPRINTER_OVL_CONTROL_BIN): $(SPRINTER_OVL_CONTROL_ENTRY_ASM) src/spectrum/overlay/control_ovl.c \
+                             $(SPRINTER_C_HEADERS) \
                              $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_LAYOUT_H) \
                              $(SPRINTER_LAYOUT_JSON) | $(SPRINTER_BUILD_DIR)
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/spectrum/overlay/control_ovl.c \
@@ -1736,6 +1754,7 @@ SPRINTER_OVL_BOARD_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_board_sprinter.asm
 SPRINTER_OVL_BOARD_HELPERS_C := $(SPRINTER_ASM_DIR)/zcc/board_helpers_sprinter.c
 
 $(SPRINTER_OVL_BOARD_BIN): $(SPRINTER_OVL_BOARD_ENTRY_ASM) src/spectrum/overlay/board_apply_ovl.c \
+                           $(SPRINTER_C_HEADERS) \
                            $(SPRINTER_OVL_BOARD_HELPERS_C) $(SPRINTER_OVERLAY_DEFS_ASM) \
                            $(SPRINTER_PLATFORM_DEFS_ASM) \
                            $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
@@ -1768,6 +1787,7 @@ sprinter-overlay-board-check: $(SPRINTER_OVL_BOARD_BIN)
 SPRINTER_OVL_SAVELOAD_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_saveload_sprinter.asm
 
 $(SPRINTER_OVL_SAVELOAD_BIN): $(SPRINTER_OVL_SAVELOAD_ENTRY_ASM) src/spectrum/overlay/saveload_ovl.c \
+                              $(SPRINTER_C_HEADERS) \
                               $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
                               $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
                               | $(SPRINTER_BUILD_DIR)
@@ -1796,6 +1816,7 @@ sprinter-overlay-saveload-check: $(SPRINTER_OVL_SAVELOAD_BIN)
 SPRINTER_OVL_RESTORE_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_restore_sprinter.asm
 
 $(SPRINTER_OVL_RESTORE_BIN): $(SPRINTER_OVL_RESTORE_ENTRY_ASM) src/spectrum/overlay/restore_ovl.c \
+                             $(SPRINTER_C_HEADERS) \
                              $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
                              $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
                              | $(SPRINTER_BUILD_DIR)
@@ -1823,6 +1844,7 @@ sprinter-overlay-restore-check: $(SPRINTER_OVL_RESTORE_BIN)
 SPRINTER_OVL_FILEUI_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_fileui_sprinter.asm
 
 $(SPRINTER_OVL_FILEUI_BIN): $(SPRINTER_OVL_FILEUI_ENTRY_ASM) src/spectrum/overlay/fileui_ovl.c \
+                            $(SPRINTER_C_HEADERS) \
                             $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
                             $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
                             | $(SPRINTER_BUILD_DIR)
@@ -1861,7 +1883,7 @@ SPRINTER_OVL_NET_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.asm
 
 $(SPRINTER_OVL_NET_BIN): $(SPRINTER_OVL_NET_ENTRY_ASM) src/sprinter/net_ui_sprinter.c \
                          src/sprinter/net_mqtt_ui_sprinter.c \
-                         src/sprinter/net_ui_fields.c src/sprinter/net_ui_fields.h \
+                         src/sprinter/net_ui_fields.c $(SPRINTER_C_HEADERS) \
                          $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
                          $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
                          | $(SPRINTER_BUILD_DIR)
@@ -1898,6 +1920,7 @@ sprinter-overlay-net-check: $(SPRINTER_OVL_NET_BIN)
 SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_input_edit_sprinter.asm
 
 $(SPRINTER_OVL_INPUT_EDIT_BIN): $(SPRINTER_OVL_INPUT_EDIT_ENTRY_ASM) src/sprinter/chat_sprinter.c \
+                         $(SPRINTER_C_HEADERS) \
                          $(SPRINTER_OVERLAY_DEFS_ASM) \
                          $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
                          | $(SPRINTER_BUILD_DIR)
@@ -2059,9 +2082,22 @@ $(SPRINTER_NET_UI_FIELDS_HOST_TEST): $(SPRINTER_NET_UI_FIELDS_HOST_TEST_SRC) \
                                       src/sprinter/net_ui_fields.h | $(SPRINTER_BUILD_DIR)
 	$(CC) $(CFLAGS) $(SPRINTER_NET_UI_FIELDS_HOST_TEST_SRC) -o $@
 
-sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST) $(SPRINTER_NET_UI_FIELDS_HOST_TEST)
+# chat_sprinter.h's KEY_* return codes and the predicate main.c's frame loop
+# routes keystrokes by. Header-only (plain integer constants plus one macro,
+# no TU of its own to link) -- see that test's own banner for the shipped
+# regression it exists to stop recurring.
+SPRINTER_CHAT_KEY_HOST_TEST := $(SPRINTER_BUILD_DIR)/netchesszx_sprinter_chat_key_test.exe
+SPRINTER_CHAT_KEY_HOST_TEST_SRC := tests/sprinter/host/test_chat_key_contract.c
+
+$(SPRINTER_CHAT_KEY_HOST_TEST): $(SPRINTER_CHAT_KEY_HOST_TEST_SRC) \
+                                 src/sprinter/chat_sprinter.h | $(SPRINTER_BUILD_DIR)
+	$(CC) $(CFLAGS) $(SPRINTER_CHAT_KEY_HOST_TEST_SRC) -o $@
+
+sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST) $(SPRINTER_NET_UI_FIELDS_HOST_TEST) \
+                    $(SPRINTER_CHAT_KEY_HOST_TEST)
 	./$(SPRINTER_NET_FRAME_HOST_TEST)
 	./$(SPRINTER_NET_UI_FIELDS_HOST_TEST)
+	./$(SPRINTER_CHAT_KEY_HOST_TEST)
 
 SPRINTER_SIZE_REPORT_JSON := $(SPRINTER_BUILD_DIR)/size_report.json
 SPRINTER_SIZE_REPORT_MD := $(SPRINTER_BUILD_DIR)/size_report.md
