@@ -378,6 +378,15 @@ PLATFORM_TEST_SYMBOLS = [
     "ng_v_call_len",
     "ng_v_call_flags",
     "ng_v_call_cf",
+    # tests/sprinter/z80/t_menu_flip.asm: the cold-call thunks refuse to
+    # dispatch while this is #FF (nothing published yet -- see cold_thunks'
+    # own cold_no_page guard), which is exactly the state a freshly INCBINed
+    # resident image is in, so that test has to publish a page itself.
+    "cold_win3_page",
+    # tests/sprinter/z80/t_net_mqtt_read.asm patches this to a counting stub
+    # to assert on Sprinter's read-payload pacing (S9 MQTT-lag fix,
+    # 2026-08-19).
+    "frame_wait",
 ]
 
 

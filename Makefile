@@ -2046,9 +2046,21 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 # $(SPRINTER_RESIDENT_BIN) is a dependency for t_net_mqtt_read.asm, which
 # INCBINs the spliced resident image and drives its MQTT read path through
 # the bytes that ship (that test's own banner has the why).
+
+# EVERY artefact the tests INCBIN must be a prerequisite here, not just the
+# two this rule started with. The tests take their symbol ADDRESSES from
+# freshly generated .map/.sym readouts but their BYTES from these files, so
+# a stale .bin means the test calls a correct address into wrong bytes --
+# which is not a subtle failure mode, it is an unexplainable one. Found
+# 2026-08-18: cold_page_image.bin had been recompiled by an earlier target
+# while cold_win3_page.bin (packed from it, and INCBINed by three tests)
+# had not, and t_hint_blit failed five assertions with no source change
+# anywhere near it. `grep -h incbin tests/sprinter/z80/*.asm` is the list
+# this must stay in step with.
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
                    $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC) \
-                   $(SPRINTER_NET_FRAME_C_BIN) $(SPRINTER_RESIDENT_BIN)
+                   $(SPRINTER_NET_FRAME_C_BIN) $(SPRINTER_RESIDENT_BIN) \
+                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_ABOUT_BIN)
 	tools/run_sprinter_z80_tests.sh
 
 # net_frame.c (S7 step 2) builds and behaves identically under gcc: no

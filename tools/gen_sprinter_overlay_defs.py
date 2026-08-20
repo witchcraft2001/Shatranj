@@ -194,6 +194,16 @@ RESIDENT_TEST_SYMBOLS = [
     "netchesszx_session_peer_ready_state",
     "netchesszx_host_color_ready",
     "netchesszx_mqtt_session_id",
+    # tests/sprinter/z80/t_menu_flip.asm calls the shipped menu_flip_board
+    # (render_shim.asm) and stubs saveload_full_redraw's repaint tail so the
+    # flip flag can be inspected without painting -- see that test's banner.
+    "menu_flip_board",
+    "saveload_full_redraw",
+    # tests/sprinter/z80/t_net_mqtt_read.asm (S9 MQTT-lag fix, 2026-08-19)
+    # drives the shipped MQTT/DIRECT read+send paths end to end.
+    "spectrum_net_send_text",
+    "spectrum_net_mqtt_link_reset",
+    "spectrum_net_start_uart",
 ]
 
 GENERATED_BANNER = (
@@ -464,9 +474,16 @@ def _clean_fixture() -> str:
         "_spectrum_net_send_text         = $4CA0 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_send_text::0::0:6\n"
+        "_spectrum_net_start_uart        = $4CA8 ; addr, public, , "
+        "src_sprinter_transport_unet_link_c, code_compiler, "
+        "src/sprinter/transport/unet_link.c::spectrum_net_start_uart::0::0:6\n"
         "_net_chat_blocked               = $4CB0 ; addr, public, , "
         "asm_sprinter_zcc_cold_thunks_asm, code_user, "
         "build/sprinter/generated/cold_thunks.asm:1\n"
+        "_menu_flip_board                = $4CC0 ; addr, public, , "
+        "render_shim, code_user, asm/sprinter/zcc/render_shim.asm:102\n"
+        "_saveload_full_redraw           = $4CB8 ; addr, public, , "
+        "render_shim, code_user, asm/sprinter/zcc/render_shim.asm:84\n"
         "i_15                            = $4259 ; addr, local, , "
         "src_common_protocol_game_protocol_c, code_compiler, "
         "src/common/protocol/game_protocol.c::netchess_after_prefix::0::0:37\n"

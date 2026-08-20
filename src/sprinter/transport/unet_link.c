@@ -3,11 +3,15 @@
  * step 8c). Mechanics (libman/net_gate.asm/the DLL call convention) are
  * already proven by the S3 echo stand; this file is only the contract
  * adapter. DIRECT's role is hardcoded to JOIN, permanently -- not a
- * placeholder pending a future port: uNet has no listen/accept at all
- * (spectrum_net_listen()/spectrum_net_wait_pc_connect() below are
- * unreachable stubs), so Sprinter can only ever dial out, and the
- * listening side of any DIRECT session (Qt Host, ZX CREATE) is always the
- * session HOST (the NET screen's own net_ui_try_connect() pins the role
+ * placeholder pending a future port: uNet has no listen/accept at all, so
+ * this file does not implement link.h's spectrum_net_listen/spectrum_net_
+ * wait_pc_connect/spectrum_net_preflight_run/spectrum_net_connect_host/
+ * spectrum_net_last_ip/spectrum_net_sync_time at all (their only callers,
+ * via the spectrum_link_* macros, are in app.c, not linked into this port --
+ * see the comment above spectrum_net_direct_peer_mark_valid below). Sprinter
+ * can only ever dial out, and the listening side of any DIRECT session (Qt
+ * Host, ZX CREATE) is always the session HOST (the NET screen's own
+ * net_ui_try_connect() pins the role
  * for exactly this reason). Its host/port used to always resolve from the
  * NETHOST/NETPORT env vars; since S9's NETWORK SETUP pass those are only
  * the seed for an editable pair of fields on the NET screen
@@ -32,18 +36,12 @@
 /* Bridged from net_gate.asm. Declared here (not through a target header)
  * for the same reason net_frame.c's nc_pump() declares its own externs:
  * the linker resolves these against the generated platform_defs.asm. */
-extern void ng_up(void);
 extern void ng_close(void);
 extern void ng_shutdown(void);
 extern void ng_lasterr_fetch(void);
-extern void ng_getinfo_ip(void);
-extern void ng_c_connect(void);
 extern void ng_c_connect_at(void);
 extern void ng_c_send(void);
-extern uint8_t ng_up_reason;
-extern uint8_t ng_v_last_nerr;
 extern uint8_t ng_v_last_cf;
-extern char ng_buf_ip[];
 extern char *ng_c_send_ptr;
 extern uint8_t ng_c_send_len;
 extern uint8_t ng_v_call_status;
@@ -64,11 +62,20 @@ extern void spectrum_net_mqtt_setup_payload(char *out) NETCHESSZX_FASTCALL;
 
 extern void frame_wait(void);
 
-/* unet.inc's NERR_OK/NERR_BUSY, needed numerically here (see net_frame.c's
- * own NC_UNET_* comment for why these are duplicated rather than shared
- * via a target header: keeping this file's real #include list short and
- * portable-shaped matters more than avoiding two small literal copies). */
+/* Defined later in this file; forward-declared so net_send_raw (below) can
+ * call it without relying on an implicit declaration -- sccz80 does not
+ * reliably diagnose those, and this file has already paid once for a
+ * silent calling-convention mismatch (see spectrum_gui_set_board_view's own
+ * history, render_shim.asm). */
+void spectrum_net_background_drain(void);
+
+/* unet.inc's NERR_OK/NERR_BUSY/NERR_SEND, needed numerically here (see
+ * net_frame.c's own NC_UNET_* comment for why these are duplicated rather
+ * than shared via a target header: keeping this file's real #include list
+ * short and portable-shaped matters more than avoiding two small literal
+ * copies). */
 #define NC_UNET_NERR_OK 0u
+#define NC_UNET_NERR_SEND 5u
 #define NC_UNET_NERR_BUSY 13u
 #define NC_LINK_DOWN_RC (-2)
 
@@ -79,6 +86,27 @@ extern void frame_wait(void);
  * acknowledging entirely; send_text() reports failure and the session
  * layer (step 4) treats that as connection loss, per link.h's contract. */
 #define NC_SEND_BUSY_RETRY_MAX 50u
+
+/* Bounded resend budget for NERR_SEND, which the RTL DLL returns for TWO
+ * distinct outcomes that share the one code (unetrtl.asm's MAP_TCP_SEND_FAIL
+ * folds both into NERR_SEND):
+ *   - F_BAD_SEG, the full-duplex race: peer data crossed our SEND, so the
+ *     cumulative ACK had not yet reached our target when SEND's own bounded
+ *     ACK wait returned. This is INSTANT and TRANSIENT -- the DLL rolled the
+ *     TCP sequence back (tcp_lib.asm SEND's .UNACKED_DATA -> .RESTORE_SEQ)
+ *     and retained the peer bytes as ACK_WAIT_RX_PENDING, so the very next
+ *     RECV (our drain) delivers them AND clears the pending state, after
+ *     which a resend fills the SAME de-duplicated sequence hole and lands.
+ *   - F_TIMEOUT, a genuinely unresponsive peer: four 1s retransmits with no
+ *     ACK. SLOW (~4s) and usually fatal.
+ * A capture move is exactly when the peer is mid-reply, so the F_BAD_SEG
+ * race is common there -- and misreading it as fatal dropped a healthy link
+ * with "Link down: publish" (human tester, 2026-08-19). One drain clears the
+ * whole pending queue (docs/UNETRTL.md: a single RECV drains every available
+ * segment), so the race clears in one resend; this small budget covers a
+ * short peer burst while still bounding the wall-clock a truly dead link can
+ * cost before net_send_raw gives up (<= (1+MAX) * ~4s). */
+#define NC_SEND_RESEND_RETRY_MAX 3u
 
 static uint8_t net_link_activity;
 static char net_payload_scratch[SPECTRUM_LINK_PAYLOAD_MAX];
@@ -115,9 +143,17 @@ static uint8_t net_peer_valid;
  * flows -- the same reasoning net_join_ui_ovl's DIRECT flow already
  * follows, not a byte-budget necessity like ZX's MQTT_TX split. */
 static uint16_t net_mqtt_next_id = 1u;
-static uint8_t net_mqtt_tx_packet[SPECTRUM_MQTT_PACKET_MAX];
+/* 4 bytes ahead of the packet body (spectrum_mqtt_publish/PINGREQ always
+ * write starting at NET_MQTT_TX_BODY, +4) for an optional prefixed PUBACK --
+ * see net_mqtt_send_body below. */
+static uint8_t net_mqtt_tx_packet[4u + SPECTRUM_MQTT_PACKET_MAX];
+#define NET_MQTT_TX_BODY (net_mqtt_tx_packet + 4u)
 static uint8_t net_mqtt_flags;
 static spectrum_mqtt_broker_keepalive_t net_mqtt_broker_keepalive;
+/* Packet id of a PUBACK not yet on the wire, 0 = none pending. Set by
+ * net_mqtt_puback(), cleared by net_mqtt_send_body() once it actually goes
+ * out (see that function's own banner for why PUBACK is deferred at all). */
+static uint16_t net_mqtt_puback_pending;
 
 /* Which layer decided the MQTT link was down. NOT diagnostics for their own
  * sake: netchesszx_session_poll() collapses four different failures into one
@@ -216,6 +252,7 @@ void spectrum_net_mqtt_link_reset(void)
     net_mqtt_ovl_dropped = 0u;
     net_mqtt_next_id = 1u;
     net_mqtt_flags = 0u;
+    net_mqtt_puback_pending = 0u;
 }
 
 static uint16_t net_mqtt_alloc_id(void)
@@ -241,10 +278,13 @@ static void net_mqtt_topic(char *out, const char *suffix)
     (void)spectrum_append_text(p, suffix);
 }
 
-/* One MQTT packet out of net_mqtt_tx_packet, with the SAME busy-retry ladder
- * spectrum_net_send_text's DIRECT path already runs (docs/UNETRTL.md's
- * documented recovery for a busy TCP channel: drain RX, wait a frame,
- * retry).
+/* Sends one packet through the DLL. Common to MQTT and DIRECT with a
+ * busy-retry ladder (docs/UNETRTL.md's documented recovery for a busy TCP
+ * channel: drain RX, wait a frame, retry) -- this used to be two
+ * near-identical copies, this one and spectrum_net_send_text's own
+ * DIRECT-only ladder, unified during the S9 MQTT-lag fix (2026-08-19) both
+ * to save WIN1 bytes and because a bug fixed in one used to need fixing
+ * twice.
  *
  * This path used to be a single ng_c_send() that reported NERR_BUSY as
  * failure. That held while every MQTT publish happened at connect time,
@@ -258,9 +298,10 @@ static void net_mqtt_topic(char *out, const char *suffix)
  * Spelled out rather than `(!cf && status == OK) ? 1u : 0u` -- sccz80
  * miscompiles a ternary whose condition contains && or ||, always taking the
  * false branch (tools/check_sccz80_codegen.py is the gate). */
-static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
+static uint8_t net_send_raw(const uint8_t *packet, uint8_t len)
 {
     uint8_t retry;
+    uint8_t resend = 0u;
 
     net_send_busy = 0u;
     for (retry = 0u; retry < NC_SEND_BUSY_RETRY_MAX; ++retry) {
@@ -269,9 +310,12 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
          * SEND on the same channel" -- the DLL retains a payload-bearing
          * ACK in the channel's own 536-byte queue while SEND waits, and a
          * SEND issued with that queue occupied cannot complete its
-         * stop-and-wait handshake. nc_mqtt_pump() IS that RECV: it polls
-         * until the gate stops reporting RXF_MORE. */
-        nc_mqtt_pump();
+         * stop-and-wait handshake. spectrum_net_background_drain() picks
+         * nc_mqtt_pump() or nc_pump() by transport -- exactly the RECV each
+         * side needs, and on the NERR_SEND retry path below it is also what
+         * consumes the peer's ACK_WAIT_RX_PENDING bytes and clears that
+         * state so the resend can complete. */
+        spectrum_net_background_drain();
         ng_c_send_ptr = (char *)packet;
         ng_c_send_len = len;
         ng_c_send();
@@ -281,39 +325,53 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
         if (ng_v_call_status == NC_UNET_NERR_OK) {
             return 1u;
         }
-        if (ng_v_call_status != NC_UNET_NERR_BUSY) {
-            /* A send that never went out is why the session layer will
-             * decide the peer is gone a few seconds later; without this the
-             * notice blames the peer for our own failure to speak. Set only
-             * on the real-failure branch now: setting it on BUSY too left a
-             * stale "publish" reason latched after a retry that went on to
-             * succeed, so a later, unrelated drop reported the wrong
-             * layer. */
-            net_mqtt_down_reason = NET_MQTT_DOWN_PUBLISH;
-            /* Deliberately NOT retried, NERR_SEND above all. That one means
-             * the NIC already transmitted and the peer's cumulative ACK
-             * never came back (unetrtl.asm's MAP_TCP_SEND_FAIL) -- a fresh
-             * SEND would put the same MQTT bytes on the stream under a new
-             * TCP sequence number and corrupt the peer's parse. Only
-             * NERR_BUSY is a "nothing went out, try again" answer. */
-            return 0u;
+        if (ng_v_call_status == NC_UNET_NERR_SEND) {
+            /* NOT necessarily fatal -- see NC_SEND_RESEND_RETRY_MAX's banner.
+             * The RTL DLL folds the transient full-duplex race (F_BAD_SEG:
+             * peer data crossed our SEND) and a real dead link (F_TIMEOUT)
+             * into this one code, and rolls the TCP sequence back for both,
+             * so a drained resend is safe and de-duplicated by the peer. The
+             * drain at the top of the next iteration delivers the pending
+             * peer bytes and clears ACK_WAIT_RX_PENDING; the resend then
+             * fills the same sequence hole. Bounded so a genuinely dead peer
+             * (repeated F_TIMEOUT) still falls through to the fatal branch
+             * instead of retrying forever. */
+            if (resend < NC_SEND_RESEND_RETRY_MAX) {
+                ++resend;
+                frame_wait();
+                continue;
+            }
+        } else if (ng_v_call_status == NC_UNET_NERR_BUSY) {
+            /* Nothing but a frame wait here, deliberately. The first version
+             * of this ladder called key_poll() on every retry, meaning to
+             * "keep the latch current" while the main loop was blocked -- it
+             * did the exact opposite. key_code is ONE slot: each call took
+             * another event out of DSS's 16-entry SBUF and overwrote the
+             * previous one, so a BUSY stretch during typing destroyed up to
+             * NC_SEND_BUSY_RETRY_MAX keypresses that would otherwise have sat
+             * safely in SBUF until the frame loop got back to them. That is
+             * the "chat still swallows characters, cursor keys and SPACE get
+             * lost" report from the second MAME round (2026-08-16), and it is
+             * why the symptom tracked MQTT rather than DIRECT: BUSY is common
+             * once presence/PUBACK/PING publishes run from the frame loop,
+             * and rare on the DIRECT stream. key_poll() is now latch-
+             * preserving as well (im2_s1.asm), so this is belt and braces --
+             * but there is still nothing for a poll to do here when no
+             * dispatcher can run. */
+            frame_wait();
+            continue;
         }
-        /* Nothing but a frame wait here, deliberately. The first version of
-         * this ladder called key_poll() on every retry, meaning to "keep the
-         * latch current" while the main loop was blocked -- it did the exact
-         * opposite. key_code is ONE slot: each call took another event out of
-         * DSS's 16-entry SBUF and overwrote the previous one, so a BUSY
-         * stretch during typing destroyed up to NC_SEND_BUSY_RETRY_MAX
-         * keypresses that would otherwise have sat safely in SBUF until the
-         * frame loop got back to them. That is the "chat still swallows
-         * characters, cursor keys and SPACE get lost" report from the second
-         * MAME round (2026-08-16), and it is why the symptom tracked MQTT
-         * rather than DIRECT: BUSY is common once presence/PUBACK/PING
-         * publishes run from the frame loop, and rare on the DIRECT stream.
-         * key_poll() is now latch-preserving as well (im2_s1.asm), so this is
-         * belt and braces -- but there is still nothing for a poll to do here
-         * when no dispatcher can run. */
-        frame_wait();
+        /* Genuinely fatal: NERR_CLOSED (peer reset), NERR_HW (NIC failure),
+         * or a NERR_SEND that survived the bounded resend budget above (a
+         * peer that really has stopped acknowledging, not the full-duplex
+         * race). A send that never landed is why the session layer will
+         * decide the peer is gone; without this the notice blames the peer
+         * for our own failure to speak. Harmless when this runs for a DIRECT
+         * send: net_mqtt_down_reason is only read through the MQTT-gated
+         * net_link_down_why, and link_reset clears it on every fresh MQTT
+         * connect. */
+        net_mqtt_down_reason = NET_MQTT_DOWN_PUBLISH;
+        return 0u;
     }
     /* Every retry came back BUSY. Nothing went out and nothing is wrong with
      * the link -- uNet's own answer says "try again". Reported apart from a
@@ -324,6 +382,45 @@ static uint8_t net_mqtt_send_raw(const uint8_t *packet, uint8_t len)
     return 0u;
 }
 
+/* Sends the len bytes already staged at NET_MQTT_TX_BODY, prefixing them
+ * with a pending PUBACK's 4 bytes if one is waiting (net_mqtt_puback below).
+ *
+ * WHY DEFER PUBACK AT ALL. Every inbound QoS1 PUBLISH used to trigger an
+ * immediate, standalone PUBACK send -- 4 bytes the broker has nothing to
+ * piggyback a reply on, so its TCP ACK comes back on the broker OS's own
+ * delayed-ACK timer (typically 40-200ms) instead of immediately. That stall
+ * sat inside net_send_raw's blocking SEND, on the critical path of every
+ * single inbound message -- exactly the "lag" MQTT had and DIRECT never did
+ * (DIRECT's PINGs get a real reply with data, so its ACKs are never
+ * standalone). MQTT 3.1.1 places no time bound on PUBACK delivery, so
+ * piggybacking it onto whatever this client next sends anyway -- ACK PING,
+ * ACK MOVE, a PUBLISH of our own, or worst case the next PINGREQ -- costs
+ * nothing and avoids the stall (S9 MQTT-lag fix, 2026-08-19). Worst-case
+ * PUBACK delay is one PINGREQ interval (SPECTRUM_MQTT_KEEPALIVE_POLL_TICKS,
+ * ~10s of idle), well inside every broker's own in-session PUBLISH retry
+ * (mosquitto 1.x 20s, EMQX 30s; 2.x/HiveMQ do not retry within a session at
+ * all). */
+static uint8_t net_mqtt_send_body(uint8_t len)
+{
+    uint8_t ok;
+
+    if (net_mqtt_puback_pending != 0u) {
+        net_mqtt_tx_packet[0] = 0x40u;
+        net_mqtt_tx_packet[1] = 0x02u;
+        net_mqtt_tx_packet[2] = (uint8_t)(net_mqtt_puback_pending >> 8);
+        net_mqtt_tx_packet[3] = (uint8_t)net_mqtt_puback_pending;
+        ok = net_send_raw(net_mqtt_tx_packet, (uint8_t)(len + 4u));
+        if (ok) {
+            net_mqtt_puback_pending = 0u;
+        }
+        return ok;
+    }
+    if (len == 0u) {
+        return 1u;
+    }
+    return net_send_raw(NET_MQTT_TX_BODY, len);
+}
+
 static uint8_t net_mqtt_publish_suffix(const char *suffix,
                                        const char *payload,
                                        uint8_t retain)
@@ -332,45 +429,39 @@ static uint8_t net_mqtt_publish_suffix(const char *suffix,
     uint8_t len;
 
     net_mqtt_topic(topic, suffix);
-    len = spectrum_mqtt_publish(net_mqtt_tx_packet, SPECTRUM_MQTT_PACKET_MAX,
+    len = spectrum_mqtt_publish(NET_MQTT_TX_BODY, SPECTRUM_MQTT_PACKET_MAX,
                                 net_mqtt_alloc_id(), topic, payload, retain);
     if (len == 0u) {
         return 0u;
     }
-    return net_mqtt_send_raw(net_mqtt_tx_packet, len);
+    return net_mqtt_send_body(len);
 }
 
 /* QoS1 PUBACK -- packet_id==0 (QoS0) is a deliberate no-op, matching
  * mqtt_min.c's own spectrum_mqtt_parse_publish() contract (*packet_id
- * stays 0 unless the incoming PUBLISH itself was QoS1). Built inline
- * (4 fixed bytes, MQTT spec section 3.4) rather than through mqtt_min.c,
- * which has no PUBACK encoder -- ZX's own net.c::mqtt_puback_id is the
- * same four bytes, same reasoning. */
+ * stays 0 unless the incoming PUBLISH itself was QoS1). Does not send
+ * anything itself: latches the id for net_mqtt_send_body to prefix onto
+ * this client's next outgoing packet (see that function's own banner for
+ * why). */
 static void net_mqtt_puback(uint16_t packet_id)
 {
-    uint8_t ack[4];
-
     if (packet_id == 0u) {
         return;
     }
-    ack[0] = 0x40u;
-    ack[1] = 0x02u;
-    ack[2] = (uint8_t)(packet_id >> 8);
-    ack[3] = (uint8_t)packet_id;
-    /* Through the same ladder as every other send: this one runs from the
-     * frame loop right after a PUBLISH was consumed, which is exactly when
-     * the channel is most likely to still hold data the DLL needs drained
-     * before it will accept a SEND. It used to be a bare ng_c_send() whose
-     * result was not even looked at, so a PUBACK could silently never go
-     * out and the broker would redeliver forever. */
-    (void)net_mqtt_send_raw(ack, 4u);
+    if (net_mqtt_puback_pending != 0u) {
+        /* Collision: an older PUBACK is still waiting to piggyback (two
+         * PUBLISHes arrived before this client sent anything of its own).
+         * Flush it on its own now rather than silently dropping it -- it
+         * still has to reach the broker -- and let this one take the slot. */
+        (void)net_mqtt_send_body(0u);
+    }
+    net_mqtt_puback_pending = packet_id;
 }
 
 static int16_t net_mqtt_keepalive_tick(void)
 {
     uint8_t event = spectrum_mqtt_broker_keepalive_timeout(
         &net_mqtt_broker_keepalive);
-    uint8_t ping[2];
 
     if (event == SPECTRUM_MQTT_KEEPALIVE_NONE) {
         return SPECTRUM_LINK_READ_TIMEOUT;
@@ -379,28 +470,31 @@ static int16_t net_mqtt_keepalive_tick(void)
         net_mqtt_down_reason = NET_MQTT_DOWN_KEEPALIVE;
         return NC_LINK_DOWN_RC;
     }
-    ping[0] = SPECTRUM_MQTT_PINGREQ_HEADER;
-    ping[1] = 0u;
-    ng_c_send_ptr = (char *)ping;
-    ng_c_send_len = 2u;
-    ng_c_send();
-    if (ng_v_call_cf) {
-        net_mqtt_down_reason = NET_MQTT_DOWN_PINGREQ;
-        return NC_LINK_DOWN_RC;
-    }
-    if (ng_v_call_status != NC_UNET_NERR_OK) {
+    NET_MQTT_TX_BODY[0] = SPECTRUM_MQTT_PINGREQ_HEADER;
+    NET_MQTT_TX_BODY[1] = 0u;
+    /* Through the same ladder and PUBACK-coalescing path as every other
+     * send (it used to be a bare, unladdered ng_c_send() -- a transient
+     * BUSY on the keepalive send used to read as "Link down: send" on a
+     * perfectly healthy link). BUSY is not treated as a failure here: the
+     * ladder already retried NC_SEND_BUSY_RETRY_MAX times and net_send_busy
+     * says so; the next keepalive tick simply tries again. */
+    if (!net_mqtt_send_body(2u) && !net_send_busy) {
         net_mqtt_down_reason = NET_MQTT_DOWN_PINGREQ;
         return NC_LINK_DOWN_RC;
     }
     return SPECTRUM_LINK_READ_TIMEOUT;
 }
 
-/* Single non-blocking poll -- pump whatever uNet has queued into the
- * reassembler, take one packet if a whole one is ready. No internal
- * frame_wait pacing (unlike the DIRECT read_payload below): poll.c calls
- * this once per frame already, and ping.c's timeout/retry cadence lives
- * above this layer, same as it does for ZX's own spectrum_net_mqtt_read_
- * payload. */
+/* Pump whatever uNet has queued into the reassembler, take one packet if a
+ * whole one is ready; one non-blocking poll, plus ONE frame_wait if that
+ * poll found nothing -- ZX's own WAIT_POLL=2 (net.c's mqtt_fill_stream)
+ * minus the one frame main.c's own poll loop already waits between calls,
+ * same accounting as spectrum_net_read_payload below. This used to have NO
+ * frame_wait at all, which ran the MQTT frame loop roughly twice the rate
+ * DIRECT/ZX run at: PING/PINGREQ (paced in wall-clock ticks, ping.c/
+ * SPECTRUM_MQTT_KEEPALIVE_POLL_TICKS) fired twice as often per second, which
+ * doubled the rate of the blocking sends that go with them -- part of why
+ * MQTT lagged and DIRECT did not (S9 MQTT-lag fix, 2026-08-19). */
 static int16_t net_mqtt_read_payload(char *payload, uint8_t payload_cap)
 {
     int16_t total;
@@ -411,6 +505,11 @@ static int16_t net_mqtt_read_payload(char *payload, uint8_t payload_cap)
     net_mqtt_flags = 0u;
     nc_mqtt_pump();
     total = nc_mqtt_take();
+    if (total == 0) {
+        frame_wait();
+        nc_mqtt_pump();
+        total = nc_mqtt_take();
+    }
     if (total == (int16_t)NC_LINK_DOWN_RC) {
         net_mqtt_down_reason = NET_MQTT_DOWN_STREAM;
         return NC_LINK_DOWN_RC;
@@ -487,46 +586,26 @@ static uint8_t net_mqtt_send_text(const char *text) NETCHESSZX_FASTCALL
 void spectrum_net_start_uart(void)
 {
     /* Nothing to pre-warm: uNet's "UART" lives entirely inside the DLL,
-     * brought up by preflight_run()'s ng_up(). This hook's real job is
-     * resetting local framing/activity state before a fresh attempt. */
+     * brought up by net_preflight_ovl()'s ng_up() (net_mqtt_ui_sprinter.c).
+     * This hook's real job is resetting local framing/activity state before
+     * a fresh attempt. */
     nc_init();
     net_link_activity = 0u;
     net_peer_valid = 0u;
 }
 
-uint8_t spectrum_net_listen(void)
-{
-    /* Host role is out of reach until S9 (SETUP overlay not yet ported;
-     * port.md section 3.7's "listen/accept stubs"). */
-    return 0u;
-}
-
-uint8_t spectrum_net_wait_pc_connect(void)
-{
-    return 0u;
-}
-
-uint8_t spectrum_net_preflight_run(void)
-{
-    ng_up();
-    return (ng_up_reason == 0u)
-        ? SPECTRUM_LINK_PREFLIGHT_OK
-        : SPECTRUM_LINK_PREFLIGHT_FAILED;
-}
-
-uint8_t spectrum_net_connect_host(void)
-{
-    ng_c_connect();
-    /* Same sccz80 &&-in-a-ternary miscompile as net_mqtt_publish_suffix
-     * above -- this one made a successful DIRECT connect report as failed. */
-    if (ng_v_call_cf) {
-        return 0u;
-    }
-    if (ng_v_call_status != NC_UNET_NERR_OK) {
-        return 0u;
-    }
-    return 1u;
-}
+/* link.h also declares spectrum_net_listen/spectrum_net_wait_pc_connect/
+ * spectrum_net_preflight_run/spectrum_net_connect_host/spectrum_net_last_ip/
+ * spectrum_net_sync_time. None of them are implemented here (S9 MQTT-lag
+ * pass, 2026-08-19, a ~60-byte WIN1 budget valve for that fix): every one of
+ * their spectrum_link_* aliases is called only from app.c, which is not
+ * linked into the Sprinter build -- this port's own main.c/session_
+ * sprinter.c/net_ui_sprinter.c/net_mqtt_ui_sprinter.c call ng_up()/
+ * ng_c_connect_at()/net_preflight_ovl() directly instead (net_gate.asm
+ * stays the funnel; t_net_core exercises it there). Host role itself is
+ * still out of reach on this port regardless -- uNet has no listen/accept
+ * at all (port.md section 3.7) -- so spectrum_net_listen/wait_pc_connect
+ * would have stayed 0u-returning stubs even implemented. */
 
 void spectrum_net_direct_peer_mark_valid(void)
 {
@@ -541,20 +620,22 @@ int16_t spectrum_net_read_payload(char *payload, uint8_t payload_cap)
         return net_mqtt_read_payload(payload, payload_cap);
     }
 
-    /* Empty queue: up to two non-blocking polls, each followed by a
-     * frame wait if it still found nothing -- the ZX pacing (direct_ovl.
-     * c's direct_read_payload_ovl/direct_drain_uart_ovl) this port must
-     * stay tick-compatible with, since ping.c's constants (75/3/2 ticks)
-     * are unmodified. A queue that already has data skips this entirely,
-     * same as ZX's own `direct_rx_count == 0u` guard. */
+    /* Empty queue: one non-blocking poll, then ONE frame wait if it still
+     * found nothing, then a second poll -- ZX's own WAIT_POLL=2 pacing
+     * (net.c's mqtt_fill_stream; direct_ovl.c's direct_read_payload_ovl
+     * follows the same constant) minus the one frame main.c's own poll loop
+     * already waits between calls, so the total per idle iteration matches
+     * ZX's two. This used to wait twice in here (three total per idle
+     * iteration), making the DIRECT frame loop tick 1.5x slower than spec
+     * -- brought down to match net_mqtt_read_payload's own one-wait pacing
+     * above (S9 MQTT-lag fix, 2026-08-19). A queue that
+     * already has data skips this entirely, same as ZX's own
+     * `direct_rx_count == 0u` guard. */
     if (nc_queue_count() == 0u) {
         nc_pump();
         if (nc_queue_count() == 0u) {
             frame_wait();
             nc_pump();
-            if (nc_queue_count() == 0u) {
-                frame_wait();
-            }
         }
     }
 
@@ -568,9 +649,6 @@ int16_t spectrum_net_read_payload(char *payload, uint8_t payload_cap)
 uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
 {
     uint8_t len;
-    uint8_t retry;
-
-    spectrum_net_background_drain();
 
     if (netchesszx_transport_is_mqtt()) {
         return net_mqtt_send_text(text);
@@ -593,26 +671,12 @@ uint8_t spectrum_net_send_text(const char *text) NETCHESSZX_FASTCALL
     net_tx_line[len] = '\n';
     ++len;
 
-    ng_c_send_ptr = net_tx_line;
-    ng_c_send_len = len;
-
-    net_send_busy = 0u;
-    for (retry = 0u; retry < NC_SEND_BUSY_RETRY_MAX; ++retry) {
-        ng_c_send();
-        if (ng_v_call_cf) {
-            return 0u;
-        }
-        if (ng_v_call_status != NC_UNET_NERR_BUSY) {
-            return (ng_v_call_status == NC_UNET_NERR_OK) ? 1u : 0u;
-        }
-        nc_pump();
-        /* No key_poll() here either -- see net_mqtt_send_raw's own comment
-         * for why one used to be here and why it destroyed keypresses
-         * instead of preserving them. */
-        frame_wait();
-    }
-    net_send_busy = 1u;
-    return 0u;
+    /* net_send_raw() drains before every attempt (spectrum_net_background_
+     * drain(), transport-dispatched) -- this used to run its own separate
+     * ladder plus an extra drain up front; both were unified into
+     * net_send_raw during the S9 MQTT-lag fix (2026-08-19), the same fix
+     * that removed net_mqtt_send_raw's identical twin. */
+    return net_send_raw((const uint8_t *)net_tx_line, len);
 }
 
 uint8_t spectrum_net_send_ping(void)
@@ -652,20 +716,13 @@ void spectrum_net_background_drain(void)
     nc_pump();
 }
 
-const char *spectrum_net_last_ip(void)
-{
-    ng_getinfo_ip();
-    return (ng_v_last_nerr == NC_UNET_NERR_OK) ? ng_buf_ip : "";
-}
-
-uint8_t spectrum_net_sync_time(void)
-{
-    /* Sprinter already has a hardware RTC (BIOS_CMOS_TEST, sampled by
-     * trampoline.asm into rtc_present -- see platform_primitives.asm's
-     * RTC_PRESENT banner); unlike ZX's ESP-AT NTP path, there is no
-     * network-sourced clock to sync here. */
-    return 0u;
-}
+/* link.h also declares spectrum_net_last_ip/spectrum_net_sync_time -- not
+ * implemented here, same S9 MQTT-lag-pass budget valve and same reasoning
+ * as spectrum_net_listen and friends above (their spectrum_link_* aliases
+ * are only called from app.c, not linked into this port). Sprinter already
+ * has a hardware RTC (BIOS_CMOS_TEST, sampled by trampoline.asm into
+ * rtc_present -- platform_primitives.asm's RTC_PRESENT banner) rather than
+ * ZX's ESP-AT NTP path, so sync_time would have had nothing to do anyway. */
 
 /* S8 step 8a/8b: thin WIN1 wrapper dispatching the NET overlay's own
  * DIRECT-join/config screen (src/sprinter/net_ui_sprinter.c, moved off the

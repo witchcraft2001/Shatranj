@@ -99,22 +99,99 @@ def check_sprinter(root: Path) -> None:
         fail("Sprinter background_drain() must not consume the RX queue")
 
     read_body = fn_body(link, "spectrum_net_read_payload")
-    # Tick compatibility with ZX's direct_ovl.c pacing, which ping.c's
-    # unmodified 75/3/2 constants are calibrated against: an empty poll
-    # costs exactly two frame waits, and the queue is checked before any
-    # of them so a queue with data costs none.
-    if read_body.count("frame_wait()") != 2:
-        fail("Sprinter read_payload() must wait exactly two frames when idle")
+    # Tick compatibility with ZX's own WAIT_POLL=2 (net.c's mqtt_fill_stream):
+    # an empty poll costs exactly ONE frame wait in here, plus the one
+    # main.c's own poll loop already waits between calls, for two total --
+    # and the queue is checked before either poll so a queue with data costs
+    # none. Was 2 here (3 total) until the S9 MQTT-lag fix (2026-08-19),
+    # which also brought net_mqtt_read_payload up to the same one-wait
+    # pacing below -- before that fix MQTT waited zero, ticking at roughly
+    # twice DIRECT's rate.
+    if read_body.count("frame_wait()") != 1:
+        fail("Sprinter read_payload() must wait exactly one frame when idle")
     if read_body.find("nc_queue_count()") > read_body.find("nc_pump()"):
         fail("Sprinter read_payload() must check the queue before pumping")
     if read_body.find("nc_line_pop") < read_body.rfind("frame_wait()"):
-        fail("Sprinter read_payload() must pop after the pacing waits")
+        fail("Sprinter read_payload() must pop after the pacing wait")
+
+    mqtt_read_body = fn_body(link, "net_mqtt_read_payload")
+    if mqtt_read_body.count("frame_wait()") != 1:
+        fail("Sprinter MQTT read_payload() must wait exactly one frame when idle")
+
+    if link.count("ng_c_send();") != 1:
+        fail(
+            "Sprinter must send through a single ng_c_send() call site "
+            "(net_send_raw) -- a second copy means the busy-retry ladder "
+            "drifted apart again"
+        )
+
+    puback_body = fn_body(link, "net_mqtt_puback")
+    if "net_mqtt_puback_pending" not in puback_body:
+        fail(
+            "Sprinter PUBACK must be deferred (net_mqtt_puback_pending), "
+            "not sent immediately -- an immediate standalone PUBACK stalls "
+            "on the broker's delayed-ACK timer"
+        )
 
     activity_body = fn_body(link, "spectrum_net_link_activity")
     if "net_link_activity = 0u" not in activity_body:
         fail("Sprinter link_activity() must be consume-on-read")
 
+    check_sprinter_frame_tick(root)
     check_sprinter_mqtt_routing(root, link)
+
+
+def check_sprinter_frame_tick(root: Path) -> None:
+    """gui.c's tick counts its own calls, so it must see one call per REAL frame.
+
+    spectrum_gui_tick() drives the GAME/TURN timers and the notice countdown
+    off clock_frames -- 50 calls == one second -- which is only true if it is
+    called once per 50 Hz frame. ZX/Next satisfy that structurally: every
+    frame they wait is waited through spectrum_net_runtime_wait_frame*(),
+    which is frame_wait and gui_tick together, wherever the wait happens.
+
+    Sprinter cannot: its frame loop calls the tick once per ITERATION, and an
+    iteration burns a variable number of frames (the read path waits one, the
+    send ladder waits more, and a blocking uNet SEND can sit inside the DLL
+    for seconds with no frame_wait at all). So main.c must tick once per frame
+    that really elapsed, measured from the ISR's own frame_counter.
+
+    This is guarded because the coupling is invisible and has already bitten:
+    the S9 pacing fix above changed an MQTT iteration from one frame to two,
+    and the GAME/TURN clocks silently ran at half speed (2026-08-19). Anyone
+    "simplifying" this back to a bare per-iteration tick reintroduces exactly
+    that, and no other gate would notice.
+    """
+    main_c = (root / "src/sprinter/main.c").read_text(encoding="utf-8")
+
+    if main_c.count("spectrum_gui_tick();") != 1:
+        fail(
+            "Sprinter main.c must call spectrum_gui_tick() from exactly one "
+            "site (the real-frame catch-up loop)"
+        )
+    # Structural, not proximity-based: the tick must be the body of the
+    # elapsed-frames loop. Checking only that frame_counter appears "somewhere
+    # above" passes for a bare per-iteration tick that merely leaves the delta
+    # arithmetic sitting unused next to it -- which is the exact regression
+    # this guards, so that weaker form is worthless here.
+    if not re.search(
+        r"while\s*\(\s*frames_elapsed--\s*!=\s*0u\s*\)\s*\{\s*"
+        r"spectrum_gui_tick\(\);\s*\}",
+        main_c,
+    ):
+        fail(
+            "Sprinter main.c must drive spectrum_gui_tick() once per REAL "
+            "elapsed frame -- the call must be the body of "
+            "`while (frames_elapsed-- != 0u)`, with frames_elapsed the "
+            "frame_counter delta since gui_tick_last_frame. A per-iteration "
+            "tick makes the GAME/TURN timers run slow: an iteration is a "
+            "variable number of frames on this port"
+        )
+    if "frame_counter" not in main_c or "gui_tick_last_frame" not in main_c:
+        fail(
+            "Sprinter main.c must measure elapsed frames from the ISR's "
+            "frame_counter against gui_tick_last_frame"
+        )
 
 
 def check_sprinter_mqtt_routing(root: Path, link: str) -> None:

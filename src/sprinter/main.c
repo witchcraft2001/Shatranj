@@ -227,6 +227,37 @@ extern unsigned char rtc_minute;
 extern unsigned char rtc_second;
 static unsigned char rtc_tick_counter;
 
+/* Real-frame accounting for spectrum_gui_tick() (S9 MQTT-lag round 3,
+   2026-08-19). gui.c's tick is documented and written as "called once per
+   50 Hz frame": it counts its OWN invocations (clock_frames, 50 = one
+   second) to drive the GAME/TURN timers and the notice countdown. ZX/Next
+   honour that structurally -- every frame they wait is paired with a tick,
+   including the ones burned inside the transport (net.c's mqtt_fill_stream
+   and direct_ovl.c both wait through spectrum_net_runtime_wait_frame*(),
+   which is frame_wait + gui_tick together).
+
+   This port could not honour it that way. Its frame loop calls the tick
+   once per ITERATION, while an iteration burns a variable number of real
+   frames: the read path waits one (unet_link.c), the busy/resend send
+   ladder waits more, and a blocking uNet SEND can sit inside the DLL for
+   seconds with no frame_wait at all -- something ZX's UART never does. So
+   the tick count drifted from the frame count and the timers ran slow: the
+   S9 pacing change made an MQTT iteration two frames instead of one, and
+   the GAME/TURN clocks promptly ran at half speed (host 02:29 / move 00:40
+   against Sprinter 00h01m / 00m18s -- human tester, MAME, 2026-08-19).
+
+   frame_counter (im2_s1.asm) is the ISR's own free-running per-frame
+   counter, so the delta since the last pass is exactly the number of frames
+   that really elapsed, wherever they were spent -- inside a frame_wait,
+   inside a blocking DLL call, anywhere. Ticking that many times keeps
+   gui.c's contract exactly as written, rather than giving this target its
+   own timer semantics (architecture decision #0006). Wraps at 256 frames
+   (5.12 s); a single pass that slow means the DLL was blocked for longer
+   than any send this port issues can take, and the counter is the only
+   frame source there is. */
+extern unsigned char frame_counter;
+static unsigned char gui_tick_last_frame;
+
 /* Board cursor / selection state, shared with render_core.asm (see the
    comment on selected_row there): the renderer owns the cells because the
    asm cursor mover and the frame painters both read them, this file owns
@@ -1213,6 +1244,12 @@ void main(void) {
        app/app.c) uses this exact precedence, so that while the file
        browser is open it owns every keypress outright and neither the
        menu-tab layer nor the board cursor/select layer ever sees it. */
+    /* Seed the real-frame tick accounting from the counter's CURRENT value:
+       boot (splash, preflight, the NET screen) has already run for an
+       unknown number of frames, and starting from 0 would make the first
+       pass tick that whole stale delta at once -- eating the notice line
+       and jumping the clock. */
+    gui_tick_last_frame = frame_counter;
     for (;;) {
         /* One frame_wait per iteration, but as many queued keys as
            the burst budget allows: key_poll() dequeues ONE DSS
@@ -1445,17 +1482,25 @@ void main(void) {
            counter), just counted here instead since Sprinter's RTC is a
            local peripheral gui.c has no knowledge of (ZX/Next feed this
            same API from an MQTT SYNC_TIME message instead). */
-        if (++rtc_tick_counter >= 50u) {
-            rtc_tick_counter = 0u;
-            rtc_sample();
-            if (rtc_valid) {
-                spectrum_gui_set_clock(rtc_hour, rtc_minute, rtc_second);
+        /* GAME/TURN timers (1 Hz internal counter) and the notice-line
+           countdown both live inside gui.c's own tick, which counts its own
+           calls and must therefore see one call per REAL frame -- see
+           gui_tick_last_frame's own banner for why an iteration is not a
+           frame on this port and what that cost. Deliberately kept out of
+           the rtc_sample() block above: that one only decides how often the
+           hardware wall clock is re-READ (its value is absolute, so a
+           coarser sample costs display latency, never accuracy), and
+           folding it in here cost more WIN1 bytes than this port has. */
+        {
+            unsigned char frames_now = frame_counter;
+            unsigned char frames_elapsed =
+                (unsigned char)(frames_now - gui_tick_last_frame);
+
+            gui_tick_last_frame = frames_now;
+            while (frames_elapsed-- != 0u) {
+                spectrum_gui_tick();
             }
         }
-        /* GAME/TURN timers (1 Hz internal counter) and the notice-line
-           countdown both live inside gui.c's own tick -- this is the
-           first thing in this port's frame loop that calls it. */
-        spectrum_gui_tick();
 
         /* S7 step 5: the DIRECT session, when there is one. Deliberately
            last in the frame, after every local effect has been applied and

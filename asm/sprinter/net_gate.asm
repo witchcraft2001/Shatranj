@@ -76,7 +76,12 @@ NG_UP_ERR_LOAD     EQU 2   ; l_load failed (see LIBMAN.l_reason/l_dss_error)
 NG_UP_ERR_INFO_TAG EQU 3   ; l_info prefix doesn't match the selected backend
 NG_UP_ERR_ABI      EQU 4   ; GETCAPS major version mismatch
 NG_UP_ERR_CAPS     EQU 5   ; GETCAPS missing UNET_CAP_TCP
-NG_UP_ERR_SETOPT   EQU 6   ; SETOPT CANCELKEYS rejected
+NG_UP_ERR_SETOPT   EQU 6   ; retired (S9): SETOPT CANCELKEYS is no longer
+                           ; called at all (see ng_up's .caps_ok:), so this
+                           ; reason is unreachable. Number kept unused rather
+                           ; than renumbered -- net_ui_sprinter.c's reason
+                           ; switch keys off these values and cases 7-9 must
+                           ; not shift.
 NG_UP_ERR_STATUS   EQU 7   ; STATUS(#FF) neither NERR_OK nor NERR_NONET
 NG_UP_ERR_NETINIT  EQU 8   ; NETINIT failed
 NG_UP_ERR_CALL     EQU 9   ; a dispatcher-level ng_call failure (CF=1)
@@ -344,16 +349,17 @@ ng_up:
         ld      a,NG_UP_ERR_CAPS
         jr      .fail
 .caps_ok:
-        ld      a,UNET_OPT_CANCELKEYS
-        ld      de,1
-        ld      b,UNET_FN_SETOPT
-        call    ng_call
-        jr      c,.fail_call
-        or      a
-        jr      z,.setopt_ok
-        ld      a,NG_UP_ERR_SETOPT
-        jr      .fail
-.setopt_ok:
+        ; SETOPT CANCELKEYS is deliberately never called (S9 MQTT-lag fix,
+        ; 2026-08-19): with it on, every DLL blocking wait (TICK_AND_CHECK_KEY,
+        ; unetrtl.asm) polls DSS_SCANKEY once per ~1ms, and SCANKEY is a
+        ; CONSUMING read of the keyboard ring buffer (KEYINTER.ASM's GETSYM)
+        ; that discards anything but Esc/Ctrl-C/Ctrl-Z. Shatranj never
+        ; inspects NERR_CANCEL, so the option only cost keystrokes -- worst
+        ; during TCP SEND's up-to-4s ACK wait, which MQTT (PUBACK/PINGREQ
+        ; every few seconds) hits far more often than DIRECT. Leaving it
+        ; unset keeps the DLL's own default (CANCEL_MODE=0, "the DLL never
+        ; touches the keyboard unless asked", UNETAPI.md), so DSS_SCANKEY is
+        ; never called and every keypress waits in SBUF for key_poll.
         ld      a,#FF
         ld      b,UNET_FN_STATUS
         call    ng_call
@@ -502,13 +508,20 @@ ng_recv:
 ; on tile_dest_base etc.): src/sprinter/transport/unet_link.c (WIN1)
 ; writes ng_c_send_ptr/len, calls the wrapper with a plain zero-argument C
 ; call, then reads ng_v_call_status/len/flags/cf. ng_c_connect needs no
-; such cell -- S7's DIRECT join is env-config-only (port.md section 3.7:
-; "Host/port - env NETHOST/NETPORT", no interactive host entry this
-; milestone), so it resolves NETHOST/NETPORT itself via ng_env_nethost/
-; ng_env_netport. ng_up/ng_close/ng_shutdown/ng_lasterr_fetch/
-; ng_getinfo_ip need no wrapper either -- they already take zero pointer
-; arguments, and their outcome is ng_v_last_nerr/ng_v_last_cf (set by
-; every ng_call dispatch) or (for ng_up specifically) ng_up_reason.
+; such cell -- it resolves NETHOST/NETPORT itself via ng_env_nethost/
+; ng_env_netport, the env-config-only DIRECT join S7 originally shipped.
+; NO C IMAGE CALLS ng_c_connect ANY MORE (S9 MQTT-lag pass, 2026-08-19):
+; its one caller, unet_link.c's spectrum_net_connect_host, was deleted as
+; dead code (its own spectrum_link_connect_host alias is only reached from
+; app.c, not linked into this port) -- the NET screen dials out through
+; ng_c_connect_at (a caller-supplied host/port) instead. Kept resident and
+; still exercised by tests/sprinter/z80/t_net_core.asm, which calls it
+; directly, the same way this whole file's ng_/ng_c_ surface is a stable
+; funnel regardless of which C callers currently reach each entry. ng_up/
+; ng_close/ng_shutdown/ng_lasterr_fetch/ng_getinfo_ip need no wrapper
+; either -- they already take zero pointer arguments, and their outcome is
+; ng_v_last_nerr/ng_v_last_cf (set by every ng_call dispatch) or (for
+; ng_up specifically) ng_up_reason.
 ; ---------------------------------------------------------------------------
 
 ng_c_connect:

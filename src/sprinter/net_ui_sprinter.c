@@ -304,7 +304,10 @@ static const char *net_ui_preflight_reason(unsigned char reason)
     case 3u: return "DLL IS NOT THE SELECTED BACKEND";
     case 4u: return "uNet ABI MISMATCH";
     case 5u: return "BACKEND HAS NO TCP";
-    case 6u: return "SETOPT CANCELKEYS REJECTED";
+    case 6u: return "SETOPT CANCELKEYS REJECTED"; /* unreachable (S9): ng_up
+                                                      no longer calls SETOPT
+                                                      CANCELKEYS at all; kept
+                                                      so cases 7-9 don't shift */
     case 7u: return "ADAPTER STATUS FAILED";
     case 8u: return "NETINIT FAILED";
     case 9u: return "DLL CALL FAILED";
@@ -725,9 +728,11 @@ static unsigned char net_ui_mqtt_connect(void)
    mutable session globals, configure the session, and dispatch the chosen
    transport's own connect flow.
 
-   ROLE UNDER DIRECT: uNet has no listen/accept (port.md section 3.7,
-   unet_link.c's spectrum_net_listen()/spectrum_net_wait_pc_connect() are
-   unreachable stubs) -- Sprinter can only ever dial out, so the listening
+   ROLE UNDER DIRECT: uNet has no listen/accept (port.md section 3.7);
+   link.h's spectrum_net_listen()/spectrum_net_wait_pc_connect() are not
+   implemented on Sprinter at all (S9 MQTT-lag pass, 2026-08-19 -- app.c,
+   the only caller of their spectrum_link_* aliases, is not linked into
+   this port) -- Sprinter can only ever dial out, so the listening
    side of any DIRECT session (Qt Host, ZX CREATE) is always the session
    HOST. net_ui_role's own toggle is not reachable while DIRECT is selected
    (net_ui_focus_normalize keeps it off index 1), but `role` is still

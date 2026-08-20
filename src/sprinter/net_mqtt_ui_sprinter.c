@@ -621,11 +621,14 @@ unsigned char net_mqtt_activate_side_ovl(void)
     return 1u;
 }
 
-/* SPECTRUM_OVL_NET_PREFLIGHT = 2u. Not wired as unet_link.c's own
-   spectrum_net_preflight_run() target (that function calls ng_up()
-   directly, matching net_join_ui_ovl's DIRECT flow -- see that file's own
-   comment); kept for API completeness against overlay.h's shared entry
-   contract, same category as SPECTRUM_OVL_MQTT_TX staying unused here. */
+/* SPECTRUM_OVL_NET_PREFLIGHT = 2u. Not wired through link.h's
+   spectrum_net_preflight_run() -- that function is not implemented on this
+   port at all (S9 MQTT-lag pass, 2026-08-19: app.c, its only caller via the
+   spectrum_link_preflight_run alias, is not linked into Sprinter). This
+   overlay entry calls ng_up() directly instead, matching net_join_ui_ovl's
+   DIRECT flow -- see that file's own comment; kept for API completeness
+   against overlay.h's shared entry contract, same category as
+   SPECTRUM_OVL_MQTT_TX staying unused here. */
 unsigned char net_preflight_ovl(void)
 {
     ng_up();

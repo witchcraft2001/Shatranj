@@ -463,36 +463,54 @@ WIN3 в момент вызова считается разрушенным (ISA
 WIN2, а WIN0=DSS во время `l_call` (R6/§3.9).
 
 **Идея «DLL в WIN0» рассмотрена и отклонена по фактам исходников.**
-Условие «DLL не вызывает DSS» не выполняется: обе DLL при включённом
-`CANCELKEYS` опрашивают клавиатуру через DSS из своих циклов ожидания —
-`LD C,DSS_SCANKEY / RST #10` (`unetrtl.asm:225`, рядом комментарий
-«DSS_SCANKEY may remap page 3 outright»; `unetesp.asm:1488`). Код,
-исполняющийся *из* WIN0, не может одновременно иметь DSS в WIN0 для
-`RST #10`; вдобавок RTL включает `EI` внутри вызова (`ISA_CLOSE`) — при
-WIN0≠DSS первое же прерывание IM1 уйдёт в байты DLL по `#0038`. Наконец,
-`l_load` принимает только окна 1–3, а INIT обеих DLL валидирует своё
-окно. Отключать `CANCELKEYS` ради WIN0 нельзя — это единственный способ
-прервать 20-секундный `CONNECT`. Итог: DLL остаётся в WIN1.
+Условие «DLL не вызывает DSS» не выполняется в общем случае: обе DLL,
+ЕСЛИ вызывающий код включил `CANCELKEYS`, опрашивают клавиатуру через
+DSS из своих циклов ожидания — `LD C,DSS_SCANKEY / RST #10`
+(`unetrtl.asm:225`, рядом комментарий «DSS_SCANKEY may remap page 3
+outright»; `unetesp.asm:1488`). Код, исполняющийся *из* WIN0, не может
+одновременно иметь DSS в WIN0 для `RST #10`; вдобавок RTL включает `EI`
+внутри вызова (`ISA_CLOSE`) — при WIN0≠DSS первое же прерывание IM1
+уйдёт в байты DLL по `#0038`. Наконец, `l_load` принимает только окна
+1–3, а INIT обеих DLL валидирует своё окно. Это ограничение самой DLL,
+не зависящее от того, включает ли текущий вызывающий `CANCELKEYS` —
+Shatranj с S9 его не включает (см. выше), но общий вывод не меняется:
+DLL остаётся в WIN1.
 
 **Выбор бэкенда** — по DSS-переменной `NET` (`WIFI`→`UNETESP.DLL`,
 `RTL`→`UNETRTL.DLL`), без аппаратной автопробы; после загрузки — проверка
 `l_info` (имя), `GETCAPS` (ABI major = 1, `CAP_TCP`). Путь DLL: каталог
-EXE, затем текущий каталог. `SETOPT CANCELKEYS=1` обязателен: `CONNECT`
-может блокировать до 20 с (ESP), отмена — только клавишей.
+EXE, затем текущий каталог.
+
+`SETOPT CANCELKEYS` **никогда не вызывается** (пересмотрено в S9,
+2026-08-19; изначально ожидалось «обязателен», см. историю ниже). Включив
+его, `ng_up` заставлял КАЖДЫЙ блокирующий цикл ожидания DLL
+(`TICK_AND_CHECK_KEY`, ~раз в 1 мс) опрашивать `DSS_SCANKEY` —
+а `SCANKEY` (`GETSYM`, `KEYINTER.ASM`) **извлекает** запись из
+16-элементного кольца клавиатуры и выбрасывает всё, кроме
+Esc/Ctrl-C/Ctrl-Z. Shatranj никогда не обрабатывает исход `NERR_CANCEL`,
+который этот механизм существует, чтобы произвести, — отмена `CONNECT`
+клавишей **никогда не была реализована** на этом порту, поэтому опция
+приносила чистый вред: RECV с `IY=0` до цикла почти не доходит, а вот
+SEND'ы (до 4 с ожидания кумулятивного ACK) молотили SCANKEY на каждый
+исходящий пакет, и MQTT шлёт их существенно чаще DIRECT (PUBACK на
+каждое входящее сообщение, PINGREQ каждые несколько секунд) — отсюда
+лаги и проглоченные клавиши именно под MQTT, а не под DIRECT (тестер,
+2026-08-19; docs/sprinter-testnotes/S9.md). С отключённым SETOPT
+`CANCEL_MODE` остаётся в дефолте DLL (0, «никогда не трогает клавиатуру,
+если не попросили») и `DSS_SCANKEY` из блокирующих циклов не вызывается
+вовсе.
 
 **Отображение на контракт `link.h` (21 функция):**
 
 | link.h | Реализация Sprinter |
 | --- | --- |
-| `spectrum_net_start_uart` | load DLL → l_info/GETCAPS → CANCELKEYS → `NETINIT` (экран preflight с прогрессом и отменой) |
+| `spectrum_net_start_uart` | load DLL → l_info/GETCAPS → `NETINIT` (экран preflight с прогрессом; отмена клавишей никогда не была реализована, CANCELKEYS не включается, см. выше) |
 | `spectrum_net_connect_host` | `CONNECT`(chan 0, host, port ASCIIZ из staging) |
-| `spectrum_net_listen`/`wait_pc_connect` | заглушка `unsupported`, вызывателей нет: uNet не умеет слушать/принимать, поэтому DIRECT на Sprinter — только исходящий набор; экран NETWORK (не SETUP) с S9 фиксирует ROLE=JOIN и не даёт выбрать HOST под DIRECT (`net_ui_try_connect`, `net_ui_sprinter.c`) |
-| `spectrum_net_read_payload` | `RECV` chan 0 бюджетом, сохраняющим тик-математику сессии (пустое чтение = 2 тика по 20 мс, как на ZX) |
-| `spectrum_net_send_text/send_ping` | `SEND` chan 0; на RTL перед SEND — дренаж (`NERR_BUSY` ⇒ RECV и повтор) |
+| `spectrum_net_listen`/`wait_pc_connect`/`preflight_run`/`connect_host`/`last_ip`/`sync_time` | **не реализованы вовсе** (S9 MQTT-lag pass, 2026-08-19, ~60 Б клапан бюджета WIN1): их `spectrum_link_*`-алиасы вызывает только `app.c`, который в сборку Sprinter не линкуется — сам порт зовёт `ng_up`/`ng_c_connect_at`/`net_preflight_ovl` напрямую из `net_ui_sprinter.c`/`net_mqtt_ui_sprinter.c`; uNet всё равно не умеет слушать/принимать, поэтому DIRECT на Sprinter — только исходящий набор; экран NETWORK (не SETUP) с S9 фиксирует ROLE=JOIN и не даёт выбрать HOST под DIRECT (`net_ui_try_connect`, `net_ui_sprinter.c`) |
+| `spectrum_net_read_payload` | `RECV` chan 0; пустое чтение = **один** `frame_wait()` здесь + один в `main.c` = 2 тика по 20 мс, как на ZX (было 3 тика/60 мс до S9 MQTT-lag pass — DIRECT неумышленно шёл в 1.5x медленнее спеки) |
+| `spectrum_net_send_text/send_ping` | `SEND` chan 0 через единую лестницу `net_send_raw` (унифицирована с MQTT-веткой в S9); дренаж перед каждой попыткой (`NERR_BUSY` ⇒ дренаж и повтор, до 50 попыток). `NERR_SEND` тоже повторяется (до 3 раз, S9 MQTT-lag round 2): RTL сворачивает и мгновенную full-duplex гонку `F_BAD_SEG` (данные пира пересеклись с нашим SEND), и реальный таймаут `F_TIMEOUT` в один код, откатывая при этом TCP-seq — поэтому дренированный повтор безопасен и дедуплицируется пиром; `NERR_CLOSED`/`NERR_HW` остаются фатальными сразу |
 | `spectrum_net_background_drain` | `RECV IY=0` |
-| `spectrum_net_mqtt_*` | **`src/common/mqtt` не нужен целиком**: как на ZX, используем портируемый `mqtt_min.c` + `mqtt_session_wire.c` поверх «прозрачного» TCP-потока uNet (проще, чем ESP-AT: нет команд AT, нет `+IPD`) |
-| `spectrum_net_sync_time` | v1: RTC Sprinter (`SYSTIME #21`) вместо SNTP; SNTP по UDP — опциональное улучшение |
-| `spectrum_net_last_ip` | `GETINFO(IP)` |
+| `spectrum_net_mqtt_*` | **`src/common/mqtt` не нужен целиком**: как на ZX, используем портируемый `mqtt_min.c` + `mqtt_session_wire.c` поверх «прозрачного» TCP-потока uNet (проще, чем ESP-AT: нет команд AT, нет `+IPD`). Пустое чтение = 1 `frame_wait()` (было 0 до S9 MQTT-lag pass — цикл шёл вдвое быстрее спеки). Исходящий PUBACK на входящий PUBLISH не шлётся немедленно — откладывается (`net_mqtt_puback_pending`) и приклеивается к следующему исходящему пакету этого клиента (ACK, PUBLISH или, в худшем случае, следующий PINGREQ), чтобы не платить таймер отложенного ACK брокера на каждое входящее сообщение (S9 MQTT-lag pass) |
 
 RXPAUSE/RXRESUME в v1 **не используются**: буфер приёма ESP — 2 КиБ на
 канал, шахматный трафик — пакеты ≤ 48 Б с частотой единиц в секунду;
