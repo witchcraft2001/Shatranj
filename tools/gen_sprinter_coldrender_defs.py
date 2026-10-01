@@ -58,6 +58,10 @@ COLD_RENDER_SYMBOLS = [
     "_spectrum_render_chat",
     "_spectrum_render_clock",
     "_spectrum_render_game_timer_clear",
+    # tests/sprinter/z80/t_gui_clock.asm stubs this one out as well: it is
+    # the per-character painter gui.c's once-a-second timer delta reaches,
+    # and in that test's flat image its VRAM target IS the cold page.
+    "_spectrum_render_game_timer_char",
     "_spectrum_render_notice",
     "_spectrum_gui_set_connected",
     "_spectrum_gui_set_turn_label",

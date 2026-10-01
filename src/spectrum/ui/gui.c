@@ -365,7 +365,24 @@ void spectrum_gui_set_clock(uint8_t hour, uint8_t minute, uint8_t second)
     clock_minute = minute;
     clock_second = second;
     clock_valid = 1u;
+#if !defined(NETCHESSZX_SPRINTER)
+    /* Re-phase the sub-second counter to the time just set. Correct where
+       this call comes from -- ZX/Next set the clock from an MQTT SYNC_TIME
+       message, which is rare and authoritative, so the arriving second
+       boundary is the one to align to.
+
+       Sprinter must NOT do that: it has a local RTC and pushes it from the
+       frame loop once a second (src/sprinter/main.c), and clock_frames is
+       shared with spectrum_gui_tick's GAME/TURN timers. Resetting it on
+       every push means those timers only ever see the frames between the
+       push and the next one -- and since both cadences are 50 frames, a
+       port whose loop advances two frames per pass locks them exactly in
+       phase and clock_frames never reaches 50 at all: the GAME/TURN
+       timers would stop dead. The pushed value is absolute, so skipping
+       the reset loses nothing -- the display is corrected a second later
+       either way. */
     clock_frames = 0u;
+#endif
     render_clock_only();
 }
 

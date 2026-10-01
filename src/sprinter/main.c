@@ -225,7 +225,14 @@ extern unsigned char rtc_valid;
 extern unsigned char rtc_hour;
 extern unsigned char rtc_minute;
 extern unsigned char rtc_second;
-static unsigned char rtc_tick_counter;
+/* Loop passes since the last hardware-clock READ. Counting passes rather
+   than real frames is deliberate here, and is the one place in this loop
+   where it is harmless: this counter decides only how OFTEN the RTC is
+   re-read, and the value it reads is absolute, so a pass that happens to
+   span three frames costs display latency and nothing else. (gui.c's tick
+   below is the opposite case -- it counts its own calls AS time, so it
+   must see real frames; see gui_tick_last_frame.) */
+static unsigned char rtc_pass_counter;
 
 /* Real-frame accounting for spectrum_gui_tick() (S9 MQTT-lag round 3,
    2026-08-19). gui.c's tick is documented and written as "called once per
@@ -462,7 +469,13 @@ static void apply_takeback_snapshot(void) {
     }
     pending_local_clear();
     spectrum_board_undo_restore(&takeback_undo);
-    spectrum_gui_log_ply_set((uint16_t)(takeback_snapshot_ply - 1u));
+    /* No spectrum_gui_log_ply_set here: spectrum_gui_remove_last_move owns
+       the half-move counter, the same way spectrum_gui_add_move does at the
+       other end (gui_log_sprinter.c). Rolling it back HERE as well is what
+       broke this path -- it made the callee read the parity of the ply
+       AFTER the one being removed and then decrement a second time, so the
+       next move went out one ply short and the session deadlocked. That
+       file's own comment has the full post-mortem. */
     spectrum_gui_remove_last_move(takeback_snapshot_ply);
     takeback_snapshot_ply = 0u;
     takeback_snapshot_local = 0u;
@@ -1474,29 +1487,47 @@ void main(void) {
             }
         }
 
-        /* Wall clock (S5-finish step 1): sampled once a second, not every
-           frame -- rtc_sample RSTs into DSS, and nothing here needs
-           finer resolution than the HH:MM/HH:MM:SS display gui.c already
-           renders. 50 frames matches gui.c's own internal 1 Hz cadence
-           for the GAME/TURN timers (spectrum_gui_tick's clock_frames
-           counter), just counted here instead since Sprinter's RTC is a
-           local peripheral gui.c has no knowledge of (ZX/Next feed this
-           same API from an MQTT SYNC_TIME message instead). */
-        /* GAME/TURN timers (1 Hz internal counter) and the notice-line
-           countdown both live inside gui.c's own tick, which counts its own
-           calls and must therefore see one call per REAL frame -- see
-           gui_tick_last_frame's own banner for why an iteration is not a
-           frame on this port and what that cost. Deliberately kept out of
-           the rtc_sample() block above: that one only decides how often the
-           hardware wall clock is re-READ (its value is absolute, so a
-           coarser sample costs display latency, never accuracy), and
-           folding it in here cost more WIN1 bytes than this port has. */
+        /* Both of this port's own clock duties, off the one frame counter.
+
+           Wall clock (S5-finish step 1): re-READ roughly once a second,
+           not every pass -- rtc_sample RSTs into DSS, and nothing here
+           needs finer resolution than the HH:MM display gui.c renders.
+           "Roughly" is fine and the counter is deliberately in passes, not
+           frames: see rtc_pass_counter's own banner.
+
+           gui.c only shows a time at all once spectrum_gui_set_clock has
+           been called (clock_valid), so losing this push does not degrade
+           the clock -- it removes it. That is exactly what happened when
+           the real-frame tick below was introduced: this block sat between
+           the two comments the tick inherited and went with them, and the
+           next MAME round reported the RTC as "not detected", reading
+           --:-- in both the status bar and the chat prefix while the
+           hardware clock was working the whole time (human tester,
+           2026-08-20). tools/check_transport_contract.py now fails the
+           build if the push goes missing again.
+
+           GAME/TURN timers (1 Hz) and the notice-line countdown live
+           inside gui.c's own tick, which counts its own calls and must
+           therefore see one call per REAL frame -- see gui_tick_last_
+           frame's own banner for why a pass is not a frame on this port
+           and what that cost. The two cadences share gui.c's clock_frames
+           counter, which is why spectrum_gui_set_clock does not reset it
+           under NETCHESSZX_SPRINTER (its own comment there has the full
+           reasoning: at two frames per pass the reset would have starved
+           the GAME/TURN timers outright). */
         {
             unsigned char frames_now = frame_counter;
             unsigned char frames_elapsed =
                 (unsigned char)(frames_now - gui_tick_last_frame);
 
             gui_tick_last_frame = frames_now;
+            if (++rtc_pass_counter >= 50u) {
+                rtc_pass_counter = 0u;
+                rtc_sample();
+                if (rtc_valid) {
+                    spectrum_gui_set_clock(rtc_hour, rtc_minute, rtc_second);
+                }
+            }
             while (frames_elapsed-- != 0u) {
                 spectrum_gui_tick();
             }

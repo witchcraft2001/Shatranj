@@ -204,6 +204,22 @@ RESIDENT_TEST_SYMBOLS = [
     "spectrum_net_send_text",
     "spectrum_net_mqtt_link_reset",
     "spectrum_net_start_uart",
+    # tests/sprinter/z80/t_gui_clock.asm (RTC-clock fix, 2026-08-20) drives
+    # gui.c's shipped 1 Hz tick through these three WIN1 cold-call thunks,
+    # to pin that a wall-clock push does not steal the GAME/TURN timers'
+    # sub-second phase on this port.
+    "spectrum_gui_tick",
+    "spectrum_gui_set_clock",
+    "spectrum_gui_game_timer_start",
+    # tests/sprinter/z80/t_move_log.asm (takeback desync fix, 2026-08-20)
+    # drives the shipped move-list backend, whose ply counter IS this
+    # port's half-move number -- the wire ply of the next MOVE comes off
+    # spectrum_gui_log_ply_get().
+    "spectrum_gui_reset_move_log",
+    "spectrum_gui_add_move",
+    "spectrum_gui_remove_last_move",
+    "spectrum_gui_log_ply_get",
+    "spectrum_gui_log_ply_set",
 ]
 
 GENERATED_BANNER = (
@@ -477,6 +493,27 @@ def _clean_fixture() -> str:
         "_spectrum_net_start_uart        = $4CA8 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_start_uart::0::0:6\n"
+        "_spectrum_gui_tick              = $4CC8 ; addr, public, , "
+        "cold_thunks, code_user, build/sprinter/generated/cold_thunks.asm:499\n"
+        "_spectrum_gui_set_clock         = $4CD0 ; addr, public, , "
+        "cold_thunks, code_user, build/sprinter/generated/cold_thunks.asm:548\n"
+        "_spectrum_gui_game_timer_start  = $4CD8 ; addr, public, , "
+        "cold_thunks, code_user, build/sprinter/generated/cold_thunks.asm:611\n"
+        "_spectrum_gui_reset_move_log    = $4D7C ; addr, public, , "
+        "src_sprinter_gui_log_sprinter_c, code_compiler, "
+        "src/sprinter/gui_log_sprinter.c::spectrum_gui_reset_move_log::0::1:71\n"
+        "_spectrum_gui_add_move          = $4D9A ; addr, public, , "
+        "src_sprinter_gui_log_sprinter_c, code_compiler, "
+        "src/sprinter/gui_log_sprinter.c::spectrum_gui_add_move::0::2:79\n"
+        "_spectrum_gui_remove_last_move  = $4E90 ; addr, public, , "
+        "src_sprinter_gui_log_sprinter_c, code_compiler, "
+        "src/sprinter/gui_log_sprinter.c::spectrum_gui_remove_last_move::0::7:128\n"
+        "_spectrum_gui_log_ply_get       = $4EF0 ; addr, public, , "
+        "src_sprinter_gui_log_sprinter_c, code_compiler, "
+        "src/sprinter/gui_log_sprinter.c::spectrum_gui_log_ply_get::0::12:152\n"
+        "_spectrum_gui_log_ply_set       = $4EEB ; addr, public, , "
+        "src_sprinter_gui_log_sprinter_c, code_compiler, "
+        "src/sprinter/gui_log_sprinter.c::spectrum_gui_log_ply_set::0::13:186\n"
         "_net_chat_blocked               = $4CB0 ; addr, public, , "
         "asm_sprinter_zcc_cold_thunks_asm, code_user, "
         "build/sprinter/generated/cold_thunks.asm:1\n"

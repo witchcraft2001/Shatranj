@@ -592,6 +592,14 @@ void spectrum_net_start_uart(void)
     nc_init();
     net_link_activity = 0u;
     net_peer_valid = 0u;
+    /* ...and the MQTT read's own per-read flag word, so that DIRECT cannot
+     * inherit retained/route bits a previous MQTT session left behind.
+     * That is a WIN1 budget valve (2026-08-20, RTC-clock fix), and the
+     * cheaper half of the same guarantee: this is DIRECT's single entry
+     * point (session_sprinter.c calls it once per join, before
+     * net_active), so clearing here lets spectrum_net_payload_flags below
+     * drop its per-call transport test entirely. */
+    net_mqtt_flags = 0u;
 }
 
 /* link.h also declares spectrum_net_listen/spectrum_net_wait_pc_connect/
@@ -703,8 +711,11 @@ uint8_t spectrum_net_payload_flags(void)
      * concepts. net_mqtt_flags is set by net_mqtt_read_payload() above,
      * the same "last read's flags" contract net_link_activity uses for
      * activity (link.h: payload_flags() describes the payload the most
-     * recent read_payload() call produced). */
-    return netchesszx_transport_is_mqtt() ? net_mqtt_flags : 0u;
+     * recent read_payload() call produced), cleared at the top of every
+     * MQTT read, by spectrum_net_mqtt_link_reset, and -- so that DIRECT
+     * reads a real zero here without this function having to ask which
+     * transport is live -- by spectrum_net_start_uart above. */
+    return net_mqtt_flags;
 }
 
 void spectrum_net_background_drain(void)

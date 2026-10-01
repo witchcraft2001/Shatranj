@@ -134,6 +134,25 @@ for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
     ran=$((ran - 1))
     continue
   fi
+  if [[ "$name" == "t_move_log" ]] &&
+     { [[ ! -f "$generated_dir/resident_test_defs.inc" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/resident.bin" ]]; }; then
+    echo "SKIP $name: build/sprinter/resident.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
+  if [[ "$name" == "t_gui_clock" ]] &&
+     { [[ ! -f "$generated_dir/coldrender_test_defs.inc" ]] ||
+       [[ ! -f "$generated_dir/resident_test_defs.inc" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/resident.bin" ]] ||
+       [[ ! -f "$repo_root/build/sprinter/cold_win3_page.bin" ]]; }; then
+    # Same "never built the target" guard the other blob tests use; the
+    # Makefile target depends on both images, so `make sprinter-z80-test`
+    # always runs this test.
+    echo "SKIP $name: build/sprinter/cold_win3_page.bin not built" >&2
+    ran=$((ran - 1))
+    continue
+  fi
   if [[ "$name" == "t_hint_blit" ]] &&
      { [[ ! -f "$generated_dir/coldrender_test_defs.inc" ]] ||
        [[ ! -f "$repo_root/build/sprinter/cold_win3_page.bin" ]]; }; then

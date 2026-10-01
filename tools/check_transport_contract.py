@@ -192,6 +192,66 @@ def check_sprinter_frame_tick(root: Path) -> None:
             "Sprinter main.c must measure elapsed frames from the ISR's "
             "frame_counter against gui_tick_last_frame"
         )
+    check_sprinter_wall_clock(root, main_c)
+
+
+def check_sprinter_wall_clock(root: Path, main_c: str) -> None:
+    """The frame loop is the only thing that ever sets gui.c's wall clock.
+
+    gui.c shows a time only once spectrum_gui_set_clock has been called
+    (clock_valid); before that render_clock_only prints "--:--" forever.
+    ZX/Next reach that call from an MQTT SYNC_TIME message, so on those
+    targets it is the protocol's job. Sprinter has a hardware RTC instead
+    and the frame loop is its ONLY caller -- lose that one call site and
+    the clock does not degrade, it disappears, with nothing else failing.
+
+    Which is precisely what happened: the 2026-08-19 real-frame tick edit
+    replaced the block that used to sit between two comments and took the
+    RTC push out with it, and the next MAME round came back reporting the
+    RTC as "not detected" (human tester, 2026-08-20) while the hardware
+    clock had been fine all along.
+
+    The reset guard is the other half of the same coupling: clock_frames
+    is shared between gui.c's wall clock and its GAME/TURN timers, so a
+    once-a-second push that re-phases it starves the timers on a port
+    whose loop advances two frames per pass -- see spectrum_gui_set_clock.
+    """
+    if not re.search(r"\brtc_sample\(\);", main_c):
+        fail(
+            "Sprinter main.c must sample the hardware RTC from the frame "
+            "loop -- it is gui.c's only clock source on this port, and "
+            "without it the status bar and chat prefix read --:-- forever"
+        )
+    if not re.search(
+        r"spectrum_gui_set_clock\(rtc_hour,\s*rtc_minute,\s*rtc_second\)",
+        main_c,
+    ):
+        fail(
+            "Sprinter main.c must push the sampled RTC into gui.c "
+            "(spectrum_gui_set_clock) -- sampling it alone changes nothing "
+            "on screen"
+        )
+    if not re.search(r"\+\+rtc_pass_counter\s*>=\s*50u", main_c):
+        fail(
+            "Sprinter main.c must rate-limit the RTC read (it RSTs into "
+            "DSS) -- ++rtc_pass_counter >= 50u. Passes, not frames, are "
+            "correct HERE and only here: the counter sets how often an "
+            "ABSOLUTE value is re-read, so a slow pass costs display "
+            "latency, never accuracy"
+        )
+
+    gui_c = (root / "src/spectrum/ui/gui.c").read_text(encoding="utf-8")
+    clock_body = fn_body(gui_c, "spectrum_gui_set_clock")
+    if "clock_frames = 0u;" in clock_body and (
+        "#if !defined(NETCHESSZX_SPRINTER)" not in clock_body
+    ):
+        fail(
+            "spectrum_gui_set_clock must not re-phase clock_frames under "
+            "NETCHESSZX_SPRINTER: that counter also drives the GAME/TURN "
+            "timers, and Sprinter pushes the clock once a second from its "
+            "frame loop -- at two frames per pass the reset stops those "
+            "timers dead"
+        )
 
 
 def check_sprinter_mqtt_routing(root: Path, link: str) -> None:

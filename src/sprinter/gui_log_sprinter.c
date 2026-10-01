@@ -114,38 +114,69 @@ void spectrum_gui_add_move(const char *ply, const char *move)
     spectrum_render_move_at(row_base);
 }
 
-/* S8 step 5 (takeback): undo exactly the last spectrum_gui_add_move call.
-   The ply argument is ignored -- gui_log_ply's own parity already knows
-   which half of which row the last add touched, matching add_move's own
-   internal logic exactly in reverse. Not perfectly reversible across a
-   scroll event: the panel is a fixed-size ring, and a takeback of the
-   move that triggered add_move's memmove cannot bring back the row that
-   scrolled out. Accepted as a display-only edge case -- the real game
-   state (spectrum_board_undo_restore, board.c) is always restored
-   correctly by the caller regardless; only the move-list panel can be one
-   row stale in that rare case. */
+/* S8 step 5 (takeback): remove the move at half-move number `ply`, which
+   is always the most recent one -- takeback only ever unwinds one.
+   Not perfectly reversible across a scroll event: the panel is a
+   fixed-size ring, and a takeback of the move that triggered add_move's
+   memmove cannot bring back the row that scrolled out. Accepted as a
+   display-only edge case -- the real game state (spectrum_board_undo_
+   restore, board.c) is always restored by the caller regardless.
+
+   `ply` DECIDES, and the counter is set from it absolutely -- both
+   deliberately, both regressions:
+
+   This used to ignore `ply` and read gui_log_ply's own parity instead,
+   "matching add_move exactly in reverse". It did not, because the caller
+   (main.c's apply_takeback_snapshot) had ALREADY rolled the counter back
+   with spectrum_gui_log_ply_set before calling in -- so the parity read
+   here was the one AFTER the move being removed, selecting the wrong
+   half, and the closing `--gui_log_ply` then rolled the same ply back a
+   SECOND time. Taking back a black ply 10 wiped the whole row (both the
+   white move and the black one) and left the counter at 8.
+
+   That is not a display bug. On this port gui_log_ply IS the half-move
+   count -- session_sprinter.c numbers the next MOVE off
+   spectrum_gui_log_ply_get() + 1 -- so the next move went out one ply
+   short, and by docs/session-core-contract.md a peer that receives a ply
+   it has already passed must re-ACK it WITHOUT applying it (the
+   idempotent-retransmit rule, src/common/session/direct_session.c's
+   `ply <= state->current_ply` branch: without it a lost ACK would
+   deadlock the retry ladder). So the Sprinter applied a move on that ACK
+   that the peer never made, and the two sides sat waiting for each
+   other's turn forever (human tester, MAME + Qt host, 2026-08-20).
+
+   ZX/Next's own implementation (gui_log_ovl.c's remove branch) already
+   decides on the passed ply and assigns `last_ply_seen = ply - 1u`
+   absolutely; this now does the same, so add/remove stay symmetric
+   owners of the counter and no caller has to roll it back itself
+   (architecture decision #0006 -- one contract, not a per-target one).
+   The assignment happens BEFORE the display work and outside its
+   guard: ZX can early-return without touching last_ply_seen because
+   there app.c keeps the real game_ply separately, whereas here the one
+   counter is both, and the game state must survive anything the
+   fixed-size panel cannot draw. */
 void spectrum_gui_remove_last_move(uint16_t ply)
 {
-    (void)ply;
-
-    if (gui_log_ply == 0u) {
+    if (ply == 0u) {
         return;
     }
-    if ((gui_log_ply & 1u) == 0u) {
-        /* undo a black half-move: same row stays, just clear that half */
+    gui_log_ply = (uint16_t)(ply - 1u);
+
+    if (gui_log_row == 0u) {
+        return;
+    }
+    if ((ply & 1u) == 0u) {
+        /* a black half-move: its row stays, just clear that half */
         char *row_base = move_row_at((uint8_t)(gui_log_row - 1u));
 
         row_base[NETCHESSZX_MOVE_BLACK_OFFSET] = '\0';
         spectrum_render_move_at(row_base);
     } else {
-        /* undo a white half-move: the row it claimed goes away */
-        if (gui_log_row != 0u) {
-            --gui_log_row;
-        }
+        /* a white half-move: the row it claimed goes away */
+        --gui_log_row;
         memset(move_row_at(gui_log_row), 0, NETCHESSZX_MOVE_SLOT_SIZE);
         spectrum_render_moves(move_lines);
     }
-    --gui_log_ply;
 }
 
 uint16_t spectrum_gui_log_ply_get(void)

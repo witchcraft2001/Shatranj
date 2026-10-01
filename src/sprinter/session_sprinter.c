@@ -676,7 +676,31 @@ void board_select_or_move(void) {
                hand, which read as the game having hung (human tester,
                2026-08-16). Showing the move immediately gives the same
                "your input was taken" signal ZX/Next gives at this same
-               point, before either platform's own send blocks on anything. */
+               point, before either platform's own send blocks on anything.
+
+               The move alone is NOT that signal, though, which is what
+               this notice used to be (ZX's own send_local_move sets the
+               plain SAN here). A networked move is ACK-gated -- docs/
+               session-core-contract.md:265-267 keeps the board frozen
+               until the peer's numeric ACK -- so for the whole blocking
+               send plus a broker round trip the screen shows an unmoved
+               piece next to a move string, and then net_apply_pending_
+               local_move sets that SAME string again once the piece
+               finally moves. Nothing on screen says "waiting", and over a
+               public broker that window is long enough to read as a hang
+               (human tester, 2026-08-20). Naming the wait is what the Qt
+               client does with the identical text (NETCHESSZX_UI_NOTICE_
+               WAITING_ACK, main_window.cpp's statusText: while an
+               operation is in flight the status line IS the wait, not the
+               operation), and what this file's own control paths already
+               do -- "Waiting resign ACK", "Takeback requested", "Draw
+               offered". The move was the one exchange that stayed silent.
+               The move string itself is not lost by naming the wait
+               instead: net_apply_pending_local_move's own notify_
+               persistent(move) puts it up the moment the ACK lands, so
+               the notice line now CHANGES when the piece moves -- which
+               is the whole signal that was missing -- and the move list
+               records it either way. */
             selected_row = NO_SQUARE;
             selected_col = NO_SQUARE;
             hints_clear();
@@ -684,7 +708,7 @@ void board_select_or_move(void) {
                                                only -- board content at
                                                `from` is unchanged until the
                                                move is actually applied */
-            spectrum_gui_notify_persistent(move);
+            spectrum_gui_notify_persistent(NOTICE_WAITING_FOR_ACK);
 
             if (!net_send_move_wire(ply, move)) {
                 net_send_failed();
