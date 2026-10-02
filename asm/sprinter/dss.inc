@@ -1,12 +1,9 @@
 ; Sprinter (Estex DSS) platform constants used by the S1 stand.
 ;
-; Own copy, not an include of extern/esp_net's dss.inc: this project pins
-; that submodule for its uNet DLL only (port.md rule R2 -- graphics/loader
-; code is never linked to a network submodule), and CLAUDE.md section 4
-; requires Estex-DSS source as the authority. Values below are cross-checked
-; against Estex-DSS/Shared_Includes/constants/{dss_equ.inc,BIOS_equ.inc}
-; (CP866-encoded) and against extern/esp_net/src/include/dss.inc, which
-; agrees byte-for-byte.
+; Own copy, grounded in Estex-DSS/Shared_Includes/constants/
+; {dss_equ.inc,BIOS_equ.inc} (CP866-encoded). UNETLD's compact dss.inc is
+; guarded out in platform_primitives.asm because this port already defines
+; the required constants here.
 ;
 ; Three unrelated things share small numeric values in this platform --
 ; keep them straight:
@@ -75,6 +72,8 @@ DSS_ENV_GET           EQU #01    ; HL=NAME asciiz, DE=value buffer ->
                                  ; A=#FF found / 0 not found
 DSS_SETVMOD           EQU #50    ; A=mode, B=screen(0/1)
 DSS_GETVMOD           EQU #51    ; -> A=mode, B=screen
+DSS_LOCATE            EQU #52    ; D=row, E=column
+DSS_CLEAR             EQU #56    ; DE=origin, H=height, L=width, A=char, B=attr
 DSS_PCHARS            EQU #5C    ; HL=NUL-terminated string
 
 ; SetVMod/GetVMod mode bytes (carried in A -- see the banner note above).

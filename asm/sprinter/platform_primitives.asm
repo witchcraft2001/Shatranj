@@ -92,6 +92,12 @@ svmod_safe:
         DEFINE  LIBMAN_DIAGNOSTICS
         DEFINE  LIBMAN_NO_LEGACY_API
         INCLUDE "libman.asm"
+        ; The port's dss.inc already defines the subset UNETLD uses.
+        DEFINE  _DSS_INC
+ENV_GET EQU DSS_ENV_GET
+DSS EQU RST_DSS
+        DEFINE  UNETLD_STATE_BASE LOWRAM_NET_GATE_ADDR
+        INCLUDE "unetld.asm"
         INCLUDE "net_gate.asm"
 
 ; esx-ABI-over-DSS file I/O gate (S6, port.md section 3.10 item 4): the
@@ -190,7 +196,10 @@ im2_stub:
         ASSERT  $ = IM2_TABLE_ADDR
         DS      IM2_TABLE_SIZE, IM2_FILL_BYTE
 
-        ; IM2_TABLE_ADDR+IM2_TABLE_SIZE..WIN2_END is reserve/scratch.
+        ASSERT  $ = #BF01
+        INCLUDE "net_gate_tail.asm"
+net_gate_tail_end:
+        ASSERT  net_gate_tail_end <= WIN2_END
         DS      WIN2_END - $, 0
         ASSERT  $ = WIN2_END
         END

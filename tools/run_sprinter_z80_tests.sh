@@ -177,7 +177,9 @@ for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
   sjasmplus --nologo --fullpath \
     -I "$repo_root/asm/sprinter" -I "$generated_dir" -I "$harness_dir" \
     -I "$repo_root/build/sprinter" \
-    -I "$repo_root/extern/libman/libman" -I "$repo_root/extern/esp_net/src/include" \
+    -I "$repo_root/extern/libman/libman" \
+    -I "$repo_root/extern/unet_libs_asm/include" \
+    -I "$repo_root/extern/unet_libs_asm/extern/core/bindings/asm" \
     --raw="$bin" "$src"
   # t_net_mqtt_read drives the real read path through three whole broker-
   # keepalive windows (250 idle frames each), so it needs roughly an order

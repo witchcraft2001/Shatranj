@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Build the Sprinter test medium: a FAT12 1.44M image with EXE + DLLs.
 
-This image (build/sprinter/SHATRANJ-SMOKE.IMG) is the ONLY artifact handed
-to testers -- never loose files or system-disk copies.  After building, the
-EXE is read back from the image and its SHA-256 is compared against the
-release EXE; the digest is printed so build reports can quote it.
+This image (build/sprinter/SHATRANJ-SMOKE.IMG) is the MAME test medium;
+hardware gets SHATRANJ-HW.zip. Every member is read back and compared with
+its source; SHA-256 digests are printed so build reports can quote them.
 
 The image is deterministic: fixed volume serial, fixed file timestamps
 (mtools reads source mtimes; TZ is pinned to UTC for the mtools calls).
@@ -19,7 +18,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 VOLUME_LABEL = "SHATRANJ"
 VOLUME_SERIAL = "53483031"  # 'SH01'
@@ -69,6 +67,9 @@ def main() -> int:
     for src in sources:
         if not src.is_file():
             fail(f"missing input: {src}")
+    expected_names = {src.name.upper() for src in sources}
+    if len(expected_names) != len(sources):
+        fail("duplicate input filenames")
 
     stage = args.output.parent / "image-stage"
     shutil.rmtree(stage, ignore_errors=True)
@@ -95,27 +96,28 @@ def main() -> int:
                   str(dst), f"::{dst.name}")
 
     listing = run_mtool("mdir", "-b", "-i", str(args.output), "::")
-    for dst in staged:
-        if not any(line.endswith(f"/{dst.name}") for line in listing.splitlines()):
-            fail(f"{dst.name} is missing from the FAT12 image")
+    actual_names = {Path(line).name for line in listing.splitlines()}
+    if actual_names != expected_names:
+        fail(f"FAT12 members {sorted(actual_names)}, expected {sorted(expected_names)}")
 
-    # Read the EXE back out of the image and prove it is the release EXE.
-    readback = stage / "READBACK.EXE"
-    run_mtool("mcopy", "-o", "-i", str(args.output),
-              f"::{args.exe.name.upper()}", str(readback))
-    release_digest = sha256(args.exe)
-    image_digest = sha256(readback)
-    if release_digest != image_digest:
-        fail(
-            f"EXE inside image differs from {args.exe}: "
-            f"{image_digest} != {release_digest}"
-        )
+    # Prove that both the EXE and all pinned DLLs survived packaging.
+    readback = stage / "READBACK.BIN"
+    digests = []
+    for src in sources:
+        run_mtool("mcopy", "-o", "-i", str(args.output),
+                  f"::{src.name.upper()}", str(readback))
+        digest = sha256(src)
+        image_digest = sha256(readback)
+        if digest != image_digest:
+            fail(f"{src.name} inside image differs from {src}: "
+                 f"{image_digest} != {digest}")
+        digests.append((src.name.upper(), digest))
     shutil.rmtree(stage)
 
     print(f"[OK] {args.output}: FAT12 1.44M, "
           f"{', '.join(dst.name for dst in staged)}")
-    print(f"[OK] {args.exe.name} sha256 {release_digest} "
-          f"(identical in image and {args.exe.parent})")
+    for name, digest in digests:
+        print(f"[OK] {name} sha256 {digest} (identical in image and source)")
     return 0
 
 

@@ -12,10 +12,8 @@ the full resident's size, even though flag-only DEFINE guards (used
 everywhere else here) work fine. Same shape as palette_base.inc's
 palette_rgb.
 
-Named sprinter_version.inc, not the generic "version.inc":
-extern/esp_net/src/include/version.inc (the uNet submodule's own package
-version) sits on the same -I search path and would otherwise shadow it --
-sjasmplus resolves INCLUDE by search order, not directory proximity.
+Named sprinter_version.inc rather than the generic "version.inc" to keep
+the generated banner unambiguous among assembler include directories.
 
 Two consumers generate this file -- the Makefile's $(SPRINTER_VERSION_INC)
 rule and tools/run_sprinter_z80_tests.sh (into its own private generated

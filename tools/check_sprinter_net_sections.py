@@ -43,9 +43,11 @@ WIN2_HIGH = 0xC000  # exclusive
 
 LIBMAN_PREFIX = "LIBMAN."
 LIBMAN_ALLOWLIST = {"LIBMAN.ll_path"}
+UNETLD_PREFIX = "UNETLD."
 
 WIN2_REQUIRED_PREFIXES = ("ng_", "ovl_ctx", "flip_")
 WIN2_REQUIRED_EXACT = (
+    "console_clear_home",
     "frame_flag",
     "im2_saved_i",
     # S5-finish plan D11 (buffer flip): flip_request is read/written from
@@ -66,12 +68,16 @@ WIN2_REQUIRED_EXACT = (
 # echo-client stand) was required here through S4; the stand -- and the
 # requirement -- were removed in S5 (plan D4, port.md section 3.10).
 REQUIRED_PRESENT = (
+    "console_clear_home",
     "frame_flag",
     "im2_saved_i",
     "flip_request",
     "LIBMAN.l_call",
     "ng_call",
     "ng_v_depth",
+    "UNETLD.SELECT",
+    "UNETLD.STATE_END",
+    "net_gate_tail_end",
 )
 LIBMAN_MIN_SYMBOLS = 20
 
@@ -103,6 +109,13 @@ def check_symbols(symbols: dict[str, int]) -> list[str]:
     errors: list[str] = []
 
     for name, addr in symbols.items():
+        if name.startswith(UNETLD_PREFIX) and addr >= RESIDENT_BASE:
+            if not _in_win2(addr):
+                errors.append(
+                    f"{name} at #{addr:04X}: UNETLD must remain in WIN2 "
+                    "[#8000,#C000)"
+                )
+            continue
         if name.startswith(LIBMAN_PREFIX):
             if name in LIBMAN_ALLOWLIST:
                 continue
@@ -174,6 +187,7 @@ def _clean_lines() -> list[str]:
         _sym_line("trampoline", 0x4100),
         _sym_line("svmod_safe", 0x8100),
         _sym_line("svmod_safe.saved_win1", 0x8110),
+        _sym_line("console_clear_home", 0xBFD0),
         # The defect this gate exists to catch, now fixed.
         _sym_line("frame_flag", 0x8191),
         _sym_line("im2_saved_i", 0x8192),
@@ -189,6 +203,9 @@ def _clean_lines() -> list[str]:
         _sym_line("ng_call", 0x8200),
         _sym_line("ng_v_depth", 0x8210),
         _sym_line("ng_up", 0x8220),
+        _sym_line("UNETLD.SELECT", 0x9000),
+        _sym_line("UNETLD.STATE_END", 0xB543),
+        _sym_line("net_gate_tail_end", 0xBFB0),
         # Overlay dispatch code lives in WIN1 (future S5 location); only its
         # context buffer is required to live in WIN2.
         _sym_line("ovl_exec", 0x5000),
@@ -229,6 +246,16 @@ def self_test() -> None:
 
     # The exact defect this gate exists to prevent: frame_flag back in WIN1.
     broken = [
+        l.replace("0x0000BFD0", "0x00004500")
+        if l.startswith("console_clear_home:") else l
+        for l in _clean_lines()
+    ]
+    _expect_reject(
+        broken, "must live in the WIN2 half",
+        "accepted console cleanup in WIN1, which DSS may remap",
+    )
+
+    broken = [
         l.replace("0x00008191", "0x00004500") if l.startswith("frame_flag:") else l
         for l in _clean_lines()
     ]
@@ -253,6 +280,15 @@ def self_test() -> None:
     _expect_reject(
         broken, "must live in the WIN2 half",
         "accepted ng_call placed in the WIN1 half",
+    )
+
+    broken = [
+        l.replace("0x00009000", "0x00004600") if l.startswith("UNETLD.SELECT:") else l
+        for l in _clean_lines()
+    ]
+    _expect_reject(
+        broken, "UNETLD must remain in WIN2",
+        "accepted UNETLD code placed in the WIN1 half",
     )
 
     # S5-finish plan D11: the flip-related ISR state/code and the ring's

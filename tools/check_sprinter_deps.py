@@ -3,8 +3,7 @@
 
 Follows the weather-forecast check_deps.py pattern.  The gate traps loudly
 on any pin drift (port.md rule R5): submodule URL/commit, DLL size+SHA-256,
-byte-identity of the uNet ABI include between the two backends, and the
-libman DLL-format verifier.
+the shared uNet ABI include, and the libman DLL-format verifier.
 """
 
 from __future__ import annotations
@@ -20,17 +19,13 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 
 SUBMODULES = {
-    "extern/esp_net": (
-        "https://github.com/witchcraft2001/sprinter_net.git",
-        "2a36652b167b49b7ee1bb7a3251d5a7e65d68fb7",
-    ),
-    "extern/rtl_net": (
-        "https://github.com/witchcraft2001/sprinter-rtl8019a.git",
-        "6e35924466b0a03d254b003669898dc5fd5eeade",
-    ),
     "extern/libman": (
         "https://github.com/witchcraft2001/sprinter-libman.git",
         "d392c938d3235a8c6db09a5421c674631dfa1f23",
+    ),
+    "extern/unet_libs_asm": (
+        "https://github.com/witchcraft2001/sprinter_unet_libs_asm.git",
+        "8406c602b642868fbfe74cd3759ba9b758366104",
     ),
     "extern/sprinter-libs": (
         "https://github.com/witchcraft2001/sprinter-libs.git",
@@ -38,21 +33,23 @@ SUBMODULES = {
     ),
 }
 
-# Prebuilt network DLLs shipped by the uNet submodules.  These are the only
-# DLLs the Sprinter target uses at runtime (graphics code is copied as
-# source from extern/sprinter-libs, never linked as a DLL).
+# Prebuilt DLLs from the pinned UNETLD core submodule.
 DLLS = {
-    "extern/esp_net/UNETESP.DLL": (
-        15_956,
-        "53461c766423e19db1b939312f5fa64adcc052028b9c709b3a2353d53605fd4c",
-    ),
-    "extern/rtl_net/UNETRTL.DLL": (
-        16_384,
-        "453713e40f0ee5e3b0dc3c3d5154b3bb68985f586feb3106c06dc7cc52eaf50f",
-    ),
+    "extern/unet_libs_asm/extern/core/dll/UNETESP.DLL": (
+        15_467, "2f68f7a1b6cfa1667465944fbf970062426f7affddeb42ae9ac4d1a236a20ed7"),
+    "extern/unet_libs_asm/extern/core/dll/UNETRTL.DLL": (
+        18_145, "a017bb8c0de6db496092676f5ce4eb47dc5b833d812eb77bbc885bb925d17142"),
+    "extern/unet_libs_asm/extern/core/dll/UNET509B.DLL": (
+        23_743, "4f9d5d736f52dadeddba28db8a71f6c6e253f49da646bf17cb4b67a78b51ccb1"),
 }
-
-UNET_INC = "src/include/unet.inc"
+UNETLD_CORE_COMMIT = "8566311a53ed17f4f703d48b6aa3ec40256558a7"
+UNETLD_CORE_URL = "https://github.com/witchcraft2001/unet_libs_core.git"
+UNET_INC = "extern/unet_libs_asm/extern/core/bindings/asm/unet.inc"
+SOURCE_HASHES = {
+    "extern/unet_libs_asm/include/unetld.asm":
+        "3036f3eaf771461176656e17154ebe226fedea59b10215c42f5006a749fe8066",
+    UNET_INC: "48f21d3382c5c53386c0e10c2a1302df99888d783a2f9035138151aa807444dd",
+}
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -116,15 +113,22 @@ def check_dlls() -> None:
         if digest != expected_sha256:
             fail(f"{rel_path}: SHA-256 {digest}, expected {expected_sha256}")
 
-    inc_paths = [
-        ROOT / "extern/esp_net" / UNET_INC,
-        ROOT / "extern/rtl_net" / UNET_INC,
-    ]
-    for inc_path in inc_paths:
-        if not inc_path.is_file():
-            fail(f"uNet ABI include is missing: {inc_path.relative_to(ROOT)}")
-    if inc_paths[0].read_bytes() != inc_paths[1].read_bytes():
-        fail("uNet ABI include files in ESP and RTL submodules differ")
+    core = ROOT / "extern/unet_libs_asm/extern/core"
+    core_modules = ROOT / "extern/unet_libs_asm/.gitmodules"
+    if run("git", "config", "-f", str(core_modules), "--get",
+           "submodule.extern/core.url") != UNETLD_CORE_URL:
+        fail("UNETLD core submodule URL differs from the pinned source")
+    if not core.is_dir() or run("git", "rev-parse", "HEAD", cwd=core) != UNETLD_CORE_COMMIT:
+        fail("UNETLD core submodule is missing or at the wrong commit")
+    if not (ROOT / UNET_INC).is_file():
+        fail(f"uNet ABI include is missing: {UNET_INC}")
+    for rel_path, expected_sha256 in SOURCE_HASHES.items():
+        path = ROOT / rel_path
+        if not path.is_file():
+            fail(f"dependency source is missing: {rel_path}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != expected_sha256:
+            fail(f"{rel_path}: SHA-256 {digest}, expected {expected_sha256}")
 
 
 def verify_with_libman() -> None:

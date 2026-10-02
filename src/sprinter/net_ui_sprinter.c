@@ -75,10 +75,8 @@
 extern void ng_up(void);
 extern void ng_close(void);
 extern void ng_lasterr_fetch(void);
-extern char *ng_env_nethost(void);
-extern char *ng_env_netport(void);
 extern unsigned char ng_up_reason;
-extern unsigned char ng_backend;
+extern char ng_dll_name[];
 extern unsigned char ng_v_call_status;
 extern unsigned char ng_v_call_cf;
 extern char ng_buf_lasterr[];
@@ -93,13 +91,12 @@ extern char *ng_c_connect_port;
 
 /* S8 step 8c's generic env resolver -- MQTTHOST/MQTTPORT/MQTTROOM defaults
    for the editor below, the same "ask DSS, fall back to the compiled-in
-   default" shape ng_env_nethost/ng_env_netport already use for NETHOST/
-   NETPORT, just with the name/dest supplied from WIN1 C instead of being
-   one more hardcoded resolver in net_gate.asm (that region has 0 bytes
-   free -- see net_gate.asm's own comment on ng_c_env_get). */
+   default" shape used for NETHOST/NETPORT, with the name and destination supplied
+   from the NET overlay. */
 extern void ng_c_env_get(void);
 extern char *ng_c_env_name;
 extern char *ng_c_env_dest;
+extern unsigned char ng_c_env_capacity;
 extern unsigned char ng_c_env_found;
 
 /* src/sprinter/net_mqtt_ui_sprinter.c -- same overlay build (one zcc
@@ -119,9 +116,6 @@ extern void key_poll(void);
 extern unsigned char key_code;
 
 /* net_gate.asm's NG_BACKEND_* (it has no header of its own). */
-#define NET_UI_BACKEND_NONE 0u
-#define NET_UI_BACKEND_WIFI 1u
-#define NET_UI_BACKEND_RTL 2u
 
 /* unet.inc's NERR_OK, needed numerically -- see unet_link.c's own note on
    why these are duplicated rather than shared through a target header. */
@@ -254,6 +248,7 @@ static void net_ui_env_default(const char *name, char *dest, uint8_t cap,
 {
     ng_c_env_name = (char *)name;
     ng_c_env_dest = dest;
+    ng_c_env_capacity = cap;
     ng_c_env_get();
     if (ng_c_env_found) {
         return;
@@ -263,11 +258,9 @@ static void net_ui_env_default(const char *name, char *dest, uint8_t cap,
 
 /* Seeds MQTT's broker/port/room from MQTTHOST/MQTTPORT/MQTTROOM (env, then
    a compiled default) and DIRECT's host/port from NETHOST/NETPORT the same
-   way ng_env_nethost/ng_env_netport already resolve them for the old
-   read-only display -- capped through net_ui_copy_capped so an env value
-   longer than the field can hold is truncated rather than overrunning this
-   overlay's own BSS (net_ui_env_default's own unbounded copy is an
-   accepted risk there; not repeated here, see net_ui_fields.h). Runs once
+   way. The ASM resolver stages each value in a full 256-byte DSS buffer
+   and copies at most cap-1 bytes into the field, with a terminating NUL.
+   Runs once
    per session (net_ui_fields_seeded), for BOTH transports on every call --
    so a value typed under one transport survives switching to the other and
    back, and NETHOST/NETPORT become seed-only inputs rather than being
@@ -284,13 +277,14 @@ static void net_ui_seed_fields(void)
                        sizeof(net_ui_field_port), "1883");
     net_ui_env_default("MQTTROOM", net_ui_field_room,
                        sizeof(net_ui_field_room), netchesszx_mqtt_code);
-    net_ui_copy_capped(net_ui_field_host, sizeof(net_ui_field_host),
-                       ng_env_nethost());
-    net_ui_copy_capped(net_ui_field_dport, sizeof(net_ui_field_dport),
-                       ng_env_netport());
+    net_ui_env_default("NETHOST", net_ui_field_host,
+                       sizeof(net_ui_field_host), "127.0.0.1");
+    net_ui_env_default("NETPORT", net_ui_field_dport,
+                       sizeof(net_ui_field_dport), "7777");
 }
 
-/* ng_up's own NG_UP_ERR_* codes (net_gate.asm). Kept as a switch of short
+/* UNETLD error codes plus ng_up's TCP and NETSTART call codes (net_gate.asm).
+   Kept as a switch of short
    literals rather than a table of pointers: the strings live in this page
    either way, and the switch costs less than the table plus its indexing.
    Wording names the stage, because that is what a tester can act on --
@@ -299,38 +293,24 @@ static void net_ui_seed_fields(void)
 static const char *net_ui_preflight_reason(unsigned char reason)
 {
     switch (reason) {
-    case 1u: return "NO NET ENV (SET NET=WIFI|RTL)";
-    case 2u: return "DLL LOAD FAILED";
-    case 3u: return "DLL IS NOT THE SELECTED BACKEND";
-    case 4u: return "uNet ABI MISMATCH";
-    case 5u: return "BACKEND HAS NO TCP";
-    case 6u: return "SETOPT CANCELKEYS REJECTED"; /* unreachable (S9): ng_up
-                                                      no longer calls SETOPT
-                                                      CANCELKEYS at all; kept
-                                                      so cases 7-9 don't shift */
-    case 7u: return "ADAPTER STATUS FAILED";
-    case 8u: return "NETINIT FAILED";
-    case 9u: return "DLL CALL FAILED";
+    case 1u: return "NO NET ENV";
+    case 2u: return "INVALID NET VALUE";
+    case 3u: return "DLL LOAD FAILED";
+    case 4u: return "DLL INFO FAILED";
+    case 5u: return "DLL NAME MISMATCH";
+    case 6u: return "DLL CALL/GETCAPS FAILED";
+    case 7u: return "uNet ABI MISMATCH";
+    case 8u: return "ADAPTER STATUS FAILED";
+    case 9u: return "NETINIT FAILED";
+    case 10u: return "BACKEND HAS NO TCP";
+    case 11u: return "NETSTART CALL FAILED";
     default: return "UNKNOWN PREFLIGHT ERROR";
     }
 }
 
 static const char *net_ui_backend_name(void)
 {
-    if (ng_backend == NET_UI_BACKEND_WIFI) {
-        return "WIFI (UNETESP.DLL)";
-    }
-    if (ng_backend == NET_UI_BACKEND_RTL) {
-        return "RTL (UNETRTL.DLL)";
-    }
-    /* No backend selected yet. Just "--": the row is a STATUS readout, and
-       the "SET NET=..." hint that used to be appended here read as UI noise
-       to the human tester (2026-08-17). The same advice still reaches anyone
-       who actually needs it, from the preflight failure text that names the
-       stage ("NO NET ENV (SET NET=WIFI|RTL)", net_ui_preflight_reason
-       above) -- which is where it is actionable, rather than on a row that
-       is merely reporting the current state. */
-    return "--";
+    return ng_dll_name[0] != '\0' ? ng_dll_name : "--";
 }
 
 /* LASTERR is the DLL's own diagnostic text. Empty is normal for failures
@@ -557,7 +537,7 @@ static void net_ui_frame(void)
 
     if (net_ui_transport == NETCHESSZX_TRANSPORT_MQTT) {
         net_ui_paint_focus_row(4u, net_ui_focus == 4u);
-        /* Same backend line DIRECT shows -- ng_backend is set by ng_up(),
+        /* Same backend line DIRECT shows -- the DLL name is set by ng_up(),
            which the MQTT connect flow also calls (net_mqtt_ui_sprinter.c's
            net_mqtt_connect_start_ovl). Leaving this blank was the source of
            a 2026-08-14 MAME finding: "unclear whether the backend is loaded
@@ -621,7 +601,7 @@ static unsigned char net_ui_direct_connect(void)
         net_ui_state("PREFLIGHT: LOADING BACKEND...");
 
         ng_up();
-        /* ng_backend is only known after ng_up has read the NET env, so
+        /* The DLL name is only known after ng_up has read NET, so
            the backend row is repainted here rather than only in
            net_ui_frame(). */
         net_ui_row(NET_UI_ROW_BACKEND, NET_UI_ATTR_DIM, net_ui_backend_name());

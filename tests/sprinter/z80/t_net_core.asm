@@ -183,10 +183,13 @@ start:
         ld      a,21
         call    t_expect_z
 
-; --- Scenario 6: ng_c_connect resolves NETHOST/NETPORT itself; the env
-; stub above always reports "not found", so this also proves the
-; compiled-in defaults (127.0.0.1/7777) reach CONNECT correctly. ---------
-        call    ng_c_connect
+; --- Scenario 6: caller-supplied host/port reach CONNECT through the C
+; bridge and WIN2 staging buffers before WIN1 is occupied by the DLL. ---
+        ld      hl,connect_default_host
+        ld      (ng_c_connect_host),hl
+        ld      hl,connect_default_port
+        ld      (ng_c_connect_port),hl
+        call    ng_c_connect_at
         ld      a,(ng_v_call_cf)
         or      a
         ld      a,22
@@ -220,7 +223,7 @@ ng_test_install_lib:
         inc     hl
         ld      (hl),0
         ld      hl,0
-        ld      (ng_handle),hl
+        ld      (UNETLD.HANDLE),hl
         ret
 
 test_status_seen:       DB 0
@@ -348,6 +351,12 @@ fake_dll_unused:
         DEFINE  LIBMAN_DIAGNOSTICS
         DEFINE  LIBMAN_NO_LEGACY_API
         include "libman.asm"
+        DEFINE _DSS_INC
+ENV_GET EQU DSS_ENV_GET
+DSS EQU RST_DSS
+        DEFINE UNETLD_STATE_BASE LOWRAM_NET_GATE_ADDR
+        include "unetld.asm"
         include "net_gate.asm"
+        include "net_gate_tail.asm"
 
         end     start

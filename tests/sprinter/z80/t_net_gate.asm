@@ -1,5 +1,5 @@
 ; z80 unit test for asm/sprinter/net_gate.asm's ng_call funnel and
-; ng_select_backend, driven against a real LIBMAN (extern/libman, pinned)
+; UNETLD.SELECT, driven against a real LIBMAN (extern/libman, pinned)
 ; with a hand-poked lib_table[0] entry and a fake DLL jump table -- the
 ; same technique extern/libman/tests/fixtures/libman_diag_vectors.asm uses,
 ; adapted to net_gate's own scenarios instead of l_load's.
@@ -7,8 +7,8 @@
 ; A fake RST #10 answers only the two DSS calls this test's code path ever
 ; issues: SETWIN1 (#39, corecall's own window-mapping call -- corrupts
 ; IX/IY first, matching libman_diag_vectors.asm's "DSS may clobber public
-; DLL arguments" precedent) and ENVIRON (#46, ng_select_backend's NET
-; lookup, always answers "WIFI"). l_load is never exercised here (the fake
+; DLL arguments" precedent) and ENVIRON (#46, UNETLD's NET lookup with
+; a configurable reply). l_load is never exercised here (the fake
 ; lib_table entry is poked directly), so the much larger DSS surface l_load
 ; needs (OPEN/ALLOC/SETWIN3/FREE/...) is out of scope for this file.
 
@@ -36,15 +36,26 @@ dss_stub:
         xor     a
         ret
 .environ:
-        ; B=DSS_ENV_GET, HL=name (ignored, this stub always answers the
-        ; same value), DE=destination. A=#FF found.
+        ld      a,(dss_env_present)
+        or      a
+        jr      nz,.copy_env
+        xor     a
+        ret
+.copy_env:
         ld      hl,dss_env_value
-        ld      bc,5
-        ldir
+.copy_char:
+        ld      a,(hl)
+        ld      (de),a
+        inc     hl
+        inc     de
+        or      a
+        jr      nz,.copy_char
         ld      a,#ff
         ret
 
+dss_env_present: DB 1
 dss_env_value: DB "WIFI",0
+               DS 11,0
 
         assert  $ < #0100
         ds      #0100-$,0
@@ -156,68 +167,172 @@ start:
         ld      a,14
         call    t_expect_z
 
-; --- ng_select_backend: NET=WIFI (via the ENVIRON stub) selects the ESP
-; DLL by name. ------------------------------------------------------------
-        call    ng_select_backend
+; --- UNETLD SELECT resolves the compatibility WIFI alias. -----------
+        call    UNETLD.RESET
+        call    UNETLD.SELECT
         ld      a,15
         call    t_expect_nc
-        ld      a,(ng_backend)
-        cp      NG_BACKEND_WIFI
+        ld      hl,UNETLD.DLL_NAME
+        ld      de,expected_dll
+        call    test_streq
         ld      a,16
         call    t_expect_z
-        ld      de,ng_dll_name_esp
-        or      a
-        sbc     hl,de
-        ld      a,17
-        call    t_expect_z
 
-; --- ng_up is idempotent. With LIBMAN_MAX_LIBS 1 a second l_load can only
-; fail ("no free table entry"), and nothing frees that entry between
-; sessions, so a second join used to report DLL LOAD FAILED with the DLL
-; loaded and healthy. lib_table[0] is still cleared by scenario 4, which is
-; what makes these three cheap: ANY path that reaches l_load or l_info from
-; here fails, so the outcome alone says which branch ran.
-;
-; 5a: fully up (loaded, reason 0) -> immediate success, no DLL touched. ---
+; Lower-case tags, the four-character 509B tag, and invalid/missing NET.
+        ld      hl,net_rtl_lower
+        call    test_set_env
+        call    UNETLD.SELECT
+        ld      a,24
+        call    t_expect_nc
+        ld      hl,UNETLD.DLL_NAME
+        ld      de,expected_rtl
+        call    test_streq
+        ld      a,25
+        call    t_expect_z
+        ld      hl,net_509b
+        call    test_set_env
+        call    UNETLD.SELECT
+        ld      a,26
+        call    t_expect_nc
+        ld      hl,UNETLD.DLL_NAME
+        ld      de,expected_509b
+        call    test_streq
+        ld      a,27
+        call    t_expect_z
+        ld      hl,net_wifi_lower
+        ld      de,expected_dll
+        call    test_selection_success
+        ld      hl,net_rtl_upper
+        ld      de,expected_rtl
+        call    test_selection_success
+        ld      hl,net_509b_upper
+        ld      de,expected_509b
+        call    test_selection_success
+        ld      hl,net_short
+        call    test_selection_invalid
+        ld      hl,net_long
+        call    test_selection_invalid
+        ld      hl,net_invalid
+        call    test_set_env
+        call    UNETLD.SELECT
+        ld      (test_status_seen),a
+        ld      a,28
+        call    t_expect_c
+        ld      a,(test_status_seen)
+        cp      UNETLD_E_BADVALUE
+        ld      a,29
+        call    t_expect_z
+        ld      hl,net_empty
+        call    test_set_env
+        call    UNETLD.SELECT
+        ld      (test_status_seen),a
+        ld      a,30
+        call    t_expect_c
+        ld      a,(test_status_seen)
+        cp      UNETLD_E_NOENV
+        ld      a,31
+        call    t_expect_z
+        xor     a
+        ld      (dss_env_present),a
+        call    UNETLD.SELECT
+        ld      (test_status_seen),a
+        ld      a,32
+        call    t_expect_c
+        ld      a,(test_status_seen)
+        cp      UNETLD_E_NOENV
+        ld      a,33
+        call    t_expect_z
         ld      a,1
-        ld      (ng_loaded),a
+        ld      (dss_env_present),a
+        ld      hl,net_wifi
+        call    test_set_env
+
+; Validate the loader's name and TCP gates directly with synthetic state.
+        ld      hl,UNETLD.NET_TAG
+        ld      (hl),'E'
+        inc     hl
+        ld      (hl),'S'
+        inc     hl
+        ld      (hl),'P'
+        inc     hl
+        ld      (hl),0
+        ld      hl,info_wrong
+        call    test_set_info
+        call    UNETLD.VALIDATE_NAME
+        ld      a,34
+        call    t_expect_c
+        ld      hl,info_esp
+        call    test_set_info
+        call    UNETLD.VALIDATE_NAME
+        ld      a,35
+        call    t_expect_nc
+        ld      de,UNET_CAP_TCP
+        call    UNETLD.REQUIRE
+        ld      a,36
+        call    t_expect_c
+        ld      hl,UNET_CAP_TCP
+        ld      (UNETLD.CAPS),hl
+        ld      de,UNET_CAP_TCP
+        call    UNETLD.REQUIRE
+        ld      a,37
+        call    t_expect_nc
+
+; STATUS and NETINIT failures must remain distinct loader stages.
+        call    ng_test_install_lib
+        ld      a,1
+        ld      (test_netinit_mode),a
+        ld      a,8
+        ld      (test_status_reply),a
+        call    UNETLD.NETSTART
+        ld      (test_status_seen),a
+        ld      a,38
+        call    t_expect_c
+        ld      a,(test_status_seen)
+        cp      UNETLD_E_STATUS
+        ld      a,39
+        call    t_expect_z
+        xor     a
+        ld      (test_status_reply),a
+        ld      a,7
+        ld      (test_netinit_reply),a
+        call    UNETLD.NETSTART
+        ld      (test_status_seen),a
+        ld      a,40
+        call    t_expect_c
+        ld      a,(test_status_seen)
+        cp      UNETLD_E_NETINIT
+        ld      a,41
+        call    t_expect_z
+        xor     a
+        ld      (test_netinit_reply),a
+        call    UNETLD.NETSTART
+        ld      a,42
+        call    t_expect_nc
+        ld      a,(UNETLD.FLAGS)
+        and     UNETLD_F_NETINIT
+        ld      a,43
+        call    t_expect_nz
+
+; A successful repeated entry must not load again. -----------------------
+        ld      a,1
+        ld      (ng_initialized),a
+        ld      a,UNETLD_F_LOADED | UNETLD_F_NETINIT
+        ld      (UNETLD.FLAGS),a
         xor     a
         ld      (ng_up_reason),a
         call    ng_up
         ld      a,18
         call    t_expect_nc
-        ld      a,(ng_up_reason)
-        or      a
-        ld      a,19
-        call    t_expect_z
 
-; 5b: loaded but a previous bring-up died past the load -> resume at the
-; call sequence (l_info, which fails here) instead of re-loading. The
-; distinguishing evidence is the reason code: NG_UP_ERR_CALL, not
-; NG_UP_ERR_LOAD. ---------------------------------------------------------
-        ld      a,1
-        ld      (ng_loaded),a
-        ld      a,NG_UP_ERR_NETINIT
-        ld      (ng_up_reason),a
-        call    ng_up
-        ld      a,20
-        call    t_expect_c
-        ld      a,(ng_up_reason)
-        cp      NG_UP_ERR_CALL
-        ld      a,21
-        call    t_expect_z
-
-; 5c: nothing loaded -> the guard must not short-circuit the loader. The
-; DSS stub answers neither APPINFO nor OPEN, so l_load fails, and that
-; failure is the proof it was reached at all. ----------------------------
+; A fresh attempt reaches LOAD, which the stub cannot satisfy. -----------
         xor     a
-        ld      (ng_loaded),a
+        ld      (UNETLD.FLAGS),a
         ld      (ng_up_reason),a
         call    ng_up
         ld      a,22
         call    t_expect_c
         ld      a,(ng_up_reason)
-        cp      NG_UP_ERR_LOAD
+        cp      UNETLD_E_LOAD
         ld      a,23
         call    t_expect_z
 
@@ -241,7 +356,7 @@ ng_test_install_lib:
         inc     hl
         ld      (hl),0
         ld      hl,0
-        ld      (ng_handle),hl
+        ld      (UNETLD.HANDLE),hl
         ret
 
 ; S3_TEST_HOOK double (im2_s1.asm's S1_TEST_HOOK precedent): records the
@@ -260,6 +375,74 @@ test_dll_c_seen:          DB 0
 test_dll_iff2_seen:       DB 0
 test_dll_nested_returned: DB 0
 test_status_seen:         DB 0
+test_netinit_mode:        DB 0
+test_netinit_reply:       DB 0
+test_status_reply:        DB 0
+expected_dll: DB "UNETESP.DLL",0
+expected_rtl: DB "UNETRTL.DLL",0
+expected_509b: DB "UNET509B.DLL",0
+net_wifi: DB "WIFI",0
+net_wifi_lower: DB "wifi",0
+net_rtl_lower: DB "rtl",0
+net_rtl_upper: DB "RTL",0
+net_509b: DB "509b",0
+net_509b_upper: DB "509B",0
+net_short: DB "AB",0
+net_long: DB "ABCDE",0
+net_invalid: DB "FOO!",0
+net_empty: DB 0
+info_wrong: DB "UNETRTL",0
+info_esp: DB "UNETESP",0
+test_selection_success:
+        push    de
+        call    test_set_env
+        call    UNETLD.SELECT
+        ld      a,44
+        call    t_expect_nc
+        pop     de
+        ld      hl,UNETLD.DLL_NAME
+        call    test_streq
+        ld      a,45
+        jp      t_expect_z
+test_selection_invalid:
+        call    test_set_env
+        call    UNETLD.SELECT
+        ld      (test_status_seen),a
+        ld      a,46
+        call    t_expect_c
+        ld      a,(test_status_seen)
+        cp      UNETLD_E_BADVALUE
+        ld      a,47
+        jp      t_expect_z
+test_set_info:
+        ld      de,UNETLD.DLL_INFO+16
+.copy:
+        ld      a,(hl)
+        ld      (de),a
+        or      a
+        ret     z
+        inc     hl
+        inc     de
+        jr      .copy
+test_set_env:
+        ld      de,dss_env_value
+.copy:
+        ld      a,(hl)
+        ld      (de),a
+        or      a
+        ret     z
+        inc     hl
+        inc     de
+        jr      .copy
+test_streq:
+        ld a,(de)
+        cp (hl)
+        ret nz
+        or a
+        ret z
+        inc hl
+        inc de
+        jr test_streq
 
 ; Fake DLL jump table. corecall computes lcstart = (window_base_high:#20),
 ; so with window base high byte #40 (poked above) the table must start
@@ -272,6 +455,11 @@ fake_dll_table:
         jp      fake_dll_success        ; fn NG_TEST_FN_SUCCESS
         jp      fake_dll_nested         ; fn NG_TEST_FN_NESTED
         jp      fake_dll_nerr           ; fn NG_TEST_FN_NERR
+        jp      fake_dll_unused         ; fn 5
+        jp      fake_dll_unused         ; fn 6
+        jp      fake_dll_unused         ; fn 7
+        jp      fake_dll_unused         ; fn 8
+        jp      fake_dll_status         ; fn UNET_FN_STATUS
 
 fake_dll_success:
         ld      a,c
@@ -288,6 +476,13 @@ fake_dll_success:
         ret
 
 fake_dll_nested:
+        ld      a,(test_netinit_mode)
+        or      a
+        jr      z,.nested
+        ld      a,(test_netinit_reply)
+        or      a
+        ret
+.nested:
         ld      b,NG_TEST_FN_SUCCESS    ; must never actually dispatch --
         call    ng_call                 ; the reentry trap must fire first
         ld      a,1
@@ -297,6 +492,11 @@ fake_dll_nested:
 
 fake_dll_nerr:
         ld      a,8
+        or      a
+        ret
+
+fake_dll_status:
+        ld      a,(test_status_reply)
         or      a
         ret
 
@@ -329,6 +529,12 @@ fake_dll_unused:
         DEFINE  LIBMAN_DIAGNOSTICS
         DEFINE  LIBMAN_NO_LEGACY_API
         include "libman.asm"
+        DEFINE _DSS_INC
+ENV_GET EQU DSS_ENV_GET
+DSS EQU RST_DSS
+        DEFINE UNETLD_STATE_BASE LOWRAM_NET_GATE_ADDR
+        include "unetld.asm"
         include "net_gate.asm"
+        include "net_gate_tail.asm"
 
         end     start

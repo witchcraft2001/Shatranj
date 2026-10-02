@@ -931,7 +931,7 @@ SPRINTER_PLATFORM_PRIMITIVES_BIN := $(SPRINTER_BUILD_DIR)/platform_primitives.bi
 SPRINTER_PLATFORM_PRIMITIVES_SYM := $(SPRINTER_BUILD_DIR)/platform_primitives.sym
 SPRINTER_RESIDENT_C_BIN := $(SPRINTER_BUILD_DIR)/resident_c.bin
 SPRINTER_RESIDENT_BIN := $(SPRINTER_BUILD_DIR)/resident.bin
-SPRINTER_DLLS := extern/esp_net/UNETESP.DLL extern/rtl_net/UNETRTL.DLL
+SPRINTER_DLLS := $(addprefix extern/unet_libs_asm/extern/core/dll/,UNETESP.DLL UNETRTL.DLL UNET509B.DLL)
 
 # Fourth splice blob (S7, port.md section 3.7): net_frame.c's own
 # independent zcc build, placed at fixed_layout.json's NET_FRAME_C anchor.
@@ -1068,7 +1068,9 @@ SPRINTER_PLATFORM_DEFS_ASM := $(SPRINTER_GENERATED_DIR)/platform_defs.asm
 SPRINTER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/fixed_layout.inc
 SPRINTER_LAYOUT_H := $(SPRINTER_GENERATED_DIR)/fixed_layout.h
 SJASMPLUS_INCLUDES := -I $(SPRINTER_ASM_DIR) -I $(SPRINTER_GENERATED_DIR) \
-                       -I extern/libman/libman -I extern/esp_net/src/include
+                       -I extern/libman/libman \
+                       -I extern/unet_libs_asm/include \
+                       -I extern/unet_libs_asm/extern/core/bindings/asm
 
 SPRINTER_RENDER_LAYOUT_JSON := src/sprinter/render_layout.json
 SPRINTER_RENDER_LAYOUT_INC := $(SPRINTER_GENERATED_DIR)/render_layout.inc
@@ -1411,7 +1413,11 @@ SPRINTER_PLATFORM_PRIMITIVES_DEPS := $(SPRINTER_ASM_DIR)/platform_primitives.asm
                           $(SPRINTER_ASM_DIR)/win0.inc $(SPRINTER_ASM_DIR)/accel.inc \
                           $(SPRINTER_ASM_DIR)/dss.inc \
                           $(SPRINTER_ASM_DIR)/gfx_core.asm $(SPRINTER_ASM_DIR)/text640.asm \
-                          $(SPRINTER_ASM_DIR)/net_gate.asm $(SPRINTER_ASM_DIR)/dss_fileio.asm \
+                          $(SPRINTER_ASM_DIR)/net_gate.asm $(SPRINTER_ASM_DIR)/net_gate_tail.asm \
+                          $(SPRINTER_ASM_DIR)/console_exit.asm \
+                          $(SPRINTER_ASM_DIR)/dss_fileio.asm \
+                          extern/unet_libs_asm/include/unetld.asm \
+                          extern/unet_libs_asm/extern/core/bindings/asm/unet.inc \
                           $(SPRINTER_ASM_DIR)/hdr.inc $(SPRINTER_LAYOUT_INC) \
                           $(SPRINTER_PALETTE_INC) $(SPRINTER_RENDER_LAYOUT_INC)
 
@@ -2137,12 +2143,12 @@ sprinter-size-report: exe tools/gen_sprinter_size_report.py $(SPRINTER_RESIDENT_
 
 sprinter-smoke-image: exe tools/make_sprinter_smoke_image.py
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
-		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
+		$(foreach dll,$(SPRINTER_DLLS),--dll $(dll)) \
 		--output $(SPRINTER_SMOKE_IMG)
 
 sprinter-hw-zip: exe tools/make_sprinter_hw_zip.py
 	$(PYTHON) tools/make_sprinter_hw_zip.py --exe $(SPRINTER_EXE) \
-		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
+		$(foreach dll,$(SPRINTER_DLLS),--dll $(dll)) \
 		--output $(SPRINTER_HW_ZIP)
 
 # The piece pages are a prerequisite for their side effect: the same rule
@@ -2180,13 +2186,18 @@ sprinter-check: sprinter-deps-check sprinter-tools-test sprinter-layout-check \
                 sprinter-overlay-net-check sprinter-overlay-input-edit-check \
                 sprinter-overlay-about-check \
                 sprinter-z80-test sprinter-resident-test sprinter-host-test \
-                sprinter-size-report sprinter-smoke-image
+                sprinter-size-report sprinter-smoke-image sprinter-hw-zip
 	$(PYTHON) tools/make_sprinter_smoke_image.py --exe $(SPRINTER_EXE) \
-		--dll extern/esp_net/UNETESP.DLL --dll extern/rtl_net/UNETRTL.DLL \
+		$(foreach dll,$(SPRINTER_DLLS),--dll $(dll)) \
 		--output $(SPRINTER_SMOKE_IMG).rebuild > /dev/null
 	cmp $(SPRINTER_SMOKE_IMG) $(SPRINTER_SMOKE_IMG).rebuild
 	@rm -f $(SPRINTER_SMOKE_IMG).rebuild
-	@printf "[OK] sprinter-check: deps, EXE format, smoke image (deterministic)\n"
+	$(PYTHON) tools/make_sprinter_hw_zip.py --exe $(SPRINTER_EXE) \
+		$(foreach dll,$(SPRINTER_DLLS),--dll $(dll)) \
+		--output $(SPRINTER_HW_ZIP).rebuild > /dev/null
+	cmp $(SPRINTER_HW_ZIP) $(SPRINTER_HW_ZIP).rebuild
+	@rm -f $(SPRINTER_HW_ZIP).rebuild
+	@printf "[OK] sprinter-check: deps, EXE format, image and ZIP (verified, deterministic)\n"
 
 clean-sprinter:
 ifneq ($(CLIENT_HOST_IS_WINDOWS),)

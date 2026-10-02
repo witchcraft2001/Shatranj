@@ -151,11 +151,12 @@ extern void render_status_text(void);
 extern void render_input_line(void);
 extern void key_poll(void);
 /* im2_s1.asm's R11 exit discipline (ng_shutdown -> DI -> im2_uninstall ->
-   svmod_safe -> park RGMOD/PORT_Y -> DSS_EXIT B=0), already published like
-   every other platform primitive above (gen_sprinter_platform_defs.py's
+   svmod_safe -> clear/home text console -> park PORT_Y -> DSS_EXIT B=0),
+   already published like every other platform primitive above
+   (gen_sprinter_platform_defs.py's
    PLATFORM_SYMBOLS) but never called until S9's exit-to-DSS pass (below,
-   exit_now). Does not return; ng_shutdown is idempotent (ret z on
-   ng_loaded), so calling it a second time from here after a session was
+   exit_now). Does not return; ng_shutdown is idempotent, so calling it
+   a second time from here after a session was
    already torn down by something else is safe. */
 extern void exit_stand(void);
 extern void render_cursor_marker(void);

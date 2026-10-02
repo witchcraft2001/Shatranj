@@ -166,7 +166,7 @@
             "addr": "0xB408",
             "size": "0x2FE",
             "owner": "asm/sprinter/net_gate.asm",
-            "desc": "S8 step 1: the ten ng_buf_* staging buffers (net_gate.asm's own EQUs, host/port/tx/rx/lasterr/info/env/ip/env_host/env_port -- 766 bytes total, tx now NG_TX_CAPACITY=160 to fit an MQTT packet), relocated out of the WIN2 asm code gap right before NET_FRAME_C (S7 left only 19 bytes free there; check_sprinter_net_sections.py already requires ng_* to live in [#8000,#C000), and this address qualifies). Replaces the old LOWRAM_NET reservation, whose description (S7: 'RX byte ring, 3x48 line queue, payload_scratch...') was never actually implemented here -- net_frame.c's nc_* state lives in its own WIN2 C-blob BSS instead, and unet_link.c's state is resident WIN1 BSS; this region had zero real readers before S8 step 1 repurposed it. Fills the LOWRAM_OVERLAY_SCRATCH..CANARY gap left after S5-finish plan D9's size pass, the same way LOWRAM_MOVE_LOG fills the OVL_SLOT..CANARY gap D2 left."
+            "desc": "Always-mapped WIN2 network state: UNETLD compact state (315 bytes), RX (also transient CONNECT host), TX (also transient port and LASTERR), and IP staging. The assembly asserts every alias and the region end; UNETLD.RESET initializes the state before its first use."
         },
         {
             "name": "LOWRAM_MQTT_STREAM",

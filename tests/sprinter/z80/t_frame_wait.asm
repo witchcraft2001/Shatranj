@@ -33,6 +33,7 @@
 HDR: DS 256,0
 svmod_safe: ret
 ng_shutdown: ret
+console_clear_home: ret
 
 start:
         ld      sp,#e800

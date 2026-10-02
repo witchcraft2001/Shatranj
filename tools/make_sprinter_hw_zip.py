@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Package the Sprinter real-hardware test kit: EXE + both uNet DLLs.
+"""Package the Sprinter real-hardware test kit: EXE + three uNet DLLs.
 
 Real Sprinter hardware does not consume the FAT12 smoke image the way MAME
 mounts it, so hardware testing gets the same bytes in a different container:
-the three files flat in one archive, to be unpacked into a single directory
+the four files flat in one archive, to be unpacked into a single directory
 (l_load resolves the DLL next to the EXE through DSS APPINFO, not PATH and
 not the current directory).
 
@@ -41,6 +41,9 @@ def main() -> int:
     for src in members:
         if not src.is_file():
             fail(f"missing input: {src}")
+    expected_names = [src.name.upper() for src in members]
+    if len(set(expected_names)) != len(members):
+        fail("duplicate input filenames")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.output.exists():
@@ -51,6 +54,13 @@ def main() -> int:
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
             archive.writestr(info, src.read_bytes())
+
+    with zipfile.ZipFile(args.output) as archive:
+        if archive.namelist() != expected_names:
+            fail("ZIP member list differs from the inputs")
+        for src in members:
+            if archive.read(src.name.upper()) != src.read_bytes():
+                fail(f"{src.name} inside ZIP differs from {src}")
 
     print(f"[OK] {args.output}: {', '.join(m.name.upper() for m in members)}")
     for src in members:

@@ -40,10 +40,7 @@ char net_ui_filter_ip(char c);
    non-digit/non-dot character is a reject. Returns 1 (ok) or 0 (reject). */
 uint8_t net_ui_ipv4_ok(const char *s);
 
-/* Copies at most cap-1 bytes of src into dest and NUL-terminates -- the
-   capped counterpart to net_ui_sprinter.c's own net_ui_env_default() copy
-   loop (which copies without a limit; that risk is accepted there and not
-   repeated here since dest may be a small fixed-size overlay field). */
+/* Copies at most cap-1 bytes of src into dest and NUL-terminates. */
 void net_ui_copy_capped(char *dest, uint8_t cap, const char *src);
 
 #endif

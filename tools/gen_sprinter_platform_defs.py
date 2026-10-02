@@ -221,33 +221,19 @@ PLATFORM_SYMBOLS = [
     "ng_close",
     "ng_lasterr_fetch",
     "ng_shutdown",
-    # S7 (port.md section 3.7): src/sprinter/transport/unet_link.c's link.h
-    # winders need the peer IP for last_ip/sync_time-adjacent diagnostics,
-    # NETHOST/NETPORT env config for connect_host/preflight_run, and enough
-    # of net_gate's own diagnostic state (ng_buf_rx for the framing core to
-    # read received bytes from, ng_buf_lasterr/ng_up_reason/ng_backend for
-    # NERR_*/ng_up_reason -> text mapping) to report something meaningful
-    # on failure instead of a bare status code.
+    # The transport and NET overlay need WIN2 staging and diagnostic state.
+    # UNETLD.DLL_NAME is bridged as ng_dll_name for the selected-DLL row.
     "ng_getinfo_ip",
-    "ng_env_nethost",
-    "ng_env_netport",
-    # ng_env_* return one of these two pointers when DSS did not have the
-    # variable, so a pointer compare tells the join panel whether it is
-    # showing a real NETHOST/NETPORT or a compiled-in default -- see the
-    # ng_env_nethost banner in net_gate.asm.
-    "ng_default_host",
-    "ng_default_port",
     "ng_buf_ip",
     "ng_buf_rx",
     "ng_buf_lasterr",
     "ng_up_reason",
-    "ng_backend",
+    "ng_dll_name",
     "ng_v_last_nerr",
     "ng_v_last_cf",
     # C-callable wrappers for ng_connect/ng_send/ng_recv (register-ABI
     # functions unet_link.c cannot call directly) plus their parameter/
     # result cells -- see net_gate.asm's own "C-callable wrappers" banner.
-    "ng_c_connect",
     "ng_c_send",
     "ng_c_recv_poll",
     "ng_c_send_ptr",
@@ -268,6 +254,7 @@ PLATFORM_SYMBOLS = [
     "ng_c_env_get",
     "ng_c_env_name",
     "ng_c_env_dest",
+    "ng_c_env_capacity",
     "ng_c_env_found",
     # dss_fileio.asm -- esx-ABI-over-DSS file I/O gate (S6, port.md section
     # 3.10 item 4). Called from the SAVELOAD/RESTORE/FILEUI overlay C
@@ -498,18 +485,13 @@ def _clean_fixture() -> str:
         "ng_lasterr_fetch: EQU 0x000089E0\n"
         "ng_shutdown: EQU 0x000089F0\n"
         "ng_getinfo_ip: EQU 0x000089F8\n"
-        "ng_env_nethost: EQU 0x00008C00\n"
-        "ng_env_netport: EQU 0x00008C08\n"
-        "ng_default_host: EQU 0x00008C10\n"
-        "ng_default_port: EQU 0x00008C1A\n"
         "ng_buf_ip: EQU 0x00008C40\n"
         "ng_buf_rx: EQU 0x00008C50\n"
         "ng_buf_lasterr: EQU 0x00008D00\n"
         "ng_up_reason: EQU 0x00008D40\n"
-        "ng_backend: EQU 0x00008D41\n"
+        "ng_dll_name: EQU 0x0000B420\n"
         "ng_v_last_nerr: EQU 0x00008D42\n"
         "ng_v_last_cf: EQU 0x00008D43\n"
-        "ng_c_connect: EQU 0x00008E00\n"
         "ng_c_send: EQU 0x00008E10\n"
         "ng_c_recv_poll: EQU 0x00008E20\n"
         "ng_c_send_ptr: EQU 0x00008F94\n"
@@ -525,7 +507,8 @@ def _clean_fixture() -> str:
         "ng_c_env_get: EQU 0x00008FA6\n"
         "ng_c_env_name: EQU 0x00008FA8\n"
         "ng_c_env_dest: EQU 0x00008FAA\n"
-        "ng_c_env_found: EQU 0x00008FAC\n"
+        "ng_c_env_capacity: EQU 0x00008FAC\n"
+        "ng_c_env_found: EQU 0x00008FAD\n"
         "esx_handle: EQU 0x00008B00\n"
         "esx_buf: EQU 0x00008B01\n"
         "esx_count: EQU 0x00008B03\n"

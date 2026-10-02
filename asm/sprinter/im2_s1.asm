@@ -328,8 +328,8 @@ key_code: DB 0
 
 ; R11 exit discipline: network torn down first (ng_shutdown needs EI and
 ; WIN1 still resident -- S3), then IM2 uninstalled (so no stray interrupt
-; lands mid-transition), video mode/screen restored from HDR, PORT_Y
-; parked, DSS.Exit. Does not return.
+; lands mid-transition), video mode/screen restored from HDR, the text
+; console cleared/homed, PORT_Y parked, DSS.Exit. Does not return.
 exit_stand:
         call    ng_shutdown
         di
@@ -340,17 +340,10 @@ exit_stand:
         call    svmod_safe              ; WIN2-half wrapper (SetVMod clobbers
                                          ; the WIN1 mapping; this code is
                                          ; WIN1-half -- see resident_s1.asm)
-        ; S5-finish plan D11/F2: SetVMod's B parameter restores the saved
-        ; screen's own descriptor/mode but is independent of PORT_RGMOD --
-        ; im2_frame_core may have left RGMOD bit 0 selecting buffer 1
-        ; (mid-game flips), and DSS.Exit does not touch video state (see
-        ; port.md's platform cheat-sheet). Park it back to buffer 0 so
-        ; whatever runs next (DSS, a reloaded program) sees a known,
-        ; boot-matching buffer instead of whichever one gameplay happened
-        ; to leave selected.
-        in      a,(PORT_RGMOD)
-        and     $FE
-        out     (PORT_RGMOD),a
+        ; DSS SetVMod already selects the saved screen through the very
+        ; same #C9 port. Forcing page 0 here would display the wrong page
+        ; when DSS had been on page 1, while its console keeps writing 1.
+        call    console_clear_home
         ld      a,#C0
         out     (PORT_Y),a
         ei
