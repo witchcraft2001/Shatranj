@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for tools/build_sprinter_piece_tiles.py (S4 piece tile packer).
 
-Uses small synthetic PNG fixtures (solid reference-colour cells), not the
-real rasterized pieces, so these tests do not depend on
-tools/rasterize_sprinter_pieces.py having been run.
+Uses synthetic fixtures plus a round trip of all 108 tiles from the
+committed PNGs. No browser or SVG regeneration is required.
 """
 
 from __future__ import annotations
@@ -51,6 +50,37 @@ def _with_sets(palette: dict, names: list[str],
             entries[str(index)] = _hex(rgb)
         piece_sets.append({"name": name, "entries": entries})
     return {**palette, "piece_sets": piece_sets}
+
+
+class CommittedPieceRoundTripTests(unittest.TestCase):
+    def test_all_108_normal_and_flash_tiles_match_committed_pixels(self) -> None:
+        palette = gsp.load_palette_file(PALETTE_JSON)
+        sets = json.loads((ROOT / "assets/lichess/selected_next_sets.json").read_text())["selected"]
+        pieces = ROOT / "assets/sprinter/pieces"
+        pages, info = bspt.build_pages(pieces, sets, palette, 32, 16)
+        checked = 0
+        for record in info["sets"]:
+            refs = bspt.piece_colours(palette, record["name"])
+            for piece_index, key in enumerate(bspt.PIECE_ORDER):
+                png = bspt.load_and_validate_piece(pieces / record["name"] / (key + ".png"), 32, 16, refs)
+                for background in (2, 3, 8):
+                    with self.subTest(set=record["name"], piece=key, background=background):
+                        if background == 8:
+                            page = record["flash_asset_page_index"] - 1
+                            slot = record["flash_slot_base"] + piece_index
+                        else:
+                            page = record["asset_page_index"] - 1
+                            slot = record["slot_base"] + piece_index * 2 + background - 2
+                        packed = pages[page][slot * bspt.SLOT_SIZE:(slot + 1) * bspt.SLOT_SIZE]
+                        for y in range(16):
+                            for x in range(32):
+                                byte = packed[y * 16 + x // 2]
+                                decoded = (byte >> 4) if x % 2 == 0 else (byte & 15)
+                                pixel = png.getpixel((x, y))
+                                expected = refs[pixel[:3]] if pixel[3] else background
+                                self.assertEqual(decoded, expected, (x, y))
+                        checked += 1
+        self.assertEqual(checked, 108)
 
 
 class PieceTilesTestBase(unittest.TestCase):

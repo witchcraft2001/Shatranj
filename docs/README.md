@@ -24,6 +24,11 @@ format rules; desktop code adapts them to Qt and the Spectrum clients use the
 compact target-specific runtime. Keep protocol parsing/building in common code
 and treat the two contracts above as the source of truth.
 
+Sprinter integration guidance:
+
+- [`sprinter-unet-best-practices.md`](sprinter-unet-best-practices.md) — UNET
+  interrupt safety, timing limits and main-loop scheduling.
+
 ## Build and validation entry points
 
 Run from the repository root:

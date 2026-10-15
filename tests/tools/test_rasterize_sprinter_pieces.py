@@ -2,15 +2,17 @@
 """Unit tests for tools/rasterize_sprinter_pieces.py's pure functions.
 
 This tool is a manual, browser-driven one-off (never run by the build), so
-these tests exercise only its browser-independent pieces: quantization,
-outline dilation, clip detection, and browser discovery -- exactly what the
-S4 plan calls for, no headless Chrome required.
+these tests exercise its browser-independent pieces: source classification,
+coverage reduction, exterior outlines, preview geometry, clipping, and
+browser discovery. No headless Chrome is required.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -22,12 +24,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
 import rasterize_sprinter_pieces as rsp
 
 BODY = (248, 248, 240)
-OUTLINE = (58, 58, 58)
-# The other side's pair, used to prove quantization is genuinely joint
-# (nearest of ALL 4), not silently still restricted to a 2-colour subset.
-BLACK_BODY = (46, 46, 46)
-BLACK_OUTLINE = (216, 216, 208)
-ALL_FOUR = [BODY, OUTLINE, BLACK_BODY, BLACK_OUTLINE]
+OUTLINE = (32, 32, 32)
+BLACK_BODY = (76, 76, 76)
+BLACK_OUTLINE = (200, 200, 192)
+
+
+def pixels(image: Image.Image) -> list[tuple]:
+    return [image.getpixel((x, y)) for y in range(image.height) for x in range(image.width)]
 
 
 class DetectBorderClipTests(unittest.TestCase):
@@ -88,56 +91,6 @@ class FitToSquareTests(unittest.TestCase):
         self.assertLessEqual(abs(margin_left - margin_right), 1)
 
 
-class HardQuantizeTests(unittest.TestCase):
-    def test_transparent_pixels_stay_transparent(self) -> None:
-        img = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
-        out = rsp.hard_quantize(img, [BODY, OUTLINE])
-        self.assertIsNone(out.getchannel("A").getbbox())
-
-    def test_output_uses_only_the_given_candidates_or_transparent(self) -> None:
-        img = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
-        # A pixel closer to body, one closer to outline, one anti-aliased
-        # blend, one below the alpha threshold (must vanish).
-        img.putpixel((0, 0), (250, 250, 245, 255))       # near BODY
-        img.putpixel((1, 0), (60, 60, 60, 255))          # near OUTLINE
-        img.putpixel((2, 0), (150, 150, 140, 255))       # AA blend, must snap
-        img.putpixel((3, 0), (200, 200, 200, 60))        # below threshold
-        out = rsp.hard_quantize(img, [BODY, OUTLINE])
-        seen = set()
-        for x in range(4):
-            for y in range(4):
-                seen.add(out.getpixel((x, y)))
-        allowed = {BODY + (255,), OUTLINE + (255,), (0, 0, 0, 0)}
-        self.assertTrue(seen.issubset(allowed), seen)
-        self.assertEqual(out.getpixel((0, 0)), BODY + (255,))
-        self.assertEqual(out.getpixel((1, 0)), OUTLINE + (255,))
-        self.assertEqual(out.getpixel((3, 0)), (0, 0, 0, 0))
-
-    def test_quantization_is_joint_across_all_four_candidates(self) -> None:
-        # The defect this replaces: a mid-tone shading pixel on a BLACK
-        # piece, restricted to {BLACK_BODY, BLACK_OUTLINE} = {46, 216},
-        # would snap to whichever of those two extremes is nearest -- both
-        # far away, so it always lost to the near-black body and shading
-        # detail vanished. Given all 4 candidates jointly, the same pixel
-        # has OUTLINE (58) available, much closer, and keeps its detail.
-        img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-        img.putpixel((0, 0), (70, 70, 70, 255))
-        restricted = rsp.hard_quantize(img, [BLACK_BODY, BLACK_OUTLINE])
-        joint = rsp.hard_quantize(img, ALL_FOUR)
-        self.assertEqual(restricted.getpixel((0, 0)), BLACK_BODY + (255,))
-        self.assertEqual(joint.getpixel((0, 0)), OUTLINE + (255,))
-
-    def test_a_genuine_highlight_on_a_dark_piece_can_reach_a_light_tone(self) -> None:
-        # Not just the two "own-side" tones plus one borrowed dark shade --
-        # a properly light source pixel (e.g. a gem or eye highlight) must
-        # be reachable too, which a still-restricted "own body + one more"
-        # scheme would rule out by construction.
-        img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-        img.putpixel((0, 0), (245, 245, 240, 255))
-        out = rsp.hard_quantize(img, ALL_FOUR)
-        self.assertEqual(out.getpixel((0, 0)), BODY + (255,))
-
-
 class GuaranteeOutlineTests(unittest.TestCase):
     def test_dilates_a_single_body_pixel_with_outline_ring(self) -> None:
         img = Image.new("RGBA", (5, 5), (0, 0, 0, 0))
@@ -161,9 +114,33 @@ class GuaranteeOutlineTests(unittest.TestCase):
         out = rsp.guarantee_outline(img, OUTLINE)
         self.assertIsNone(out.getchannel("A").getbbox())
 
-    def test_does_not_touch_interior_detail_from_joint_quantization(self) -> None:
-        # The whole point of running this AFTER joint hard_quantize: a
-        # piece can have interior pixels in ANY of the 4 candidates (not
+    def test_does_not_fill_an_internal_hole(self) -> None:
+        img = Image.new("RGBA", (5, 5), (0, 0, 0, 0))
+        for y in range(1, 4):
+            for x in range(1, 4):
+                if (x, y) != (2, 2):
+                    img.putpixel((x, y), BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE)
+        self.assertEqual(out.getpixel((2, 2)), (0, 0, 0, 0))
+
+    def test_does_not_bridge_two_separate_parts(self) -> None:
+        img = Image.new("RGBA", (7, 5), (0, 0, 0, 0))
+        img.putpixel((2, 2), BODY + (255,))
+        img.putpixel((4, 2), BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE)
+        self.assertNotEqual(out.getpixel((3, 2)), BLACK_OUTLINE + (255,))
+
+    def test_does_not_close_an_open_silhouette_gap(self) -> None:
+        img = Image.new("RGBA", (7, 7), (0, 0, 0, 0))
+        for x in range(2, 5):
+            img.putpixel((x, 2), BODY + (255,))
+            img.putpixel((x, 4), BODY + (255,))
+        img.putpixel((2, 3), BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE)
+        self.assertEqual(out.getpixel((4, 3)), (0, 0, 0, 0))
+
+    def test_does_not_touch_interior_detail_from_region_classification(self) -> None:
+        # After region classification, a piece can have interior pixels in ANY of the 4 candidates (not
         # just body/outline), and the outer-boundary dilation must leave
         # them alone -- only genuinely transparent, silhouette-adjacent
         # pixels get the rim colour.
@@ -174,36 +151,167 @@ class GuaranteeOutlineTests(unittest.TestCase):
         self.assertEqual(out.getpixel((0, 0)), BLACK_BODY + (255,))
         self.assertEqual(out.getpixel((1, 0)), BLACK_OUTLINE + (255,))
 
+    def test_rim_covers_diagonal_and_adjacent_corner_neighbours(self) -> None:
+        img = Image.new("RGBA", (7, 7), (0, 0, 0, 0))
+        img.putpixel((2, 3), BLACK_BODY + (255,))
+        img.putpixel((3, 2), BLACK_BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE)
+        self.assertEqual(out.getpixel((3, 3)), BLACK_OUTLINE + (255,))
+        self.assertEqual(out.getpixel((1, 2)), BLACK_OUTLINE + (255,))
+
+    def test_two_pixel_gap_cannot_join_parts_through_new_rim_pixels(self) -> None:
+        img = Image.new("RGBA", (10, 7), (0, 0, 0, 0))
+        img.putpixel((3, 3), BLACK_BODY + (255,))
+        img.putpixel((6, 3), BLACK_BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE)
+        self.assertEqual(rsp._opaque_components(out)[1], 2)
+        self.assertEqual(out.getpixel((4, 3))[3], 0)
+        self.assertEqual(out.getpixel((5, 3))[3], 0)
+
+    def test_diagonal_open_cut_stays_connected_to_exterior(self) -> None:
+        img = Image.new("RGBA", (9, 9), (0, 0, 0, 0))
+        for y in range(2, 7):
+            for x in range(2, 7):
+                if x - y not in (0, 1):
+                    img.putpixel((x, y), BLACK_BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE)
+        exterior = rsp._exterior_transparency(out)
+        for xy in ((3, 3), (4, 4), (5, 5)):
+            self.assertEqual(out.getpixel(xy)[3], 0)
+            self.assertTrue(exterior[xy[1]][xy[0]])
+
 
 class ReferenceColorsTests(unittest.TestCase):
-    def test_white_and_black_pull_distinct_indices_from_palette(self) -> None:
+    def test_each_set_uses_its_own_import_palette(self) -> None:
         import gen_sprinter_palette as gsp
 
         palette = gsp.load_palette_file(
             Path(__file__).resolve().parent.parent.parent / "assets/sprinter/palette.json"
         )
-        w_body, w_outline = rsp.reference_colors(palette, "w")
-        b_body, b_outline = rsp.reference_colors(palette, "b")
-        self.assertNotEqual(w_body, b_body)
-        self.assertNotEqual(w_outline, b_outline)
-        by_index = {e["index"]: e["rgb"] for e in palette["base"]}
-        self.assertEqual(w_body, gsp._parse_rgb(by_index[4], "t"))
-        self.assertEqual(w_outline, gsp._parse_rgb(by_index[5], "t"))
-        self.assertEqual(b_body, gsp._parse_rgb(by_index[6], "t"))
-        self.assertEqual(b_outline, gsp._parse_rgb(by_index[7], "t"))
+        for set_name in ("california", "mpchess", "totoy"):
+            colours = rsp.piece_palette(palette, set_name)
+            self.assertEqual(colours[4], (248, 248, 240))
+            self.assertEqual(colours[5], (32, 32, 32))
+            self.assertEqual(colours[6], (76, 76, 76))
+            self.assertEqual(colours[7], (200, 200, 192))
 
-    def test_all_piece_reference_colors_is_the_union_in_index_order(self) -> None:
-        import gen_sprinter_palette as gsp
 
-        palette = gsp.load_palette_file(
-            Path(__file__).resolve().parent.parent.parent / "assets/sprinter/palette.json"
-        )
-        w_body, w_outline = rsp.reference_colors(palette, "w")
-        b_body, b_outline = rsp.reference_colors(palette, "b")
-        self.assertEqual(
-            rsp.all_piece_reference_colors(palette),
-            [w_body, w_outline, b_body, b_outline],
-        )
+class SourceClassificationTests(unittest.TestCase):
+    def test_separates_shades_for_california_black_piece(self) -> None:
+        self.assertEqual(rsp.source_index((32, 32, 32), "california", "b"), 5)
+        self.assertEqual(rsp.source_index((76, 76, 76), "california", "b"), 6)
+        self.assertEqual(rsp.source_index((102, 102, 102), "california", "b"), 6)
+        self.assertEqual(rsp.source_index((128, 128, 128), "california", "b"), 7)
+        self.assertEqual(rsp.source_index((200, 200, 200), "california", "b"), 7)
+
+    def test_mpchess_black_silhouette_stays_dark(self) -> None:
+        self.assertEqual(rsp.source_index((0, 0, 0), "mpchess", "b"), 5)
+
+    def test_coverage_downscale_keeps_dominant_regions_separate(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        img = Image.new("RGBA", (128, 64), (0, 0, 0, 0))
+        for y in range(64):
+            for x in range(64):
+                img.putpixel((x, y), (32, 32, 32, 255))
+            for x in range(64, 128):
+                img.putpixel((x, y), (76, 76, 76, 255))
+        out = rsp.classify_and_downscale(img, "california", "b", palette)
+        self.assertEqual(out.getpixel((7, 8)), OUTLINE + (255,))
+        self.assertEqual(out.getpixel((24, 8)), BLACK_BODY + (255,))
+
+    def test_dark_stroke_wins_a_coverage_tie_without_inventing_gray(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        img = Image.new("RGBA", (64, 32), (255, 255, 255, 255))
+        for y in range(32):
+            for x in range(0, 64, 2):
+                img.putpixel((x, y), (0, 0, 0, 255))
+        out = rsp.classify_and_downscale(img, "california", "w", palette)
+        self.assertEqual(set(pixels(out)), {OUTLINE + (255,)})
+
+    def test_fill_wins_a_small_coverage_advantage_without_a_false_byte_tie(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        img = Image.new("RGBA", (128, 64), (255, 255, 255, 254))
+        # Each 4x4 block has eight pixels of each class. White has one
+        # extra unit of alpha: coverage 127.0625 versus 127.0. Byte masks
+        # round both to 127 and incorrectly prefer the dark line.
+        for y in range(64):
+            for x in range(0, 128, 2):
+                img.putpixel((x, y), (0, 0, 0, 254))
+        for y in range(0, 64, 4):
+            for x in range(1, 128, 4):
+                img.putpixel((x, y), (255, 255, 255, 255))
+        out = rsp.classify_and_downscale(img, "california", "w", palette)
+        self.assertEqual(set(pixels(out)), {BODY + (255,)})
+
+    def test_white_shadows_and_black_light_details_have_separate_index(self) -> None:
+        self.assertEqual(rsp.source_index((128, 128, 128), "california", "w"), 7)
+        self.assertEqual(rsp.source_index((242, 242, 242), "california", "b"), 7)
+        self.assertEqual(rsp.source_index((255, 255, 255), "totoy", "w"), 4)
+
+    def test_alpha_threshold_is_exactly_half_coverage(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        img = Image.new("RGBA", (64, 32), (0, 0, 0, 0))
+        img.putpixel((0, 0), (0, 0, 0, 255))
+        img.putpixel((0, 1), (0, 0, 0, 255))
+        img.putpixel((2, 0), (0, 0, 0, 255))
+        out = rsp.classify_and_downscale(img, "california", "w", palette)
+        self.assertEqual(out.getpixel((0, 0)), OUTLINE + (255,))
+        self.assertEqual(out.getpixel((1, 0))[3], 0)
+
+    def test_classification_precedes_bbox_fit(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        img = Image.new("RGBA", (128, 128), (255, 255, 255, 255))
+        for x in range(0, 128, 2):
+            for y in range(128):
+                img.putpixel((x, y), (0, 0, 0, 255))
+        out = rsp.classify_and_downscale(img, "california", "w", palette, fit_size=128)
+        self.assertTrue({pixel[:3] for pixel in pixels(out) if pixel[3]}
+                        <= {BODY, OUTLINE})
+
+    def test_conversion_uses_set_override_instead_of_base(self) -> None:
+        palette = copy.deepcopy(rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE))
+        palette["piece_sets"][1]["entries"]["5"] = "#131D27"
+        img = Image.new("RGBA", (128, 64), (0, 0, 0, 255))
+        out = rsp.classify_and_downscale(img, "mpchess", "b", palette)
+        self.assertEqual(set(pixels(out)), {(19, 29, 39, 255)})
+        self.assertEqual(rsp.piece_palette(palette, "california")[5], OUTLINE)
+
+    def test_process_leaves_white_contour_unmodified(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        square = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+        for y in range(24, 104):
+            for x in range(32, 96):
+                rgb = (0, 0, 0) if x < 40 or x >= 88 or y < 32 or y >= 96 else (255, 255, 255)
+                square.putpixel((x, y), rgb + (255,))
+        expected = rsp.classify_and_downscale(square, "california", "w", palette, fit_size=128)
+        with unittest.mock.patch.object(rsp, "render_svg_square", return_value=(square, 128)):
+            result = rsp.process_piece(Path("unused"), Path("unused.svg"), "california", "w", palette, Path("."))
+        self.assertEqual(result.tobytes(), expected.tobytes())
+        self.assertIn(OUTLINE + (255,), set(pixels(result)))
+
+
+class PreviewTests(unittest.TestCase):
+    def test_actual_cell_geometry_both_theme_squares_and_flash(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        tile = Image.new("RGBA", (32, 16), BODY + (255,))
+        tiles = {"california": {side + kind: tile for side in rsp.SIDES for kind in rsp.PIECE_KINDS}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "preview.png"
+            rsp.build_preview(tiles, palette, path)
+            sheet = Image.open(path)
+            # First cell starts at x=118,y=6. The tile starts at +8,+8
+            # after vertical aspect correction, leaving real cell margins.
+            light = rsp.gsp._parse_rgb(palette["themes"][0]["entries"]["2"], "test")
+            dark = rsp.gsp._parse_rgb(palette["themes"][0]["entries"]["3"], "test")
+            self.assertEqual(sheet.getpixel((118, 6)), light)
+            self.assertEqual(sheet.getpixel((126, 14)), BODY)
+            self.assertEqual(sheet.getpixel((158, 14)), light)
+            self.assertEqual(sheet.getpixel((118, 60)), dark)
+            self.assertEqual(sheet.height, 11 * 54 + 6)
+            flash = next(e["rgb"] for e in palette["base"] if e["index"] == 8)
+            self.assertEqual(sheet.getpixel((118, 546)), rsp.gsp._parse_rgb(flash, "test"))
+            zoom = Image.open(path.with_name("preview_zoom.png"))
+            self.assertEqual(zoom.getpixel((118 + 8 * 4, 6 + 8 * 4)), BODY)
 
 
 class QuantizeTargetsTests(unittest.TestCase):

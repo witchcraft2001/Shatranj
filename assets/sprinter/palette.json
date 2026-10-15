@@ -7,9 +7,9 @@
         {"index": 2,  "name": "square_light",  "rgb": "#F0D9B5", "desc": "Light board square. Theme surface."},
         {"index": 3,  "name": "square_dark",   "rgb": "#B58863", "desc": "Dark board square. Theme surface."},
         {"index": 4,  "name": "white_body",    "rgb": "#F8F8F0", "desc": "White piece body."},
-        {"index": 5,  "name": "white_outline", "rgb": "#3A3A3A", "desc": "White piece outline."},
-        {"index": 6,  "name": "black_body",    "rgb": "#2E2E2E", "desc": "Black piece body."},
-        {"index": 7,  "name": "black_outline", "rgb": "#D8D8D0", "desc": "Black piece outline."},
+        {"index": 5,  "name": "piece_dark",    "rgb": "#202020", "desc": "Dark piece lines and outlines."},
+        {"index": 6,  "name": "black_body",    "rgb": "#4C4C4C", "desc": "Charcoal fill of California and Totoy black pieces."},
+        {"index": 7,  "name": "piece_light",   "rgb": "#C8C8C0", "desc": "Light piece details and black-piece outer edge."},
         {"index": 8,  "name": "hud_select",    "rgb": "#FFD24A", "desc": "Selected square highlight."},
         {"index": 9,  "name": "hud_hint",      "rgb": "#39C15A", "desc": "Legal-move hint marker."},
         {"index": 10, "name": "hud_lastmove",  "rgb": "#4A90D9", "desc": "Last-move marker."},
@@ -32,8 +32,8 @@
     ],
     "_piece_sets_comment": "One palette per piece set: the four entries 4-7 are re-written when the player picks a set, exactly as a theme re-writes 2/3 (port.md section 3.5). Names and order must match assets/lichess/selected_next_sets.json's \"selected\" list -- tools/build_sprinter_piece_tiles.py validates each set's PNGs against ITS OWN four colours. Set 0 must equal the base palette (it is what boots). The four colours of a set must not collide with each other or with any other colour that can be on screen at the same time (0, 1, 8-15 and every theme's square colours): the packers invert the palette into an {rgb: index} map, so a shared value makes an index unreachable -- and on screen it would mean a piece the colour of the board or of a marker.",
     "piece_sets": [
-        {"name": "california", "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}},
-        {"name": "mpchess",    "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}},
-        {"name": "totoy",      "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}}
+        {"name": "california", "entries": {"4": "#F8F8F0", "5": "#202020", "6": "#4C4C4C", "7": "#C8C8C0"}},
+        {"name": "mpchess",    "entries": {"4": "#F8F8F0", "5": "#202020", "6": "#4C4C4C", "7": "#C8C8C0"}},
+        {"name": "totoy",      "entries": {"4": "#F8F8F0", "5": "#202020", "6": "#4C4C4C", "7": "#C8C8C0"}}
     ]
 }

@@ -61,9 +61,9 @@
 | Роль | Значение сейчас |
 | --- | --- |
 | Тело белой фигуры | `#F8F8F0` |
-| Контур белой фигуры | `#3A3A3A` |
-| Тело чёрной фигуры | `#2E2E2E` |
-| Контур чёрной фигуры | `#D8D8D0` |
+| Контур белой фигуры | `#202020` |
+| Тело чёрной фигуры | `#4C4C4C` |
+| Контур чёрной фигуры | `#C8C8C0` |
 
 Это единственные четыре цвета, чьи значения вы назначаете сами, — **и у
 каждого набора они свои**.
@@ -74,13 +74,15 @@
 ```json
 "piece_sets": [
   {"name": "california",
-   "entries": {"4": "#F8F8F0", "5": "#3A3A3A", "6": "#2E2E2E", "7": "#D8D8D0"}},
+   "entries": {"4": "#F8F8F0", "5": "#202020", "6": "#4C4C4C", "7": "#C8C8C0"}},
   ...
 ]
 ```
 
-Здесь `4` — тело белой фигуры, `5` — её контур, `6` — тело чёрной, `7` —
-её контур. 
+Index `4` is white fill, `5` is dark strokes for either side, `6` is
+charcoal fill for black California/Totoy pieces, and `7` is light detail,
+white shading, and the outer rim of black pieces. MPChess black silhouettes
+use index `5`.
 
 Цвет набора не должен совпадать ни с другим цветом этого же набора, ни с любым цветом из таблицы ниже, ни с цветом клетки любой темы   (раздел 5). Совпадение означало бы фигуру цветом доски или маркера, и   сборка такое не пропускает.
 
@@ -238,3 +240,36 @@
   напрямую (512×256, не больше 14 цветов), а оригинал — только справка,
   если нужно разглядеть деталь без артефактов сжатия. 
 
+
+
+## Piece conversion review, 2026-10-11
+
+The importer classifies source colours before the bbox fit and downsamples
+separate float coverage masks. Black rims cover exterior diagonal corners;
+internal holes, one- and two-pixel cuts, and separate silhouette parts are
+preserved. White source contours receive no extra rim. Index 6 was reduced
+from `#787878` to `#4C4C4C` after visual feedback that the black pieces were
+too light. All set palettes and the California base palette agree.
+
+All 36 PNGs were compared with their SVGs and both earlier raster versions.
+The king crosses, queen and rook crowns, bishop cuts, knight profiles, and
+pawn heads/necks were reviewed on both squares of all five themes and the
+flash yellow. Preview geometry is an unscaled 32x16 tile centred at (8,4)
+in a 48x24 square, then stretched vertically by 2; a separate 4x zoom uses
+nearest-neighbour sampling.
+
+The final PNGs include these manual edits (zero-based stored coordinates):
+
+- California black pieces: mute the original gray highlight regions to the
+  permitted shared gray, index 13 `#707070`. The exterior rim remains index 7
+  `#C8C8C0`; fill stays index 6 `#4C4C4C`. This keeps source shading without
+  making the black pieces look white.
+- California `wQ`/`bQ`: restore the small centre of the upper right crown
+  bead at (19,2), using the respective fill colour.
+- MPChess `wR`/`bR`: restore the shallow crenellations at x=11,12,19,20,
+  y=2; define their lower edge at y=3. The black rim above the cuts at y=1
+  is cleared so the notches remain open.
+
+These PNGs are independent source assets. Regenerating the SVG import will
+lose the manual edits: always render into a separate `--pieces-out`, compare,
+and merge deliberately. Normal builds consume the committed PNGs only.
