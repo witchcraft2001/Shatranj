@@ -78,6 +78,11 @@ static void test_port_value_range(void)
     check_port("65536", 0, 0u);
     check_port("", 0, 0u);
     check_port("123456", 0, 0u);
+    check_port("1a", 0, 0u);
+    check_port(" 80", 0, 0u);
+    check_port("+80", 0, 0u);
+    check_port("80/", 0, 0u);
+    check_port("1", 1, 1u);
 }
 
 static void test_edit_field_append_bs_cap_filter(void)

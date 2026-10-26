@@ -1183,6 +1183,7 @@ sprinter-tools-test: tests/tools/test_sprinter_exe.py tools/make_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_exe.py
 	$(PYTHON) tests/tools/test_sprinter_assets_page.py
 	$(PYTHON) tests/tools/test_sprinter_overlay_page.py
+	$(PYTHON) tests/tools/test_sprinter_host_overlay.py
 	$(PYTHON) tests/tools/test_sprinter_cold_page.py
 	$(PYTHON) tests/tools/test_rasterize_sprinter_pieces.py
 	$(PYTHON) tests/tools/test_sprinter_piece_tiles.py
@@ -1887,24 +1888,25 @@ sprinter-overlay-fileui-check: $(SPRINTER_OVL_FILEUI_BIN)
 # archives (CONTROL's own comment on SPRINTER_OVL_LIBDIRS explains why).
 SPRINTER_OVL_NET_ENTRY_ASM := $(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.asm
 
-$(SPRINTER_OVL_NET_BIN): $(SPRINTER_OVL_NET_ENTRY_ASM) src/sprinter/net_ui_sprinter.c \
+$(SPRINTER_OVL_NET_BIN): Makefile $(SPRINTER_OVL_NET_ENTRY_ASM) asm/sprinter/zcc/direct_host.asm src/sprinter/net_ui_sprinter.c \
                          src/sprinter/net_mqtt_ui_sprinter.c \
                          src/sprinter/net_ui_fields.c $(SPRINTER_C_HEADERS) \
                          $(SPRINTER_OVERLAY_DEFS_ASM) $(SPRINTER_PLATFORM_DEFS_ASM) \
                          $(SPRINTER_LAYOUT_H) $(SPRINTER_LAYOUT_JSON) $(SPRINTER_OVERLAY_PAGE_TOOL) \
                          | $(SPRINTER_BUILD_DIR)
-	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_ui_sprinter.c \
+	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -DNETCHESSZX_PORT=$(PORT) -c src/sprinter/net_ui_sprinter.c \
 		-o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_mqtt_ui_sprinter.c \
 		-o $(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o
 	$(ZCC) +pps $(SPRINTER_OVL_CFLAGS) -c src/sprinter/net_ui_fields.c \
 		-o $(SPRINTER_BUILD_DIR)/net_ui_fields.o
+	$(Z80ASM) asm/sprinter/zcc/direct_host.asm
 	$(Z80ASM) $(SPRINTER_OVL_NET_ENTRY_ASM)
 	$(Z80ASM) $(SPRINTER_OVERLAY_DEFS_ASM)
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
-	$(Z80ASM) -b -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org NET) \
+	$(Z80ASM) -b -m -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org NET) \
 		-o=$(SPRINTER_OVL_NET_BIN) $(SPRINTER_OVL_LIBDIRS) -lpps_clib -lz80_crt0 \
-		$(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o \
+		$(SPRINTER_ASM_DIR)/zcc/entry_net_sprinter.o $(SPRINTER_ASM_DIR)/zcc/direct_host.o $(SPRINTER_BUILD_DIR)/net_ui_sprinter.o \
 		$(SPRINTER_BUILD_DIR)/net_mqtt_ui_sprinter.o $(SPRINTER_BUILD_DIR)/net_ui_fields.o \
 		$(SPRINTER_GENERATED_DIR)/overlay_defs_sprinter.o \
 		$(SPRINTER_GENERATED_DIR)/platform_defs.o
@@ -1912,6 +1914,7 @@ $(SPRINTER_OVL_NET_BIN): $(SPRINTER_OVL_NET_ENTRY_ASM) src/sprinter/net_ui_sprin
 		$(SPRINTER_GENERATED_DIR)/platform_defs.o
 
 sprinter-overlay-net-check: $(SPRINTER_OVL_NET_BIN)
+	$(PYTHON) tools/check_sprinter_host_overlay.py --map $(SPRINTER_BUILD_DIR)/overlay_net_sprinter.map --bin $(SPRINTER_OVL_NET_BIN)
 
 # INPUT_EDIT (SPECTRUM_OVL_INPUT_EDIT=9u, S9 chat pass): the line editor and
 # the chat log both live here (src/sprinter/chat_sprinter.c's own header
@@ -2066,7 +2069,7 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
                    $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC) \
                    $(SPRINTER_NET_FRAME_C_BIN) $(SPRINTER_RESIDENT_BIN) \
-                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_ABOUT_BIN)
+                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_ABOUT_BIN) $(SPRINTER_OVL_NET_BIN)
 	tools/run_sprinter_z80_tests.sh
 
 # net_frame.c (S7 step 2) builds and behaves identically under gcc: no
@@ -2111,8 +2114,21 @@ $(SPRINTER_CHAT_KEY_HOST_TEST): $(SPRINTER_CHAT_KEY_HOST_TEST_SRC) \
                                  src/sprinter/chat_sprinter.h | $(SPRINTER_BUILD_DIR)
 	$(CC) $(CFLAGS) $(SPRINTER_CHAT_KEY_HOST_TEST_SRC) -o $@
 
-sprinter-host-test: $(SPRINTER_NET_FRAME_HOST_TEST) $(SPRINTER_NET_UI_FIELDS_HOST_TEST) \
+SPRINTER_DIRECT_HOST_TEST := $(SPRINTER_BUILD_DIR)/direct_host_test
+SPRINTER_DIRECT_HOST_TEST_SRC := tests/sprinter/host/test_direct_host.c \
+    src/sprinter/net_ui_fields.c src/sprinter/transport/net_frame.c \
+    src/spectrum/config/session.c src/spectrum/session/direct.c src/spectrum/session/ping.c \
+    src/spectrum/platform/text.c src/common/protocol/direct_session_protocol.c \
+    src/common/protocol/game_protocol.c tests/session/direct_reference_runner.c \
+    $(filter-out tests/session/test_direct_session_core.c,$(SESSION_DIRECT_CORE_TEST_SRC))
+$(SPRINTER_DIRECT_HOST_TEST): $(SPRINTER_DIRECT_HOST_TEST_SRC) tests/session/direct_parity.h src/sprinter/net_ui_sprinter.c src/sprinter/direct_host.h $(SPRINTER_LAYOUT_H)
+	$(CC) $(CFLAGS) -Wno-pointer-to-int-cast -D__z88dk_fastcall= \
+	    -DNETCHESSZX_SPRINTER -DSPRINTER_HOST_TEST -I$(SPRINTER_GENERATED_DIR) \
+	    $(sort $(SPRINTER_DIRECT_HOST_TEST_SRC)) -o $@
+
+sprinter-host-test: $(SPRINTER_DIRECT_HOST_TEST) $(SPRINTER_NET_FRAME_HOST_TEST) $(SPRINTER_NET_UI_FIELDS_HOST_TEST) \
                     $(SPRINTER_CHAT_KEY_HOST_TEST)
+	./$(SPRINTER_DIRECT_HOST_TEST)
 	./$(SPRINTER_NET_FRAME_HOST_TEST)
 	./$(SPRINTER_NET_UI_FIELDS_HOST_TEST)
 	./$(SPRINTER_CHAT_KEY_HOST_TEST)
@@ -2135,6 +2151,8 @@ sprinter-size-report: exe tools/gen_sprinter_size_report.py $(SPRINTER_RESIDENT_
 		--ovl-rules-bin $(SPRINTER_OVL_RULES_BIN) \
 		--ovl-board-bin $(SPRINTER_OVL_BOARD_BIN) \
 		--ovl-input-edit-bin $(SPRINTER_OVL_INPUT_EDIT_BIN) \
+		--ovl-net-bin $(SPRINTER_OVL_NET_BIN) \
+		--ovl-about-bin $(SPRINTER_OVL_ABOUT_BIN) \
 		--ovl-win3-page $(SPRINTER_OVL_WIN3_PAGE) \
 		--c-image-base $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol C_IMAGE_ENTRY_ADDR) \
 		--win1-end $$($(PYTHON) tools/gen_sprinter_layout.py --layout $(SPRINTER_LAYOUT_JSON) --print-symbol WIN1_END) \
@@ -2205,3 +2223,15 @@ ifneq ($(CLIENT_HOST_IS_WINDOWS),)
 else
 	rm -rf $(SPRINTER_BUILD_DIR) $(SPRINTER_RELEASE_DIR)
 endif
+
+.PHONY: sprinter-direct-peer
+# Optional live TCP peer for Sprinter MAME acceptance; no desktop target changes.
+sprinter-direct-peer:
+	$(CMAKE) -S client -B "$(CLIENT_CMAKE_BUILD_DIR)" -DCMAKE_BUILD_TYPE="$(CLIENT_CMAKE_CONFIG)" $(CLIENT_CMAKE_ARGS)
+	$(CMAKE) --build "$(CLIENT_CMAKE_BUILD_DIR)" --target shatranj-common --config "$(CLIENT_CMAKE_CONFIG)"
+	$(MAKE) $(SPRINTER_BUILD_DIR)/qt_direct_peer
+$(SPRINTER_BUILD_DIR)/qt_direct_peer: tests/sprinter/host/qt_direct_peer.cpp src/pc/client/direct_session_adapter.cpp $(CLIENT_CMAKE_BUILD_DIR)/libshatranj-common.a | $(SPRINTER_BUILD_DIR)
+	$(CXX) -std=c++17 -Isrc $$(pkg-config --cflags Qt6Core Qt6Network) \
+	    tests/sprinter/host/qt_direct_peer.cpp src/pc/client/direct_session_adapter.cpp \
+	    $(CLIENT_CMAKE_BUILD_DIR)/libshatranj-common.a \
+	    $$(pkg-config --libs Qt6Core Qt6Network) -o $@

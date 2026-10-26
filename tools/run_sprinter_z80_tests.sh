@@ -101,6 +101,12 @@ if [[ -f "$repo_root/build/sprinter/platform_primitives.sym" ]]; then
     --out "$generated_dir/platform_test_defs.inc" >/dev/null
 fi
 
+python3 "$repo_root/tools/check_sprinter_host_overlay.py" \
+  --map "$repo_root/build/sprinter/overlay_net_sprinter.map" \
+  --bin "$repo_root/build/sprinter/overlay_net_sprinter.bin" \
+  --cold-map "$repo_root/build/sprinter/cold_page_image.map" \
+  --defs "$generated_dir/host_test_defs.inc"
+
 byte_at() { dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }
 
 fail=0

@@ -244,6 +244,7 @@ class ColdPageSourceAgreementTest(unittest.TestCase):
         "handle_menu_action",
         "net_control_key",
         "net_drop",
+        "net_session_begin",
         "net_op_busy",
         "net_chat_blocked",
         "net_poll_once",

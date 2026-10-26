@@ -89,6 +89,8 @@ ng_c_env_get:
         ld      b,0
         call    ng_copy_asciiz
         ld      a,1
+        jr      nc,.store
+        inc     a
 .store:
         ld      (ng_c_env_found),a
         ret
@@ -103,7 +105,13 @@ ng_shutdown:
         ; dispatch a network operation into that unvalidated DLL.
         and     UNETLD_F_NETINIT
         jr      z,.unload
-        xor     a                       ; channel 0
+        ld      a,(UNETLD.CAPS)
+        and     UNET_CAP_LISTEN
+        jr      z,.close
+        xor     a
+        ld      b,UNET_FN_UNLISTEN
+        call    ng_call
+.close: xor     a                       ; channel 0
         ld      b,UNET_FN_CLOSE
         call    ng_call
 .unload:
@@ -113,14 +121,6 @@ ng_shutdown:
         xor     a
         ld      (ng_up_reason),a
         ret
-
-
-ng_getinfo_ip:
-        ld      a,UNET_IF_IP
-        ld      de,ng_buf_ip
-        ld      ix,NG_IP_CAPACITY
-        ld      b,UNET_FN_GETINFO
-        jp      ng_call
 
 
 ng_env_try:

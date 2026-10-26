@@ -71,10 +71,13 @@ this_packing pins the two together):
     #EA00  FILEUI    (SPECTRUM_OVL_FILEUI=13u)     5120 bytes
     #FE00  reserved                                 512 bytes
 
+Direct HOST moves handshake/setup into NET and reallocates page 2 without
+changing page count, WIN2 buffers, or the stack.
+
 Slot layout, page 2:
-    #C000  NET         (SPECTRUM_OVL_NET_CONNECT=3u)  10240 bytes
-    #E800  INPUT_EDIT  (SPECTRUM_OVL_INPUT_EDIT=9u)   4096 bytes
-    #F800  ABOUT       (SPECTRUM_OVL_ABOUT=12u)       2048 bytes
+    #C000  NET         (SPECTRUM_OVL_NET_CONNECT=3u)  12288 bytes
+    #F000  INPUT_EDIT  (SPECTRUM_OVL_INPUT_EDIT=9u)   3072 bytes
+    #FC00  ABOUT       (SPECTRUM_OVL_ABOUT=12u)       1024 bytes
 
 S9 About pass takes the first half of what was left of RESERVE2. ABOUT is
 small for what it draws because it draws almost nothing itself: the picture
@@ -120,9 +123,9 @@ LAYOUT = [
 ]
 
 LAYOUT2 = [
-    ("NET", 10240),
-    ("INPUT_EDIT", 4096),
-    ("ABOUT", 2048),
+    ("NET", 12288),
+    ("INPUT_EDIT", 3072),
+    ("ABOUT", 1024),
 ]
 
 # Page number -> that page's LAYOUT. Order of this dict is not significant;

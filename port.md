@@ -25,8 +25,8 @@
 
 | Входит | Не входит (v1) |
 | --- | --- |
-| MQTT-клиент (host и join роли — в MQTT «host» не слушает сокет) | DIRECT host (listen/accept): в uNet его нет (`UNET_CAP_LISTEN` объявлен, но ни один бэкенд не реализует). Опция скрывается в setup; архитектура оставляет точку расширения |
-| DIRECT join (исходящий TCP) | SRAM CACHE и «полный контроль памяти» по образцу spevosdk — отвергнуты (см. решение в конце §2) |
+| MQTT-клиент (host и join роли — в MQTT «host» не слушает сокет) | — (DIRECT HOST is implemented; see docs/sprinter-testnotes/S7.md#direct-host-acceptance) |
+| DIRECT HOST / JOIN (incoming and outgoing TCP) | SRAM CACHE и «полный контроль памяти» по образцу spevosdk — отвергнуты (см. решение в конце §2) |
 | Поле 384×192, клетка 48×24, фигура 32×16 (апгрейд до 40×20 — этап S12) | |
 | Клавиатура + курсорные клавиши | Мышь — опциональный этап S11 |
 | About в 320×256×8bpp | AY-музыка — опциональный этап S13 |
@@ -451,8 +451,9 @@ Next).
 CONNECT(5) SEND(6) RECV(7) CLOSE(8) STATUS(9) UDPOPEN(10) RESOLVE(11)
 PING(12) RXPAUSE(13) RXRESUME(14) GETINFO(15) LASTERR(16) SETOPT(17).
 `RECV(IY=timeout_ms)`: `IY=0` — поллинг; `A=0,DE=0` — «пока пусто»;
-`NERR_CLOSED` приходит только после выдачи хвоста данных. listen/accept
-нет. Библиотека нереентерабельна; ≥256 Б свободного стека.
+`NERR_CLOSED` follows buffered data. LISTEN(18)/UNLISTEN(19) require
+CAP_LISTEN; RECV progresses accept and STATUS returns CONN|ACCEPT.
+The library is not reentrant and requires at least 256 bytes of free stack.
 
 **Дисциплина окон:** DLL грузится `l_load(A=1)` → **WIN1**; во время
 `l_call` WIN1 занят DLL → вызовы только из WIN2 (шлюз `net_gate`),
@@ -509,7 +510,7 @@ SEND'ы (до 4 с ожидания кумулятивного ACK) молоти
 | --- | --- |
 | `spectrum_net_start_uart` | load DLL → l_info/GETCAPS → `NETINIT` (экран preflight с прогрессом; отмена клавишей никогда не была реализована, CANCELKEYS не включается, см. выше) |
 | `spectrum_net_connect_host` | `CONNECT`(chan 0, host, port ASCIIZ из staging) |
-| `spectrum_net_listen`/`wait_pc_connect`/`preflight_run`/`connect_host`/`last_ip`/`sync_time` | **не реализованы вовсе** (S9 MQTT-lag pass, 2026-08-19, ~60 Б клапан бюджета WIN1): их `spectrum_link_*`-алиасы вызывает только `app.c`, который в сборку Sprinter не линкуется — сам порт зовёт `ng_up`/`ng_c_connect_at`/`net_preflight_ovl` напрямую из `net_ui_sprinter.c`/`net_mqtt_ui_sprinter.c`; uNet всё равно не умеет слушать/принимать, поэтому DIRECT на Sprinter — только исходящий набор; экран NETWORK (не SETUP) с S9 фиксирует ROLE=JOIN и не даёт выбрать HOST под DIRECT (`net_ui_try_connect`, `net_ui_sprinter.c`) |
+| `spectrum_net_listen`/`wait_pc_connect`/`preflight_run`/`connect_host`/`last_ip`/`sync_time` | **не реализованы вовсе** (S9 MQTT-lag pass, 2026-08-19, ~60 Б клапан бюджета WIN1): их `spectrum_link_*`-алиасы вызывает только `app.c`, который в сборку Sprinter не линкуется — сам порт зовёт `ng_up`/`ng_c_connect_at`/`net_preflight_ovl` напрямую из `net_ui_sprinter.c`/`net_mqtt_ui_sprinter.c`; DIRECT HOST now uses LISTEN/STATUS/UNLISTEN in the NET overlay |
 | `spectrum_net_read_payload` | `RECV` chan 0; пустое чтение = **один** `frame_wait()` здесь + один в `main.c` = 2 тика по 20 мс, как на ZX (было 3 тика/60 мс до S9 MQTT-lag pass — DIRECT неумышленно шёл в 1.5x медленнее спеки) |
 | `spectrum_net_send_text/send_ping` | `SEND` chan 0 через единую лестницу `net_send_raw` (унифицирована с MQTT-веткой в S9); дренаж перед каждой попыткой (`NERR_BUSY` ⇒ дренаж и повтор, до 50 попыток). `NERR_SEND` тоже повторяется (до 3 раз, S9 MQTT-lag round 2): RTL сворачивает и мгновенную full-duplex гонку `F_BAD_SEG` (данные пира пересеклись с нашим SEND), и реальный таймаут `F_TIMEOUT` в один код, откатывая при этом TCP-seq — поэтому дренированный повтор безопасен и дедуплицируется пиром; `NERR_CLOSED`/`NERR_HW` остаются фатальными сразу |
 | `spectrum_net_background_drain` | `RECV IY=0` |
@@ -3709,17 +3710,9 @@ ZX/Next/Qt побайтно не изменились. **В MAME/на живом
   `ng_c_connect_at()` (тот же путь, что уже использует редактируемый
   BROKER у MQTT) вместо `ng_c_connect()`, который сам резолвил
   NETHOST/NETPORT.
-  **ROLE `< HOST >` под DIRECT была мёртвой комбинацией** — uNet не умеет
-  слушать/принимать (`spectrum_net_listen`/`wait_pc_connect` — заглушки
-  без вызывателей), поэтому Sprinter в DIRECT всегда набирает исходящий
-  TCP, а слушающая сторона (Qt Host, ZX CREATE) всегда является
-  сессионным HOST. Строка ROLE под DIRECT теперь зафиксирована — не
-  всплывающая ошибка, а постоянная, невыбираемая подпись `ROLE: JOIN
-  (DIRECT: DIAL-OUT ONLY)` (серым, без фокуса), и `net_ui_focus_
-  normalize()` пропускает эту позицию при навигации UP/DOWN, так что
-  выбрать HOST под DIRECT физически невозможно — тот же приём, каким
-  ZX/Next-экран SETUP делает IP-строку read-only под HOST+DIRECT
-  (`check_overlay_entry_abi.py`'s `check_setup_editability()`).
+  **Direct HOST update:** ROLE now switches between HOST/JOIN. HOST shows
+  COLOR instead of an address, accepts guests through CAP_LISTEN and returns
+  to listening after disconnect. Current UI behavior and acceptance: docs/sprinter-testnotes/S7.md#direct-host-acceptance.
   IPv4/порт проверяются по ENTER (`BAD IP`/`BAD PORT`, тот же рисунок,
   что и `BAD PORT` у MQTT) — `net_ui_ipv4_ok()` порт `su_validate_ip`
   (`entry_setup.asm`), `net_ui_port_value()` теперь отвергает `0`, как и

@@ -2,21 +2,10 @@
  * link.h contract over uNet (S7, port.md section 3.7; MQTT half added S8
  * step 8c). Mechanics (libman/net_gate.asm/the DLL call convention) are
  * already proven by the S3 echo stand; this file is only the contract
- * adapter. DIRECT's role is hardcoded to JOIN, permanently -- not a
- * placeholder pending a future port: uNet has no listen/accept at all, so
- * this file does not implement link.h's spectrum_net_listen/spectrum_net_
- * wait_pc_connect/spectrum_net_preflight_run/spectrum_net_connect_host/
- * spectrum_net_last_ip/spectrum_net_sync_time at all (their only callers,
- * via the spectrum_link_* macros, are in app.c, not linked into this port --
- * see the comment above spectrum_net_direct_peer_mark_valid below). Sprinter
- * can only ever dial out, and the listening side of any DIRECT session (Qt
- * Host, ZX CREATE) is always the session HOST (the NET screen's own
- * net_ui_try_connect() pins the role
- * for exactly this reason). Its host/port used to always resolve from the
- * NETHOST/NETPORT env vars; since S9's NETWORK SETUP pass those are only
- * the seed for an editable pair of fields on the NET screen
- * (src/sprinter/net_ui_sprinter.c) -- MQTT's broker/room are chosen the
- * same screen, role too, added S8 step 8e.
+ * adapter. DIRECT HOST uses the NET overlay's CAP_LISTEN-gated listener;
+ * JOIN uses CONNECT. NETHOST/NETPORT seed editable fields in that screen.
+ * Framing is initialized before either open operation so data received
+ * during accept survives the transition back to the application loop.
  *
  * Every call into net_gate.asm crosses into WIN2-resident code/state that
  * survives a blocking libman l_call with WIN1 mapped to the DLL (R5); this
@@ -610,10 +599,8 @@ void spectrum_net_start_uart(void)
  * linked into the Sprinter build -- this port's own main.c/session_
  * sprinter.c/net_ui_sprinter.c/net_mqtt_ui_sprinter.c call ng_up()/
  * ng_c_connect_at()/net_preflight_ovl() directly instead (net_gate.asm
- * stays the funnel; t_net_core exercises it there). Host role itself is
- * still out of reach on this port regardless -- uNet has no listen/accept
- * at all (port.md section 3.7) -- so spectrum_net_listen/wait_pc_connect
- * would have stayed 0u-returning stubs even implemented. */
+ * stays the funnel; t_net_core exercises it there). HOST's LISTEN/STATUS/
+ * UNLISTEN wrappers live in NET, where WIN1 DLL mapping cannot displace them. */
 
 void spectrum_net_direct_peer_mark_valid(void)
 {

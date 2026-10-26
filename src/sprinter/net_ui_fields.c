@@ -52,6 +52,9 @@ uint8_t net_ui_port_value(const char *field, uint16_t *out)
         return 0u;
     }
     for (i = 0u; i < len; ++i) {
+        if (field[i] < '0' || field[i] > '9') {
+            return 0u;
+        }
         value = value * 10u + (uint8_t)(field[i] - '0');
     }
     if (value > 65535u || value == 0u) {

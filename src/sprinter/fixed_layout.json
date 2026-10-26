@@ -190,9 +190,16 @@
             "desc": "S9 follow-up (2026-08-16): text_print's staged-string buffer, TEXT_STAGE_MAX+1 bytes, carved out of the front of LOWRAM_NET_SPARE. It is plain scratch -- written by the pre-scan, read by the render loop, dead between calls -- and it sat in the WIN2 *code* gap, which is the one pool in this port with no room left: the keyboard-loss fix needed 50 bytes there for gfx_core.asm's irq_yield_vram, text_print's own WIN0 yield and im2_s1.asm's key_poll latch guard, and only 24 were free. Same move net_gate.asm's ng_buf_* made into LOWRAM_NET_GATE at S8 step 1, for the same reason and with the same effect: buffers belong in the low-RAM map, code in the code gap. text640.asm now INCLUDEs fixed_layout.inc directly (buffers.asm's own precedent) so it does not depend on whatever included it having pulled the anchors in first."
         },
         {
-            "name": "LOWRAM_NET_SPARE",
+            "name": "LOWRAM_DIRECT_HOST",
             "addr": "0xB8C7",
-            "size": "0x39",
+            "size": "0x10",
+            "owner": "src/sprinter/direct_host.h",
+            "desc": "Stable hosting lifecycle and session handshake state shared by NET and cold pages."
+        },
+        {
+            "name": "LOWRAM_NET_SPARE",
+            "addr": "0xB8D7",
+            "size": "0x29",
             "owner": "unassigned (S8 step 6 will take restore_b64_pending here)",
             "desc": "S8 step 1: remainder of the old LOWRAM_NET span after LOWRAM_NET_GATE/LOWRAM_MQTT_STREAM/LOWRAM_MQTT_PACKET are carved out; S9 follow-up gave its first 0x41 bytes to LOWRAM_TEXT_STAGE. End is flush with CANARY's start (0xB900), no gap -- same invariant the old single LOWRAM_NET region held."
         },

@@ -34,8 +34,8 @@ What it reports:
   just CONTROL) and the two 16 KiB WIN3-mapped pages (mode 1, plan D7-bis):
   page 1 is RULES/BOARD/SAVELOAD/RESTORE/FILEUI (variable-size slots, not a
   uniform 4 KiB one -- `tools/make_sprinter_overlay_page.py`'s own `LAYOUT`),
-  page 2 is NET (10 KiB, grown from 8 KiB in the S9 NETWORK SETUP pass) +
-  INPUT_EDIT (4 KiB, S9 chat pass) + ABOUT (2 KiB, S9 About pass), with no
+  page 2 is NET (12 KiB, including Direct HOST) +
+  INPUT_EDIT (3 KiB) + ABOUT (1 KiB), with no
   reserve left (`LAYOUT2`). GUI_LOG has no WIN3 slot on this port at all --
   its Sprinter-native replacement (`src/sprinter/gui_log_sprinter.c`) is
   WIN1-resident, not an overlay.

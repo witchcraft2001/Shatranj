@@ -245,6 +245,16 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
     if args.ovl_control_bin and args.ovl_control_bin.exists():
         overlay_slot["control"] = args.ovl_control_bin.stat().st_size
 
+    from make_sprinter_overlay_page import LAYOUT2
+    page2_bins = {"NET": args.ovl_net_bin, "INPUT_EDIT": args.ovl_input_edit_bin,
+                  "ABOUT": args.ovl_about_bin}
+    overlay_page2 = []
+    for name, budget in LAYOUT2:
+        blob = page2_bins.get(name)
+        used = blob.stat().st_size if blob and blob.exists() else None
+        overlay_page2.append({"name": name, "budget": budget, "used": used,
+                              "free": budget - used if used is not None else None})
+
     report: dict[str, object] = {
         "c_image": {
             "resident_c_bin_bytes": resident_c_bytes,
@@ -270,6 +280,7 @@ def build_report(args: argparse.Namespace) -> dict[str, object]:
             "budget_bytes": args.ovl_slot_size,
             **overlay_slot,
         },
+        "ovl_win3_page2": overlay_page2,
         "ovl_win3_page": {
             "budget_bytes": args.win3_page_size,
             "slot_size": args.win3_slot_size,
@@ -333,9 +344,14 @@ def render_markdown(report: dict[str, object]) -> str:
                  f"CONTROL = {slot.get('control', 'n/a')} bytes")
     page = report["ovl_win3_page"]
     lines.append(f"- WIN3 overlay page (mode 1, map): budget {page['budget_bytes']} bytes, "
-                 f"{page['slot_size']} bytes/slot; "
+                 "variable slots; "
                  f"RULES = {page.get('rules', 'n/a')}, BOARD = {page.get('board', 'n/a')}, "
-                 f"GUI_LOG = {page.get('gui_log', 'n/a')}, INPUT_EDIT = {page.get('input_edit', 'n/a')}")
+                 "see LAYOUT in make_sprinter_overlay_page.py for all page-1 slots")
+    lines.extend(["", "| WIN3 page 2 | Used | Budget | Free |",
+                  "| --- | ---: | ---: | ---: |"])
+    for row in report["ovl_win3_page2"]:
+        lines.append(f"| {row['name']} | {row['used']} | {row['budget']} | {row['free']} |")
+    lines.append("")
     if "platform_primitives_bytes" in report:
         lines.append(f"- platform_primitives.bin: {report['platform_primitives_bytes']} bytes (fixed span)")
     if "resident_bytes" in report:
@@ -354,6 +370,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ovl-rules-bin", type=Path)
     parser.add_argument("--ovl-board-bin", type=Path)
     parser.add_argument("--ovl-input-edit-bin", type=Path)
+    parser.add_argument("--ovl-net-bin", type=Path)
+    parser.add_argument("--ovl-about-bin", type=Path)
     parser.add_argument("--ovl-win3-page", type=Path)
     parser.add_argument("--c-image-base", type=lambda v: int(v, 0))
     parser.add_argument("--win1-end", type=lambda v: int(v, 0))

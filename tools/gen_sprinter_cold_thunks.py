@@ -238,6 +238,7 @@ COLD_THUNK_SYMBOLS = [
     # needed). Appended per this list's own ordering rule.
     "spectrum_gui_prepare_move",
     "spectrum_gui_apply_move",
+    "net_session_begin",
 ]
 
 GENERATED_BANNER = (

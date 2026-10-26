@@ -1,63 +1,4 @@
-/*
- * NETWORK screen (S7 step 5's DIRECT-only join panel; S8 step 8e turns it
- * into the transport/role switcher + broker/port/room editor the plan
- * calls for; S9's NETWORK SETUP pass, 2026-08-18, makes DIRECT's HOST/PORT
- * rows editable the same way, instead of a read-only NETHOST/NETPORT
- * readout -- see net_ui_try_connect()'s own comment for why ROLE is fixed
- * to JOIN under DIRECT regardless). Lives on the NET overlay's own WIN3
- * page (S8 step 8b -- see that step's own header for why it moved off the
- * WIN3 cold page).
- *
- * It IS the Sprinter implementation of ZX/Next's NET_CONNECT overlay id
- * (src/spectrum/overlay/overlay.h, SPECTRUM_OVL_NET_CONNECT=3) -- entry
- * SPECTRUM_OVL_NET_CONNECT_SCREEN, a Sprinter-only addition to that id's
- * entry set (ZX/Next have no screen of their own on this id; SETUP, id 8,
- * owns that role there -- S9 scope on this port). Reached from WIN1
- * through unet_link.c's spectrum_net_join_ui() wrapper, the same shape
- * restore.c/saveload.c/fileui.c already use for their own overlays.
- *
- * WHY IT DRAWS WITH THE FILEUI PRIMITIVES: spectrum_render_fileui_frame()
- * and spectrum_render_ikkle_at() (render_core_cold.asm) are already
- * exactly "framed panel over the board area, N rows of text" -- the same
- * shape this screen needs, already MAME-proven in S6. They live on the
- * OTHER WIN3 page (the cold page, not this overlay's own page 2), so these
- * are cross-page calls resolved through the usual tools/gen_sprinter_
- * overlay_defs.py OVERLAY_RESIDENT_SYMBOLS bridge (via the WIN1 cold-thunk
- * stubs), the same bridge FILEUI's own fileui_ovl.c already uses.
- *
- * FOCUS INDICATION: the S8 plan named spectrum_render_fileui_select() for
- * this, but that routine's own contract (fileui_ovl.c's only caller,
- * render_core_cold.asm) is "outline one slot of FILEUI's own fixed file
- * grid" -- not a general "outline row R" primitive, and there is no such
- * primitive on this port. Reusing it here would draw FILEUI's rectangle
- * at FILEUI's position, not this screen's -- a real, silent-until-tested
- * defect the CLAUDE.md "verify plan claims against source" discipline
- * exists to catch before it reaches MAME. Focus is shown instead by a
- * leading "> "/"  " column this screen already fully controls (net_ui_row
- * builds the whole line every repaint anyway, so this costs nothing extra)
- * plus a trailing "_" caret appended to the focused editable field's own
- * text -- exactly the port.md "no per-character caret" constraint the plan
- * itself called out (proportional font, no text_width, spectrum_render_
- * input_cell is a stub), just without the unusable primitive.
- *
- * MODELESS INPUT (S8 plan, avoiding the port's own "invisible modal state
- * reads as broken input" trap): UP/DOWN move the focus row, LEFT/RIGHT
- * toggle a switcher row's value, printable ASCII edits the focused text
- * field, BS deletes, ENTER attempts to connect with the current settings,
- * ESC cancels the whole screen. No sub-mode, no "press ENTER to start
- * editing" -- a focused field is always live. DIRECT's HOST/PORT fields
- * (S9) are edited through this exact same mechanism as MQTT's BROKER/
- * PORT/ROOM -- net_ui_focused_field() is the one place that resolves
- * "which field is focused" per transport, so both share one edit/paint
- * path (net_ui_edit_field/net_ui_paint_focus_row) rather than a second
- * copy of the editing logic.
- *
- * Field editing/validation logic itself (net_ui_edit_field, the per-field
- * character filters, net_ui_port_value, net_ui_ipv4_ok) lives in
- * src/sprinter/net_ui_fields.{c,h}, not this file -- pulled out so it can
- * be proven by a plain host test (tests/sprinter/host/test_net_ui_fields.c)
- * instead of only ever running for the first time inside MAME.
- */
+/* Sprinter NETWORK editor and Direct listener/handshake, resident in NET. */
 #include "spectrum/ui/render.h"
 #include "spectrum/ui/gui.h"
 #include "spectrum/lowram_map.h"
@@ -67,6 +8,26 @@
 #include "sprinter/net_ui_fields.h"
 
 #include <string.h>
+#include "sprinter/direct_host.h"
+#include "common/session/session.h"
+extern void net_session_begin(void);
+#include "common/protocol/direct_session_protocol.h"
+#include "sprinter/transport/net_frame.h"
+#include "spectrum/session/direct.h"
+#include "spectrum/session/event.h"
+
+extern void host_listen(uint16_t port) __z88dk_fastcall;
+extern void host_status(void);
+extern void host_unlisten(void);
+extern void host_rx_pause(void);
+extern void host_rx_resume(void);
+extern uint16_t ng_caps, ng_v_call_len, ng_v_call_flags;
+extern uint8_t ng_v_last_cf, ng_v_last_nerr, ng_start_status;
+extern void ng_shutdown(void);
+extern void ng_getinfo_ip(void);
+extern char ng_buf_ip[];
+extern unsigned char net_active;
+
 
 /* net_gate.asm (WIN2, always mapped), bridged by tools/gen_sprinter_
    platform_defs.py -- the same funnel unet_link.c uses. Declared here for
@@ -114,6 +75,7 @@ extern unsigned char net_mqtt_fail_status;
 extern void frame_wait(void);
 extern void key_poll(void);
 extern unsigned char key_code;
+extern unsigned char frame_counter;
 
 /* net_gate.asm's NG_BACKEND_* (it has no header of its own). */
 
@@ -169,7 +131,11 @@ extern unsigned char key_code;
    shared only by the currently loaded overlay") -- unused by anything else
    on Sprinter today, so the whole 160 bytes are available here. */
 #define NET_UI_TEXT_MAX 56u
+#ifdef SPRINTER_HOST_TEST
+static char net_ui_spec[160];
+#else
 #define net_ui_spec ((char *)NETCHESSZX_LOWRAM_OVERLAY_SCRATCH_ADDR)
+#endif
 
 static unsigned char net_ui_append(unsigned char at, const char *text)
 {
@@ -227,6 +193,7 @@ static void net_ui_field_row(unsigned char row,
 static uint8_t net_ui_transport;
 static uint8_t net_ui_role = NETCHESSZX_SESSION_ROLE_JOIN;
 static uint8_t net_ui_focus;
+static uint8_t net_ui_color;
 static char net_ui_field_broker[NETCHESSZX_MQTT_HOST_MAX + 1u];
 static char net_ui_field_port[6];
 static char net_ui_field_room[NETCHESSZX_MQTT_CODE_MAX + 1u];
@@ -251,6 +218,7 @@ static void net_ui_env_default(const char *name, char *dest, uint8_t cap,
     ng_c_env_capacity = cap;
     ng_c_env_get();
     if (ng_c_env_found) {
+        if (ng_c_env_found == 2u) dest[0] = '\0';
         return;
     }
     net_ui_copy_capped(dest, cap, compiled_default);
@@ -271,6 +239,7 @@ static void net_ui_seed_fields(void)
         return;
     }
     net_ui_fields_seeded = 1u;
+    direct_host.listening = 0u;
     net_ui_env_default("MQTTHOST", net_ui_field_broker,
                        sizeof(net_ui_field_broker), netchesszx_mqtt_host);
     net_ui_env_default("MQTTPORT", net_ui_field_port,
@@ -280,7 +249,7 @@ static void net_ui_seed_fields(void)
     net_ui_env_default("NETHOST", net_ui_field_host,
                        sizeof(net_ui_field_host), "127.0.0.1");
     net_ui_env_default("NETPORT", net_ui_field_dport,
-                       sizeof(net_ui_field_dport), "7777");
+                       sizeof(net_ui_field_dport), NETCHESSZX_STRINGIFY(NETCHESSZX_PORT));
 }
 
 /* UNETLD error codes plus ng_up's TCP and NETSTART call codes (net_gate.asm).
@@ -395,27 +364,10 @@ static uint8_t net_ui_max_focus(void)
     return net_ui_transport == NETCHESSZX_TRANSPORT_MQTT ? 4u : 3u;
 }
 
-/* Index 1 (ROLE) is not focusable under DIRECT -- uNet has no listen/accept
-   (this file's own header), so DIRECT can only ever dial out and the ROLE
-   switcher would offer a choice the wire can never honour. `dir` says which
-   way the focus was just moving (<0 up, >=0 down/entering); it only matters
-   when focus has landed exactly on the skipped index, in which case it
-   continues one more step the same direction (0 going up, 2 going down)
-   instead of stopping on a row that cannot be focused. net_ui_focus is a
-   file static that survives both screen re-entry and a TRANSPORT switch
-   (net_join_ui_ovl's own header/comment), so every place that can move it
-   calls this afterwards rather than trusting it stayed valid. */
 static void net_ui_focus_normalize(signed char dir)
 {
-    if (net_ui_transport != NETCHESSZX_TRANSPORT_DIRECT) {
-        return;
-    }
-    if (net_ui_focus == 1u) {
-        net_ui_focus = dir < 0 ? 0u : 2u;
-    }
-    if (net_ui_focus > net_ui_max_focus()) {
-        net_ui_focus = net_ui_max_focus();
-    }
+    (void)dir;
+    if (net_ui_focus > net_ui_max_focus()) net_ui_focus = net_ui_max_focus();
 }
 
 /* Resolves which text field (if any) net_ui_focus currently names, for
@@ -427,7 +379,7 @@ static void net_ui_focus_normalize(signed char dir)
 static uint8_t net_ui_focused_field(char **field, uint8_t *cap, char (**filter)(char))
 {
     if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT) {
-        if (net_ui_focus == 2u) {
+        if (net_ui_focus == 2u && net_ui_role == NETCHESSZX_SESSION_ROLE_JOIN) {
             *field = net_ui_field_host;
             *cap = (uint8_t)sizeof(net_ui_field_host);
             *filter = net_ui_filter_ip;
@@ -481,25 +433,16 @@ static void net_ui_paint_focus_row(uint8_t idx, uint8_t focused)
               net_ui_transport == NETCHESSZX_TRANSPORT_MQTT ? "< MQTT >" : "< DIRECT >");
         net_ui_field_row(NET_UI_ROW_TRANSPORT, focused, "TRANSPORT: ", transport_text, 0u);
     } else if (idx == 1u) {
-        if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT) {
-            /* Fixed, dim, never focused -- see net_ui_focus_normalize's own
-               comment for why the row itself cannot be reached, and
-               net_ui_try_connect's for why the session is pinned to JOIN
-               regardless of net_ui_role's own stored value. The suffix is
-               the whole point: it is the only thing on screen that tells
-               the tester WHY there is no HOST option here. */
-            net_ui_field_row(NET_UI_ROW_ROLE, 0u, "ROLE: ",
-                             "JOIN  (DIRECT: DIAL-OUT ONLY)", 0u);
-        } else {
-            char role_text[16];
-
-            strcpy(role_text,
-                  net_ui_role == NETCHESSZX_SESSION_ROLE_HOST ? "< HOST >" : "< JOIN >");
-            net_ui_field_row(NET_UI_ROW_ROLE, focused, "ROLE: ", role_text, 0u);
-        }
+        net_ui_field_row(NET_UI_ROW_ROLE, focused, "ROLE: ",
+                         net_ui_role == NETCHESSZX_SESSION_ROLE_HOST ? "< HOST >" : "< JOIN >", 0u);
     } else if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT) {
         if (idx == 2u) {
-            net_ui_field_row(NET_UI_ROW_FIELD0, focused, "HOST: ", net_ui_field_host, 1u);
+            if (net_ui_role == NETCHESSZX_SESSION_ROLE_HOST) {
+                net_ui_field_row(NET_UI_ROW_FIELD0, focused, "COLOR: ",
+                                 net_ui_color ? "< BLACK >" : "< WHITE >", 0u);
+            } else {
+                net_ui_field_row(NET_UI_ROW_FIELD0, focused, "HOST: ", net_ui_field_host, 1u);
+            }
         } else if (idx == 3u) {
             net_ui_field_row(NET_UI_ROW_FIELD1, focused, "PORT: ", net_ui_field_dport, 1u);
         }
@@ -616,6 +559,7 @@ static unsigned char net_ui_direct_connect(void)
             return 0u;
         }
 
+        spectrum_link_start_uart();
         net_ui_state("CONNECTING...");
         ng_c_connect_host = net_ui_field_host;
         ng_c_connect_port = net_ui_field_dport;
@@ -639,6 +583,198 @@ static unsigned char net_ui_direct_connect(void)
         frame_wait();
         return 1u;
     }
+}
+
+/* Stop listening before CLOSE: CLOSE alone can re-arm a uNet listener. */
+unsigned char net_host_close_ovl(void)
+{
+    if (direct_host.listening) {
+        host_unlisten();
+        direct_host.listening = 0u;
+        if (ng_v_call_cf || ng_v_call_status) {
+            ng_shutdown(); /* NETDONE prevents a failed UNLISTEN re-arming on CLOSE. */
+            return 0u;
+        }
+    }
+    ng_close();
+    return 1u;
+}
+
+static void net_ui_host_failure(const char *stage)
+{
+    unsigned char at;
+    uint8_t cf = ng_v_call_cf;
+    uint8_t status = ng_v_call_status;
+    net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, stage);
+    net_ui_spec[0] = NET_UI_ROW_DETAIL;
+    net_ui_spec[1] = NET_UI_COL;
+    net_ui_spec[2] = NET_UI_ATTR_BRIGHT;
+    at = net_ui_append(3u, "CF=");
+    at = net_ui_append_u8(at, cf);
+    at = net_ui_append(at, " STATUS=");
+    (void)net_ui_append_u8(at, status);
+    spectrum_render_ikkle_at(net_ui_spec);
+}
+
+unsigned char net_host_wait_ovl(void)
+{
+    for (;;) {
+        net_ui_frame();
+        net_ui_state("PREFLIGHT: LOADING BACKEND...");
+        ng_up();
+        net_ui_frame();
+        if (ng_up_reason) {
+            ng_v_call_cf = 0u;
+            ng_v_call_status = ng_start_status;
+            net_ui_host_failure(net_ui_preflight_reason(ng_up_reason));
+            goto retry;
+        }
+        if (!(ng_caps & 32u)) {
+            net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, "HOST NEEDS CAP_LISTEN");
+            goto retry;
+        }
+        spectrum_link_start_uart();
+        ng_close();
+        ng_getinfo_ip();
+        net_ui_row(NET_UI_ROW_DETAIL, NET_UI_ATTR_BRIGHT, ng_buf_ip);
+        net_ui_row(NET_UI_ROW_BACKEND, NET_UI_ATTR_DIM, net_ui_backend_name());
+        net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM, "ESC CANCEL");
+        net_ui_state("WAITING FOR GUEST - ESC CANCEL");
+        /* Finish painting before opening the port. A guest can send HELLO
+         * immediately; no drawing or frame sleep may delay the first RECV. */
+        direct_host.listening = 1u;
+        host_listen(direct_host.port);
+        if (ng_v_call_cf || ng_v_call_status) {
+            net_ui_host_failure("LISTEN FAILED");
+            goto cleanup;
+        }
+        host_rx_resume();
+        key_code = 0u;
+        for (;;) {
+            key_poll();
+            if (key_code == NET_UI_KEY_CANCEL) {
+                key_code = 0u;
+                net_host_close_ovl();
+                direct_host.enabled = 0u;
+                return 0u;
+            }
+            key_code = 0u;
+            /* RECV drives accept and queues any coalesced HELLO/MOVE. */
+            nc_pump();
+            if (!ng_v_call_cf && (ng_v_call_status == 7u || (ng_v_call_flags & 4u))) {
+                /* A guest can disappear before STATUS observes ACCEPT.
+                 * Discard this attempt and start a fresh framing session. */
+                net_host_close_ovl();
+                goto next_guest;
+            }
+            if (ng_v_call_cf || ng_v_call_status || (ng_v_call_flags & 4u)) {
+                net_ui_host_failure("ACCEPT RECV FAILED");
+                break;
+            }
+            host_status();
+            if (ng_v_call_cf || ng_v_call_status) {
+                net_ui_host_failure("STATUS FAILED");
+                break;
+            }
+            if ((ng_v_call_len & 10u) == 10u) {
+                host_unlisten();
+                if (ng_v_call_cf || ng_v_call_status) {
+                    net_ui_host_failure("UNLISTEN FAILED");
+                    break;
+                }
+                direct_host.listening = 0u;
+                direct_host.restart = 0u;
+                host_rx_pause(); /* protect RX while NETWORK restores the board */
+                return 1u;
+            }
+        }
+cleanup:
+        net_host_close_ovl();
+retry:
+        if (!net_ui_wait_retry()) {
+            direct_host.enabled = 0u;
+            return 0u;
+        }
+next_guest:
+        ;
+    }
+}
+
+/* Preparation never resets framing: accept may already have queued data. */
+unsigned char net_prepare_ovl(void)
+{
+    if (direct_host.enabled) host_rx_resume();
+    netchesszx_session_ping_reset(&net_ping);
+    netchesszx_session_peer_reset();
+    net_peer_known = 0u;
+    net_hello_wait = 0u;
+    direct_host.hello_frame_last = frame_counter;
+    direct_host.hello_retries = 0u;
+    direct_host.hello_seen = 0u;
+    direct_host.start_pending = 0u;
+    direct_host.restart = 0u;
+    net_active = 1u;
+    return 1u;
+}
+
+static unsigned char net_start_send(void)
+{
+    return spectrum_link_send_text(netchesszx_local_is_white()
+        ? "GAME START WHITE=HOST" : "GAME START WHITE=GUEST");
+}
+
+static unsigned char net_handshake_failed(const char *reason)
+{
+    char *text = spectrum_link_payload_scratch();
+    (void)spectrum_link_send_text(NETCHESS_PROTO_BYE);
+    strcpy(text, reason);
+    return SPRINTER_NET_FAILED;
+}
+
+/* Consume HELLO/START acknowledgments before game dispatch. All parsers
+ * and strings follow the common Direct contract; duplicate HELLO is inert. */
+unsigned char net_hello_ovl(void)
+{
+    char *text = spectrum_link_payload_scratch();
+    if (netchess_after_prefix(text, NETCHESS_PROTO_GAME_START)) {
+        const char *reply;
+        uint8_t owner;
+        if (netchesszx_session_is_host()) reply = "NACK GAME START HOST";
+        else if (!netchesszx_session_peer_ready_state ||
+                 !netchess_direct_parse_start_white_owner(text, &owner)) reply = "NACK GAME START BAD";
+        else return 0u; /* validated guest START is handled by the game driver */
+        if (!spectrum_link_send_text(reply)) return net_handshake_failed("START reply failed");
+        return 1u;
+    }
+    if (direct_host.start_pending && !strcmp(text, "ACK GAME START")) {
+        direct_host.start_pending = 0u;
+        netchesszx_session_peer_mark_ready();
+        host_rx_pause();
+        net_session_begin();
+        host_rx_resume();
+        return 1u;
+    }
+    if (!netchess_direct_is_hello(text)) return 0u;
+    if (!netchesszx_session_direct_apply_hello(text)) {
+        return net_handshake_failed("Bad HELLO from opponent");
+    }
+    if (direct_host.hello_seen) return 1u;
+    direct_host.hello_seen = 1u;
+    spectrum_link_direct_peer_mark_valid();
+    if (!netchesszx_session_direct_send_hello()) {
+        return net_handshake_failed("HELLO send failed");
+    }
+    if (netchesszx_session_is_host()) {
+        direct_host.start_pending = 1u;
+        direct_host.hello_retries = 0u;
+        net_hello_wait = SESSION_DIRECT_REPLY_TICKS;
+        if (!net_start_send()) return net_handshake_failed("START send failed");
+        direct_host.hello_frame_last = frame_counter;
+    } else {
+        netchesszx_session_peer_mark_ready();
+        net_session_begin();
+    }
+    return 1u;
 }
 
 /* MQTT connect attempt -- net_mqtt_connect_start_ovl() (net_mqtt_ui_
@@ -708,18 +844,6 @@ static unsigned char net_ui_mqtt_connect(void)
    mutable session globals, configure the session, and dispatch the chosen
    transport's own connect flow.
 
-   ROLE UNDER DIRECT: uNet has no listen/accept (port.md section 3.7);
-   link.h's spectrum_net_listen()/spectrum_net_wait_pc_connect() are not
-   implemented on Sprinter at all (S9 MQTT-lag pass, 2026-08-19 -- app.c,
-   the only caller of their spectrum_link_* aliases, is not linked into
-   this port) -- Sprinter can only ever dial out, so the listening
-   side of any DIRECT session (Qt Host, ZX CREATE) is always the session
-   HOST. net_ui_role's own toggle is not reachable while DIRECT is selected
-   (net_ui_focus_normalize keeps it off index 1), but `role` is still
-   pinned here explicitly rather than trusted to already be JOIN -- this is
-   the single place a live session actually gets configured, and the one
-   spot a future change to the focus rules must not silently break.
-
    Session-configure order is deliberate, not incidental -- this is S7's
    own trap in MQTT clothing (S8 step 8d's plan section has the full
    post-mortem): netchesszx_session_configure() ALWAYS sets host_color_
@@ -757,7 +881,7 @@ static unsigned char net_ui_try_connect(void)
     } else {
         uint16_t port_value;
 
-        if (!net_ui_ipv4_ok(net_ui_field_host)) {
+        if (role == NETCHESSZX_SESSION_ROLE_JOIN && !net_ui_ipv4_ok(net_ui_field_host)) {
             net_ui_row(NET_UI_ROW_STATE, NET_UI_ATTR_BRIGHT, "BAD IP");
             (void)net_ui_wait_retry();
             return 0u;
@@ -767,12 +891,13 @@ static unsigned char net_ui_try_connect(void)
             (void)net_ui_wait_retry();
             return 0u;
         }
-        role = NETCHESSZX_SESSION_ROLE_JOIN;
+        direct_host.port = port_value;
+        direct_host.color = net_ui_color;
     }
 
     netchesszx_session_configure(role,
                                  net_ui_transport,
-                                 NETCHESSZX_COLOR_WHITE);
+                                 net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT ? net_ui_color : NETCHESSZX_COLOR_WHITE);
     if (role == NETCHESSZX_SESSION_ROLE_JOIN) {
         netchesszx_host_color_ready = 0u;
     }
@@ -793,6 +918,11 @@ static unsigned char net_ui_try_connect(void)
         netchesszx_mqtt_session_id = net_mqtt_new_session_id();
     }
 
+    direct_host.enabled = 0u;
+    if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT && role == NETCHESSZX_SESSION_ROLE_HOST) {
+        direct_host.enabled = 1u;
+        return net_host_wait_ovl();
+    }
     return net_ui_transport == NETCHESSZX_TRANSPORT_MQTT
         ? net_ui_mqtt_connect()
         : net_ui_direct_connect();
@@ -809,12 +939,7 @@ static unsigned char net_ui_try_connect(void)
    read from it. */
 unsigned char net_join_ui_ovl(void)
 {
-    /* net_ui_focus/net_ui_transport are file statics that survive both a
-       previous visit to this screen and a mid-visit TRANSPORT switch (this
-       file's own header) -- normalize once on entry so a focus left on the
-       DIRECT-unreachable ROLE index by some earlier revision of this code
-       (or a future change to the navigation above) cannot silently persist
-       into this visit. */
+    /* Preserve valid focus across screen visits and transport changes. */
     net_ui_focus_normalize(1);
     net_ui_frame();
     net_ui_row(NET_UI_ROW_FOOTER, NET_UI_ATTR_DIM,
@@ -877,15 +1002,17 @@ unsigned char net_join_ui_ovl(void)
                 key_code = 0u;
                 net_ui_frame();
             } else if (net_ui_focus == 1u) {
-                /* ROLE toggle only changes its own row's text. Unreachable
-                   under DIRECT -- net_ui_focus never rests on 1 there (see
-                   net_ui_focus_normalize) -- so this only ever runs for
-                   MQTT, exactly as before. */
+                /* HOST changes the DIRECT address row into a colour switch. */
                 net_ui_role = net_ui_role == NETCHESSZX_SESSION_ROLE_HOST
                     ? NETCHESSZX_SESSION_ROLE_JOIN
                     : NETCHESSZX_SESSION_ROLE_HOST;
                 key_code = 0u;
-                net_ui_paint_focus_row(1u, 1u);
+                net_ui_frame();
+            } else if (net_ui_transport == NETCHESSZX_TRANSPORT_DIRECT &&
+                       net_ui_role == NETCHESSZX_SESSION_ROLE_HOST && net_ui_focus == 2u) {
+                net_ui_color ^= 1u;
+                key_code = 0u;
+                net_ui_paint_focus_row(2u, 1u);
             } else {
                 key_code = 0u;
             }
@@ -907,4 +1034,61 @@ unsigned char net_join_ui_ovl(void)
         }
         key_code = 0u;
     }
+}
+
+/* NETWORK application entry. Renderer arguments are staged in WIN2 because
+ * each painter maps the cold page over this NET page. */
+extern void saveload_full_redraw(void);
+unsigned char net_network_ovl(void)
+{
+    unsigned char joined;
+    char *text = spectrum_link_payload_scratch();
+    spectrum_gui_clear_cursor_coords();
+    joined = net_join_ui_ovl();
+    spectrum_gui_restore_board_area();
+    saveload_full_redraw();
+    if (!joined) {
+        strcpy(text, "Not connected");
+        spectrum_gui_notify(text, 1u);
+        return 0u;
+    }
+    net_prepare_ovl();
+    spectrum_gui_set_connected(netchesszx_transport_is_mqtt() ? 1u : 2u);
+    strcpy(text, "WAITING");
+    spectrum_gui_set_status(text);
+    strcpy(text, "Waiting for opponent");
+    spectrum_gui_notify_persistent(text);
+    return 1u;
+}
+
+unsigned char net_hello_tick_ovl(void)
+{
+    uint8_t elapsed;
+    if (netchesszx_transport_is_mqtt() || net_peer_known) return 1u;
+    /* Shared polling still answers peer PING, but its game liveness clock
+     * must not expire or originate PING during the bounded handshake. */
+    netchesszx_session_ping_reset(&net_ping);
+    elapsed = (uint8_t)(frame_counter - direct_host.hello_frame_last);
+    direct_host.hello_frame_last = frame_counter;
+    if (net_hello_wait > elapsed) {
+        net_hello_wait -= elapsed;
+        return 1u;
+    }
+    if (direct_host.hello_retries < (direct_host.start_pending ? SESSION_DIRECT_REPLY_RETRIES : SESSION_DIRECT_HELLO_RETRIES + 1u)) {
+        ++direct_host.hello_retries;
+        if (direct_host.start_pending) {
+            net_hello_wait = SESSION_DIRECT_REPLY_TICKS;
+            if (net_start_send()) {
+                direct_host.hello_frame_last = frame_counter;
+                return 1u;
+            }
+        } else {
+            net_hello_wait = SESSION_DIRECT_HELLO_TICKS;
+            if (netchesszx_session_direct_send_hello()) {
+                direct_host.hello_frame_last = frame_counter;
+                return 1u;
+            }
+        }
+    }
+    return net_handshake_failed("Handshake failed");
 }

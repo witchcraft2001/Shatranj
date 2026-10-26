@@ -143,6 +143,21 @@ start:
         cp 12
         jp c,.case
 
+        ; A capable DLL must be unlistened before CLOSE, then unloaded.
+        call fixture_reset
+        call ng_up
+        ld hl,UNET_CAP_TCP+UNET_CAP_LISTEN
+        ld (UNETLD.CAPS),hl
+        call ng_shutdown
+        ld a,(unlisten_count)
+        cp 1
+        ld a,30
+        call t_expect_z
+        ld a,(boundary_failures)
+        or a
+        ld a,31
+        call t_expect_z
+
         ; Shutdown after an ABI mismatch must free the handle without
         ; sending CLOSE or NETDONE into a DLL that did not pass validation.
         call fixture_reset
@@ -190,7 +205,7 @@ start:
         ld a,32
         call t_expect_z
         ld a,(ng_c_env_found)
-        cp 1
+        cp 2                       ; found, but truncated (invalid editor input)
         ld a,22
         call t_expect_z
         ld a,(small_field+4)
@@ -243,6 +258,7 @@ fixture_reset:
         ld (load_count),a
         ld (free_count),a
         ld (close_count),a
+        ld (unlisten_count),a
         ld (done_count),a
         ld (boundary_failures),a
         ; Compact state is not initially zeroed by EXE loading. Poison it
@@ -268,6 +284,7 @@ live_handle: db 0
 load_count: db 0
 free_count: db 0
 close_count: db 0
+unlisten_count: db 0
 done_count: db 0
 boundary_failures: db 0
 env_present: db 1
@@ -352,6 +369,8 @@ l_call:
         jr z,.status
         cp UNET_FN_NETINIT
         jr z,.init
+        cp UNET_FN_UNLISTEN
+        jr z,.unlisten
         cp UNET_FN_CLOSE
         jr z,.close
         cp UNET_FN_NETDONE
@@ -389,7 +408,18 @@ l_call:
         cp 11
         jr z,.status_fail
         jr .ok
+.unlisten:
+        ld hl,unlisten_count
+        inc (hl)
+        jr .ok
 .close:
+        ld a,(UNETLD.CAPS)
+        and UNET_CAP_LISTEN
+        jr z,.close_ok
+        ld a,(unlisten_count)
+        cp 1
+        call nz,boundary_error
+.close_ok:
         ld hl,close_count
         inc (hl)
         jr .ok

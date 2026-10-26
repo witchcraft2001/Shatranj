@@ -104,6 +104,17 @@ The host listens on the configured TCP port. Share that endpoint with the
 guest and make sure firewalls and routing allow the connection. Direct mode
 does not use an MQTT broker.
 
+On Sprinter, NETWORK → DIRECT offers HOST and JOIN. HOST takes a port and
+WHITE/BLACK (WHITE by default), displays the local IP, and waits for a guest.
+It starts a fresh game automatically after the handshake and returns to the
+same listening port after the guest leaves. ESC while waiting, DISCONNECT,
+or exiting stops hosting. JOIN retains its address and port fields. `NETPORT`
+seeds the port; otherwise the build's `PORT` value is used (default 5000).
+HOST requires `CAP_LISTEN` from the loaded uNet DLL; JOIN and MQTT do not.
+See [S7 tester notes](docs/sprinter-testnotes/S7.md#direct-host-acceptance) for
+artifacts and validation: ESP Direct runtime acceptance is currently blocked
+by RXF_LOST; hardware checks remain pending.
+
 ### MQTT
 
 Both clients connect to the same broker and room. MQTT is useful when a direct

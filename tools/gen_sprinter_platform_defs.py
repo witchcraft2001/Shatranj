@@ -214,6 +214,10 @@ PLATFORM_SYMBOLS = [
     # net_gate.asm -- the funnel into LIBMAN.l_call (ng_* wrappers take no
     # caller-supplied pointers; buffers are net_gate's own WIN2-resident
     # ones, per port.md's "R5" note).
+    "ng_call",
+    "ng_c_store_result",
+    "ng_caps",
+    "ng_start_status",
     "ng_up",
     "ng_connect",
     "ng_send",
@@ -223,7 +227,6 @@ PLATFORM_SYMBOLS = [
     "ng_shutdown",
     # The transport and NET overlay need WIN2 staging and diagnostic state.
     # UNETLD.DLL_NAME is bridged as ng_dll_name for the selected-DLL row.
-    "ng_getinfo_ip",
     "ng_buf_ip",
     "ng_buf_rx",
     "ng_buf_lasterr",
@@ -355,6 +358,7 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
 # keeps RESIDENT_TEST_SYMBOLS apart: that list is a shipping contract, this
 # one is a test fixture.
 PLATFORM_TEST_SYMBOLS = [
+    "ng_call",
     "ng_c_recv_poll",
     "ng_c_send",
     "ng_buf_rx",
@@ -477,6 +481,10 @@ def _clean_fixture() -> str:
         "key_poll: EQU 0x00008165\n"
         "key_code: EQU 0x00008170\n"
         "frame_counter: EQU 0x00008172\n"
+        "ng_call: EQU 0x00008900\n"
+        "ng_c_store_result: EQU 0x00008910\n"
+        "ng_caps: EQU 0x0000B410\n"
+        "ng_start_status: EQU 0x0000B40F\n"
         "ng_up: EQU 0x0000899F\n"
         "ng_connect: EQU 0x000089A0\n"
         "ng_send: EQU 0x000089B0\n"

@@ -31,6 +31,29 @@ from pathlib import Path
 # C sources. Adding a new cross-boundary call means adding its name here --
 # same discipline as PLATFORM_SYMBOLS/REQUIRED_SYMBOLS elsewhere.
 OVERLAY_RESIDENT_SYMBOLS = [
+    "net_session_begin",
+    "netchess_direct_is_hello",
+    "netchess_direct_parse_start_white_owner",
+    "saveload_full_redraw",
+    "spectrum_gui_clear_cursor_coords",
+    "spectrum_gui_restore_board_area",
+    "spectrum_gui_notify",
+    "spectrum_gui_set_connected",
+    "spectrum_gui_set_status",
+    "spectrum_gui_notify_persistent",
+    "netchesszx_transport",
+
+    "net_active",
+    "nc_pump",
+    "spectrum_net_start_uart",
+    "netchesszx_session_ping_reset",
+    "netchesszx_session_peer_reset",
+    "netchesszx_session_direct_apply_hello",
+    "netchesszx_session_direct_send_hello",
+    "netchesszx_session_peer_mark_ready",
+    "netchesszx_session_peer_ready_state",
+    "spectrum_net_direct_peer_mark_valid",
+
     # game_protocol.c / mqtt_session_protocol.c -- control_ovl.c's protocol
     # classifier (SPECTRUM_OVL_CONTROL=14u) needs both the string-prefix
     # matcher and the token constants it matches against.
@@ -294,6 +317,24 @@ def render_sjasmplus(symbols: dict[str, int], names: list[str]) -> str:
 
 def _clean_fixture() -> str:
     return (
+        "_netchess_direct_is_hello = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_netchess_direct_parse_start_white_owner = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_gui_clear_cursor_coords = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_gui_restore_board_area = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_gui_notify = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_gui_set_connected = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_gui_set_status = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_gui_notify_persistent = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_net_active = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_nc_pump = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_netchesszx_session_ping_reset = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_netchesszx_session_peer_reset = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_netchesszx_session_direct_apply_hello = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_netchesszx_session_direct_send_hello = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_netchesszx_session_peer_mark_ready = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_spectrum_net_direct_peer_mark_valid = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+        "_net_session_begin = $5000 ; addr, public, , fixture, code_user, fixture:1\n"
+
         "_spectrum_net_read_payload      = $6D67 ; addr, public, , "
         "src_sprinter_transport_unet_link_c, code_compiler, "
         "src/sprinter/transport/unet_link.c::spectrum_net_read_payload::0::0:6\n"

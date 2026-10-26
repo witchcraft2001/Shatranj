@@ -69,6 +69,7 @@
 #include "spectrum/fileui/fileui.h"
 
 #include <string.h>
+#include "sprinter/direct_host.h"
 
 /* Bridged resident symbols this file calls but does not itself define --
  * render_core.asm/gui.c entries are NOT here (same cold-page image, plain
@@ -414,7 +415,8 @@ static void restore_net_clear(void) {
    since a local RESIGN is the one action allowed to fire with a MOVE
    already in flight (docs/session-core-contract.md:264-270). */
 unsigned char net_op_busy(void) {
-    return (unsigned char)(pending_local_ply != 0u ||
+    return (unsigned char)((net_active && !netchesszx_session_peer_ready_state) ||
+        pending_local_ply != 0u ||
         control_pending != CONTROL_PENDING_NONE ||
         takeback_pending_ply != 0u || restore_rx_mask != 0u ||
         restore_prompt_pending || resign_pending || game_over);
@@ -518,8 +520,9 @@ static void hints_show(void) {
     if (netchesszx_movement_hints == 0u || selected_row == NO_SQUARE) {
         return;
     }
-    if (net_active && !netchesszx_session_has_local_turn(
-            (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
+    if (net_active && (!netchesszx_session_peer_ready_state ||
+        !netchesszx_session_has_local_turn(
+            (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE)))) {
         return;
     }
     if (pending_local_ply != 0u) {
@@ -579,8 +582,9 @@ void board_select_or_move(void) {
        and it is a refusal rather than a filter on purpose: the tester needs
        to be told why the press did nothing (invisible modal state is a bug
        this port has already shipped once). */
-    if (net_active && !netchesszx_session_has_local_turn(
-            (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE))) {
+    if (net_active && (!netchesszx_session_peer_ready_state ||
+        !netchesszx_session_has_local_turn(
+            (unsigned char)(side_to_move == NETCHESSZX_RULE_WHITE)))) {
         notify_info("Not your turn");
         return;
     }
@@ -852,7 +856,6 @@ extern unsigned char net_send_takeback_wire(uint16_t ply);
 extern void apply_takeback_snapshot(void);
 extern void net_status_idle(void);
 
-#define NET_HELLO_REANNOUNCE_TICKS 80u
 /* PENDING_RETRY_TICKS itself is defined earlier in this file, next to
    board_select_or_move's forward declarations -- that function (which
    comes first) is the initial arm site, board_select_or_move needs the
@@ -863,13 +866,18 @@ extern void net_status_idle(void);
    blocks), and this file never sees the DLL. */
 extern void ng_close(void);
 
-/* src/sprinter/net_ui_sprinter.c, in the WIN3 cold page: the whole modal
+/* src/sprinter/net_ui_sprinter.c, in the WIN3 NET page: the whole modal
    join screen (preflight, connect, retry/cancel) behind one call. */
 extern unsigned char spectrum_net_join_ui(void);
 
-static netchesszx_session_ping_t net_ping;
-static unsigned char net_hello_wait;
-static unsigned char net_peer_known;
+static unsigned char net_dispatch(unsigned char entry) {
+    unsigned char result = spectrum_overlay_exec_cached(SPECTRUM_OVL_NET_CONNECT, entry);
+    if (result == SPRINTER_NET_FAILED) {
+        net_drop(spectrum_link_payload_scratch());
+        return 0u;
+    }
+    return result;
+}
 
 /* S8 step 3: the local half of the deferred-apply model. pending_local_ply/
    pending_local_move/pending_retry_timer are declared earlier in this file
@@ -989,7 +997,8 @@ static void net_start_rematch(const char *notice) {
    ACK/NACK it, and stale pending state would silently block every local
    action after a reconnect. */
 void net_drop(const char *why) {
-    net_active = 0u;
+    net_active = direct_host.enabled;
+    direct_host.restart = direct_host.enabled;
     net_peer_known = 0u;
     pending_local_clear();
     control_pending_clear();
@@ -1001,7 +1010,10 @@ void net_drop(const char *why) {
        the next session (if any) starts a fresh game. */
     resign_clear();
     netchesszx_session_peer_reset();
-    ng_close();
+    (void)net_dispatch(SPRINTER_NET_CLOSE);
+    netchesszx_session_ping_reset(&net_ping);
+    pending_retry_timer = 0u;
+    spectrum_gui_game_timer_stop();
     net_status_idle();
     /* S9 chat pass: there is no peer left for the chat panel's own
        content to mean anything to on the NEXT session -- same reasoning
@@ -1296,14 +1308,15 @@ static void net_apply_remote_move(const char *payload) {
    Extracted from net_apply_hello (DIRECT) when S8 step 8f gave MQTT its own
    route to the same moment -- MQTT reaches it from net_mqtt_host_event's
    READY_WAIT (guest) or MQTT_PEER_READY (host) instead of from a HELLO, but
-   what has to happen locally is identical. See net_apply_hello's own comment
-   below for the 2026-08-14 MAME finding that put the reset sequence here. */
-static void net_session_begin(void) {
+   what has to happen locally is identical. A new TCP guest starts a fresh
+   board; a duplicate HELLO within the same connection never calls this entry. */
+void net_session_begin(void) {
     net_peer_known = 1u;
     pending_local_clear();
     control_pending_clear();
     takeback_clear();
     restore_net_clear();
+    resign_clear();
     spectrum_board_reset();
     selection_clear();
     spectrum_gui_set_board_view((unsigned char)(!netchesszx_local_is_white()));
@@ -1327,44 +1340,6 @@ static void net_session_begin(void) {
        proven on this notice line ("Peer sent an illegal move") and inside
        NETCHESSZX_NOTICE_TEXT_SIZE's 28-usable-char cap (layout.h). */
     spectrum_gui_notify_success("Ready - ENTER opens chat");
-}
-
-/* The peer's HELLO is what settles which colour this side plays, so the
-   board view can only be oriented once it arrives -- until then the board
-   is drawn white-at-the-bottom, which is also what a JOIN playing white
-   will keep. */
-static void net_apply_hello(const char *payload) {
-    if (!netchesszx_session_direct_apply_hello(payload)) {
-        /* Saying nothing here is what made the 2026-08-13 round
-           unreadable: a refused HELLO left the screen looking exactly like
-           a peer that had never answered, so a colour disagreement and a
-           dead RX path were the same picture. Now they are not -- silence
-           still means nothing arrived, and this notice means something
-           did and we turned it down. */
-        notify_error("Bad HELLO from opponent");
-        return;
-    }
-    netchesszx_session_peer_mark_ready();
-    spectrum_link_direct_peer_mark_valid();
-    /* Every accepted HELLO starts a fresh session from this side's point of
-       view -- JOIN is the only role this port supports (S9's SETUP scope),
-       so there is no "resume the same game" case to special-case here.
-       Found by MAME testing (2026-08-14): a host-side Disconnect, then a
-       fresh reconnect into a NEW host game, left Sprinter showing the OLD
-       board/move-list from the session that just ended -- net_apply_hello
-       used to only re-orient and repaint whatever spectrum_board already
-       held. Worse than cosmetic: the new game's own MOVE 1 then looked
-       like an already-applied duplicate of the stale ply counter
-       (net_apply_remote_move's `incoming_ply <= spectrum_gui_log_ply_get()`
-       guard) and got silently re-ACKed instead of applied -- the client
-       would stay frozen on the old position until the new game's ply
-       count caught up past the old one. Mirrors net_apply_reset's own
-       reset sequence (that function's in-session RESET counterpart to
-       this one's join-time reset), minus the "New game" notice this
-       function already has its own success notice for. That whole sequence
-       is net_session_begin() above now -- MQTT reaches the same moment by
-       a different route. */
-    net_session_begin();
 }
 
 /* --- MQTT presence half (S8 step 8f) ------------------------------------
@@ -1668,10 +1643,9 @@ static unsigned char net_handle_mqtt_event(unsigned char event,
 
 static void net_handle_event(unsigned char event, const char *payload,
                              unsigned char retained) {
-    if (event == NETCHESSZX_SESSION_EVENT_DIRECT_HELLO) {
-        net_apply_hello(payload);
-        return;
-    }
+    /* A failed NET handler has already dropped the session after dispatch.
+     * Its zero result falls through to the not-ready guard below. */
+    if (!netchesszx_transport_is_mqtt() && net_dispatch(SPRINTER_NET_HELLO)) return;
     if (netchesszx_transport_is_mqtt() &&
         net_handle_mqtt_event(event, payload, retained)) {
         return;
@@ -1681,6 +1655,7 @@ static void net_handle_event(unsigned char event, const char *payload,
        makes the same cut (its `!netchesszx_session_peer_ready_state`
        continue). */
     if (!net_peer_known) {
+        if (event == NETCHESSZX_SESSION_EVENT_BYE) net_drop("Opponent left");
         return;
     }
     if (event == NETCHESSZX_SESSION_EVENT_MOVE) {
@@ -2347,20 +2322,16 @@ void net_poll_once(void) {
     netchesszx_session_poll_result_t poll;
     unsigned char status;
 
-    /* Re-announce until the peer answers: on DIRECT either side may finish
-       connecting first, and a HELLO sent before the other end was listening
-       is simply lost. */
-    if (!net_peer_known) {
-        if (net_hello_wait != 0u) {
-            --net_hello_wait;
-        } else {
-            net_hello_wait = NET_HELLO_REANNOUNCE_TICKS;
-            if (!netchesszx_session_direct_send_hello()) {
-                net_send_failed();
-                return;
-            }
-        }
+    if (direct_host.restart) {
+        unsigned char accepted = net_dispatch(SPRINTER_NET_HOST_WAIT);
+        spectrum_gui_restore_board_area();
+        saveload_full_redraw();
+        if (accepted) (void)net_dispatch(SPRINTER_NET_PREPARE);
+        else net_drop("Hosting cancelled");
+        return;
     }
+
+    if (!net_dispatch(SPRINTER_NET_HELLO_TICK)) return;
 
     status = netchesszx_session_poll(&net_ping, payload,
                                      SPECTRUM_LINK_PAYLOAD_MAX, &poll);
@@ -2432,9 +2403,9 @@ static void menu_reset_game(void) {
    board area is repainted on the way back either way -- the same "close"
    fileui_close already does, for the same reason. */
 static void menu_network(void) {
-    unsigned char joined;
 
     if (net_active) {
+        direct_host.enabled = 0u;
         (void)spectrum_link_send_text(NETCHESS_PROTO_BYE);
         /* MQTT: the BYE reaches the peer over the game topic, but the seat
            we are leaving is a RETAINED presence -- without this it keeps
@@ -2448,35 +2419,9 @@ static void menu_network(void) {
         return;
     }
 
-    spectrum_gui_clear_cursor_coords();
-    joined = spectrum_net_join_ui();
-    spectrum_gui_restore_board_area();
-    saveload_full_redraw();
-
-    if (!joined) {
-        notify_error("Not connected");
-        return;
-    }
-
-    /* S8 step 8e: spectrum_net_join_ui() (the NET screen) now configures
-       the session itself -- role/transport/host_color the user picked,
-       plus the host_color_ready JOIN fix (net_ui_sprinter.c's own
-       net_ui_try_connect() comment has the full post-mortem this used to
-       live here, verbatim, for the DIRECT-only role-is-always-JOIN case).
-       Only the transport-neutral follow-up stays here. */
-    if (!netchesszx_transport_is_mqtt()) {
-        spectrum_link_start_uart();
-    }
-    netchesszx_session_ping_reset(&net_ping);
-    netchesszx_session_peer_reset();
-    net_peer_known = 0u;
-    net_hello_wait = 0u;
     mqtt_seat_probed = 0u;
-    net_active = 1u;
+    (void)net_dispatch(SPRINTER_NET_NETWORK);
 
-    spectrum_gui_set_connected(netchesszx_transport_is_mqtt() ? 1u : 2u);
-    spectrum_gui_set_status(STATUS_WAITING);
-    spectrum_gui_notify_persistent("Waiting for opponent");
 }
 
 /* The status band's left cell and the panel's turn label are the two HUD

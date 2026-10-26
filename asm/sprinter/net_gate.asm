@@ -352,6 +352,8 @@ ng_up_reason:    DB 0
 ; UNETLD owns the first 315 bytes. RX doubles as the transient CONNECT
 ; host, and TX doubles as its port and LASTERR destination. These uses
 ; never overlap in time; the live RX and TX buffers remain separate.
+ng_start_status: EQU UNETLD.LAST_STATUS
+ng_caps:        EQU UNETLD.CAPS
 ng_dll_name:    EQU UNETLD.DLL_NAME
 ng_buf_rx:      EQU UNETLD.STATE_END
 ng_buf_host:    EQU ng_buf_rx
