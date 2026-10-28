@@ -273,3 +273,13 @@ The final PNGs include these manual edits (zero-based stored coordinates):
 These PNGs are independent source assets. Regenerating the SVG import will
 lose the manual edits: always render into a separate `--pieces-out`, compare,
 and merge deliberately. Normal builds consume the committed PNGs only.
+
+## S14: selecting artwork in the application
+
+The PIECES menu cycles California, MPChess and Totoy, starting with
+California on each launch. Every set uses its own four colours from
+`palette.json` entries 4–7. Board themes affect only entries 2–3.
+Check each edited set on all five themes and on the yellow move-flash
+background. About, fade and game loading preserve the current set.
+The build reads the committed PNGs; it does not rasterize SVGs or replace
+artist edits. See [S14 acceptance notes](sprinter-testnotes/S14.md).

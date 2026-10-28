@@ -93,6 +93,7 @@
 #include "common/protocol/mqtt_session_protocol.h"
 #include "spectrum/board/board.h"
 #include "spectrum/overlay/overlay.h"
+#include "sprinter/menu_sprinter.h"
 #include "spectrum/overlay/overlay_context.h"
 #include "sprinter/chat_sprinter.h"
 #include "common/chess/rules_compact.h"
@@ -176,15 +177,8 @@ static const char NOTICE_WAITING_FOR_ACK[] = "Waiting for ACK";
    declaration, with the same fastcall lesson, is session_sprinter.c's. */
 extern void board_cursor_move(void);
 
-/* S5-finish plan D12 (menu actions): spectrum_gui_reset_move_log is this
-   port's own addition (src/sprinter/gui_log_sprinter.c), not part of
-   gui.h's portable contract -- see that file's own header for why this
-   port does not link ZX's GUI_LOG overlay. theme_set_squares is video.asm
-   (bridged like every other platform_core primitive, see gen_sprinter_
-   platform_defs.py) -- a palette rewrite, not a redraw (that file's own
-   theme_set_squares comment). */
+/* Sprinter-native GUI log reset. */
 extern void spectrum_gui_reset_move_log(void);
-extern void theme_set_squares(unsigned char index);
 /* S9 chat pass: src/sprinter/gui_log_sprinter.c -- Sprinter-only, no ZX/
    Next equivalent (gui.h's own spectrum_gui_add_chat is declared there
    and used for incoming chat, session_sprinter.c's own CHAT event branch;
@@ -915,12 +909,6 @@ static void fileui_process_key(unsigned char key) {
  * Ping/keepalive is entirely the session layer's (poll.c answers PING with
  * ACK PING and drives the miss counter); nothing here re-implements it.
  */
-static unsigned char menu_theme_index;
-static void menu_cycle_theme(void) {
-    ++menu_theme_index;
-    theme_set_squares(menu_theme_index);
-}
-
 /* Real board flip, added after P17 originally shipped FLIP as an honest
  * stub: draw_square_into (render_core.asm) used to look up board content
  * AND compute screen position from the same row/col, so painting at a
@@ -1043,6 +1031,7 @@ void main(void) {
     unsigned char pass;
 
     bench_init();
+    spectrum_overlay_exec_cached(SPECTRUM_OVL_MENU_CONFIG, SPRINTER_MENU_INIT_PIECES);
 
     /* LOWRAM_RENDER_SHARED is a fixed address block, so nothing zero-fills
        or pre-initialises it the way C storage would (fixed_layout.json's

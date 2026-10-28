@@ -52,12 +52,33 @@ def _with_sets(palette: dict, names: list[str],
     return {**palette, "piece_sets": piece_sets}
 
 
+class SetLocationValidationTests(unittest.TestCase):
+    def test_runtime_page_and_block_limits_are_enforced(self) -> None:
+        palette = {"piece_sets": [{"name": "test"}]}
+        valid = {"name": "test", "asset_page_index": 1, "slot_base": 40,
+                 "flash_asset_page_index": 2, "flash_slot_base": 52}
+        bspt.render_set_locations_inc({"sets": [valid]}, palette)
+        for key, value in (("asset_page_index", 3), ("flash_asset_page_index", 0),
+                           ("slot_base", 41), ("flash_slot_base", 53)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                bspt.render_set_locations_inc({"sets": [{**valid, key: value}]}, palette)
+
+
 class CommittedPieceRoundTripTests(unittest.TestCase):
     def test_all_108_normal_and_flash_tiles_match_committed_pixels(self) -> None:
         palette = gsp.load_palette_file(PALETTE_JSON)
         sets = json.loads((ROOT / "assets/lichess/selected_next_sets.json").read_text())["selected"]
         pieces = ROOT / "assets/sprinter/pieces"
         pages, info = bspt.build_pages(pieces, sets, palette, 32, 16)
+        locations = bspt.render_set_locations_inc(info, palette)
+        self.assertEqual(locations, bspt.render_set_locations_inc(info, palette))
+        for record in info["sets"]:
+            values = (record["asset_page_index"], record["slot_base"],
+                      record["flash_asset_page_index"], record["flash_slot_base"])
+            self.assertIn("DB " + ",".join(map(str, values)) + " ; " + record["name"],
+                          locations)
+        with self.assertRaises(ValueError):
+            bspt.render_set_locations_inc({"sets": list(reversed(info["sets"]))}, palette)
         checked = 0
         for record in info["sets"]:
             refs = bspt.piece_colours(palette, record["name"])
@@ -205,23 +226,11 @@ class BuildPagesTests(PieceTilesTestBase):
         idx = bspt.FLASH_BACKGROUND_INDEX
         self.assertTrue(all(b == ((idx << 4) | idx) for b in tile[:16]))
 
-    def test_render_core_asm_flash_slot_base_matches_the_manifest(self) -> None:
-        # The resident hand-copies set 0's flash block position (there is no
-        # generated .inc between this tool and the .asm); this is the machine
-        # check that keeps the two honest -- a layout change here without the
-        # matching EQU edit would otherwise blit garbage tiles.
-        import re
-
-        source = (ROOT / "asm/sprinter/zcc/render_core.asm").read_text(encoding="utf-8")
-        match = re.search(r"^PIECE_FLASH_SLOT_BASE\s+EQU\s+(\d+)", source, re.M)
-        self.assertIsNotNone(match, "PIECE_FLASH_SLOT_BASE EQU not found")
-        _, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                    self.palette, 32, 16)
-        set0 = info["sets"][0]
-        self.assertEqual(int(match.group(1)), set0["flash_slot_base"])
-        # ...and that the block really is on the page the .asm reads
-        # (piece_page2 = HDR asset page index 2).
-        self.assertEqual(set0["flash_asset_page_index"], 2)
+    def test_renderer_reads_selected_flash_parameters(self) -> None:
+        source = (ROOT / "asm/sprinter/zcc/render_core.asm").read_text()
+        self.assertIn("ld a,(LOWRAM_PIECE_STATE_ADDR+3)", source)
+        self.assertIn("ld a,(LOWRAM_PIECE_STATE_ADDR+4)", source)
+        self.assertNotIn("PIECE_FLASH_SLOT_BASE EQU", source)
 
     def test_no_0xff_byte_in_opaque_tiles(self) -> None:
         pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],

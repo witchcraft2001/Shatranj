@@ -47,3 +47,5 @@ Python/
 AGENTS.md
 CLAUDE.md
 docs/sprinter-testnotes/*
+
+!docs/sprinter-testnotes/S14.md

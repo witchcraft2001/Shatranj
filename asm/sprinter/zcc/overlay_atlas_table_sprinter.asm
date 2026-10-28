@@ -98,6 +98,7 @@ OVL_WIN3_BOARD_ORG    EQU 0xC800
 OVL_WIN3_SAVELOAD_ORG EQU 0xD400
 OVL_WIN3_RESTORE_ORG  EQU 0xDE00
 OVL_WIN3_FILEUI_ORG   EQU 0xEA00
+OVL_WIN3_MENU_CONFIG_ORG EQU 0xFA00
 OVL_WIN3_NET_ORG      EQU 0xC000  ; page 2's own first slot, restarts at WIN3_BASE
 OVL_WIN3_INPUT_EDIT_ORG EQU 0xF000 ; page 2, after the 12 KiB NET slot
 OVL_WIN3_ABOUT_ORG    EQU 0xFC00 ; page 2, after the 3 KiB INPUT_EDIT slot
@@ -109,7 +110,7 @@ ovl_atlas_table:
     defw OVL_WIN3_NET_ORG         ; id 3  (NET_CONNECT) -- S8 step 8b, page 2
     defw 0x0000   ; id 4  (MQTT_TX)     -- S7/S8 scope
     defw 0x0000   ; id 5  (DIRECT)      -- S7/S8 scope
-    defw 0x0000   ; id 6  (MENU_CONFIG) -- S9 scope
+    defw OVL_WIN3_MENU_CONFIG_ORG ; id 6  (MENU_CONFIG) -- S9 scope
     defw 0x0000   ; id 7  (STATUS)      -- not ported (native resident C)
     defw 0x0000   ; id 8  (SETUP)       -- S9 scope
     defw OVL_WIN3_INPUT_EDIT_ORG  ; id 9  (INPUT_EDIT)  -- S9 chat pass, page 2
@@ -132,7 +133,7 @@ ovl_atlas_mode_table:
     defb OVL_MODE_WIN3   ; id 3  (NET_CONNECT) -- S8 step 8b, page 2
     defb OVL_MODE_COPY   ; id 4  (MQTT_TX)     -- placeholder
     defb OVL_MODE_COPY   ; id 5  (DIRECT)      -- placeholder
-    defb OVL_MODE_COPY   ; id 6  (MENU_CONFIG) -- placeholder
+    defb OVL_MODE_WIN3   ; id 6  (MENU_CONFIG) -- placeholder
     defb OVL_MODE_COPY   ; id 7  (STATUS)      -- placeholder
     defb OVL_MODE_COPY   ; id 8  (SETUP)       -- placeholder
     defb OVL_MODE_WIN3   ; id 9  (INPUT_EDIT)  -- S9 chat pass, page 2

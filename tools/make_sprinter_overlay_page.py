@@ -118,8 +118,8 @@ LAYOUT = [
     ("BOARD", 3072),
     ("SAVELOAD", 2560),
     ("RESTORE", 3072),
-    ("FILEUI", 5120),
-    ("RESERVE", 512),
+    ("FILEUI", 4096),
+    ("MENU_CONFIG", 1536),
 ]
 
 LAYOUT2 = [

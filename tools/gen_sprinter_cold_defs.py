@@ -153,7 +153,6 @@ COLD_RESIDENT_SYMBOLS = [
     # (frame-loop state lives in main.c, the menu dispatch lives here).
     "about_open",
     "net_apply_loaded_snapshot",
-    "menu_cycle_theme",
     "menu_flip_board",
     "saveload_full_redraw",
     # --- S8 relief pass, third cut ------------------------------------------

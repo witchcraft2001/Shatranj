@@ -1,3 +1,4 @@
+    EXTERN LOWRAM_PIECE_STATE_ADDR
 ; Board rendering core (port.md section 3.10/S5 substep 3, plan D4/D7-ter).
 ; z88dk-z80asm module.
 ;
@@ -327,39 +328,27 @@ cell_bg:
     add a,2
     ret
 
-; A=piece_index(0-11), B=bg_offset(0=light,1=dark,2=flash). Returns A=slot,
-; E=physical asset page. Always piece set 0 (slot_base 0): unlike
-; scene_s4.asm's scene_piece_slot_and_page, there is no hotkey-driven set
-; switch here -- PIECE_ORDER packs both colours of one set on one page, so
-; every piece_index 0-11 reads piece_page1.
-;
-; bg_offset 2 (S9 move-flash) is the odd one out: the light/dark pair lives
-; in set 0's own 24-slot block on piece_page1, but the flash-background
-; tiles are packed as a separate 12-slot block on piece_page2, after the
-; last set's normal block (tools/build_sprinter_piece_tiles.py's own
-; layout comment). PIECE_FLASH_* below are that tool's published manifest
-; values for set 0 -- tests/tools/test_sprinter_piece_tiles.py parses them
-; straight out of this file and fails if the two ever drift apart, the
-; same "one hand-copied constant, one machine check" shape the cold-page
-; bridges use. Clobbers AF, C.
+; A=piece index, B=background (light/dark/flash). The MENU_CONFIG
+; overlay resolves manifest page indices into persistent WIN2 parameters.
+; Returns A=slot, E=physical page. Clobbers AF,C.
 PIECE_FLASH_BG_OFFSET EQU 2
-PIECE_FLASH_SLOT_BASE EQU 24    ; set 0's flash block, on piece_page2
 piece_slot_and_page:
     ld c,a
     ld a,b
     cp PIECE_FLASH_BG_OFFSET
     jr z,@flash
-    ld a,(piece_page1)
+    ld a,(LOWRAM_PIECE_STATE_ADDR+1)
     ld e,a
-    ld a,c
-    add a,a                 ; *2
-    add a,b                 ; + bg_offset
+    ld a,(LOWRAM_PIECE_STATE_ADDR+2)
+    add a,c
+    add a,c
+    add a,b
     ret
 @flash:
-    ld a,(piece_page2)
+    ld a,(LOWRAM_PIECE_STATE_ADDR+3)
     ld e,a
-    ld a,c
-    add a,PIECE_FLASH_SLOT_BASE
+    ld a,(LOWRAM_PIECE_STATE_ADDR+4)
+    add a,c
     ret
 
 ; --- single square --------------------------------------------------------
@@ -762,165 +751,21 @@ render_status_clock:
 ; one out, not the abbreviation. DISCONNECT's own width (56px) would have
 ; forced a pitch wide enough to overflow past PANEL_X=408 before ABOUT.
 ;
-; MENU_TAB_PITCH is also kept small enough that every table entry below
-; (MENU_LABEL_X + up to 5*MENU_TAB_PITCH) stays under 256 -- menu_tab_x_
-; table is a byte table (SCREEN_W=640 needs a word to hold an arbitrary X,
-; but every position actually used here does not).
-MENU_COLOR EQU $01             ; bg=0 (screen bg), fg=1 (text) -- unfocused
-MENU_COLOR_FOCUS EQU $10       ; bg=1 (highlight fill), fg=0 -- focused text
-MENU_TAB_COUNT EQU 6
-MENU_LABEL_X EQU 8
-MENU_LABEL_Y EQU MENU_Y+2      ; vertically centre an 8px glyph in the
-                                ; 12px-tall MENU band
-MENU_TAB_PITCH EQU 48          ; px, even; widest label (THEME, 32px) plus
-                                ; box padding fits with room to spare
-MENU_BOX_X_PAD EQU 4           ; px, box left edge relative to the label's
-                                ; own X
-MENU_BOX_W EQU 40               ; px; MENU_BOX_W_BYTES is gfx_fill_rect's
-                                 ; D (width in bytes, 2px/byte)
-MENU_BOX_W_BYTES EQU MENU_BOX_W/2
-MENU_H EQU 12                   ; same 12px rhythm as every other row band
-                                 ; (MOVE_ROW_H, STATUS_H...)
-MENU_ROW_CLEAR_W_BYTES EQU PANEL_X/2   ; clears only the tab area, leaves
-                                         ; TURN_LABEL (PANEL_X+) untouched
-
-menu_tab_x_table:
-    defb MENU_LABEL_X+0*MENU_TAB_PITCH
-    defb MENU_LABEL_X+1*MENU_TAB_PITCH
-    defb MENU_LABEL_X+2*MENU_TAB_PITCH
-    defb MENU_LABEL_X+3*MENU_TAB_PITCH
-    defb MENU_LABEL_X+4*MENU_TAB_PITCH
-    defb MENU_LABEL_X+5*MENU_TAB_PITCH
-
-; Per-tab absolute text X (S5-finish plan F2, the cosmetic fix fix #3's own
-; MAME confirmation deferred): box_left(tab) + a centring offset, so the
-; label sits centred in its MENU_BOX_W-wide highlight box instead of pinned
-; to the box's left edge like fix #3 shipped it -- short labels (FILE/FLIP,
-; 20px) had a lot of empty space on the box's right, long ones (THEME,
-; 32px) almost none, confirmed by the human tester in MAME and tracked as
-; non-blocking. Offset is (MENU_BOX_W-label_width) truncated to the nearest
-; EVEN number via (/4)*2, not the exact /2 centre, because text_print's IX
-; must be even (2px/byte packed columns, see text640.asm's own banner) --
-; box_left is always even (MENU_LABEL_X/MENU_TAB_PITCH/MENU_BOX_X_PAD all
-; even) so an even offset is what keeps the sum even. Label widths are the
-; same font.bin packed-column-width readout fix #3 already used: FILE=20,
-; DISCC=26, RESET=30, FLIP=20, THEME=32, ABOUT=30px.
-menu_label_x_table:
-    defb MENU_LABEL_X+0*MENU_TAB_PITCH-MENU_BOX_X_PAD+((MENU_BOX_W-20)/4)*2 ; FILE
-    defb MENU_LABEL_X+1*MENU_TAB_PITCH-MENU_BOX_X_PAD+((MENU_BOX_W-26)/4)*2 ; DISCC
-    defb MENU_LABEL_X+2*MENU_TAB_PITCH-MENU_BOX_X_PAD+((MENU_BOX_W-30)/4)*2 ; RESET
-    defb MENU_LABEL_X+3*MENU_TAB_PITCH-MENU_BOX_X_PAD+((MENU_BOX_W-20)/4)*2 ; FLIP
-    defb MENU_LABEL_X+4*MENU_TAB_PITCH-MENU_BOX_X_PAD+((MENU_BOX_W-32)/4)*2 ; THEME
-    defb MENU_LABEL_X+5*MENU_TAB_PITCH-MENU_BOX_X_PAD+((MENU_BOX_W-30)/4)*2 ; ABOUT
-
-menu_tab_names:
-    defw @file_msg, @discc_msg, @rest_msg, @flip_msg, @theme_msg, @about_msg
-@file_msg: defb "FILE",0
-@discc_msg: defb "DISCC",0
-@rest_msg: defb "RESET",0
-@flip_msg: defb "FLIP",0
-@theme_msg: defb "THEME",0
-@about_msg: defb "ABOUT",0
-
-; A=focus index in (0-5 highlighted; MENU_TAB_COUNT or higher = none, i.e.
-; closed). Clears the tab row's own background, then paints all six
-; labels; whichever index matches A gets a highlight box (gfx_fill_rect)
-; painted behind it first and MENU_COLOR_FOCUS ink instead of MENU_COLOR.
-; Single-pass (back_base only) -- reachable live every open/close/
-; navigate. Clobbers everything.
+; S14 menu painting lives in MENU_CONFIG. WIN3 is restored by dispatch
+; before this cold-page caller resumes.
+MENU_TAB_COUNT EQU 7
+    EXTERN spectrum_overlay_exec_cached
+    EXTERN LOWRAM_OVERLAY_CONTEXT_ADDR
 render_menu_tabs:
-    ld (@focus),a
-    ld hl,(back_base)
-    ld (@dest_base),hl
-
-    xor a
-    ld b,0
-    ld c,MENU_Y
-    ld d,MENU_ROW_CLEAR_W_BYTES
-    ld e,MENU_H
-    ld hl,(@dest_base)
-    call gfx_fill_rect
-
-    xor a
-    ld (@i),a
-@loop:
-    ld a,(@i)
-    ld hl,menu_tab_x_table
-    ld e,a
-    ld d,0
-    add hl,de
-    ld a,(hl)
-    ld (@x),a
-
-    ld a,(@i)
-    ld hl,menu_label_x_table
-    ld e,a
-    ld d,0
-    add hl,de
-    ld a,(hl)
-    ld (@text_x),a
-
-    ld a,(@i)
-    add a,a
-    ld hl,menu_tab_names
-    ld e,a
-    ld d,0
-    add hl,de
-    ld e,(hl)
-    inc hl
-    ld d,(hl)
-    ld (@label),de
-
-    ld a,(@i)
-    ld hl,@focus
-    cp (hl)
-    ld a,MENU_COLOR
-    jr nz,@color_set
-    call @paint_box
-    ld a,MENU_COLOR_FOCUS
-@color_set:
-    ld (@color),a
-
-    ld de,(@label)
-    ld a,(@text_x)
-    ld ixl,a
-    ld ixh,0
-    ld c,MENU_LABEL_Y
-    ld a,(@color)
-    ld hl,(@dest_base)
-    call text_print
-
-    ld a,(@i)
-    inc a
-    ld (@i),a
-    cp MENU_TAB_COUNT
-    jr nz,@loop
+    ld (LOWRAM_OVERLAY_CONTEXT_ADDR),a
+    ld hl,6
+    push hl
+    ld hl,0
+    push hl
+    call spectrum_overlay_exec_cached
+    pop bc
+    pop bc
     ret
-
-; Local helper, called (not jumped) from the loop above so it returns
-; into it. Paints the MENU_COLOR_FOCUS highlight box behind (@i)'s tab.
-; Clobbers everything.
-@paint_box:
-    ld a,(@x)
-    sub MENU_BOX_X_PAD
-    srl a                        ; px -> byte offset
-    ld b,a
-    ld c,MENU_Y
-    ld d,MENU_BOX_W_BYTES
-    ld e,MENU_H
-    ld a,1                       ; palette index 1, matches MENU_COLOR_
-                                  ; FOCUS's bg nibble above
-    ld hl,(@dest_base)
-    call gfx_fill_rect
-    ret
-
-@focus: defb 0
-@i: defb 0
-@x: defb 0
-@text_x: defb 0
-@color: defb 0
-@label: dw 0
-@dest_base: dw 0
 
 ; No arguments. Paints the closed (no tab focused) menu-tab row.
 ;

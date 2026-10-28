@@ -45,6 +45,7 @@ python3 "$repo_root/tools/gen_sprinter_render_layout.py" \
 python3 "$repo_root/tools/gen_sprinter_palette.py" \
   --palette "$repo_root/assets/sprinter/palette.json" \
   --inc-out "$generated_dir/palette_base.inc" \
+  --themes-inc-out "$generated_dir/theme_squares.inc" \
   --theme-bin-out "$build_dir/theme_table.bin" >/dev/null
 
 # preload_loader.asm's boot banner. Same generator the Makefile's
@@ -112,6 +113,17 @@ byte_at() { dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d 
 fail=0
 ran=0
 shopt -s nullglob
+# S14: addresses from the shipped menu overlay's own link map.
+python3 - "$repo_root/build/sprinter/overlay_menu.map" "$generated_dir/menu_test_defs.inc" <<'PYCODE'
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+match = re.search(r"^piece_set_rgb\s*=\s*\$([0-9A-Fa-f]+)", text, re.M)
+if match is None:
+    raise SystemExit("missing piece_set_rgb in menu overlay map")
+Path(sys.argv[2]).write_text("menu_piece_rgb EQU $" + match.group(1) + "\n")
+PYCODE
+
 for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
   ran=$((ran + 1))
   name="$(basename "$src" .asm)"

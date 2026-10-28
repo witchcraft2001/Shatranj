@@ -115,65 +115,16 @@ class SprinterPaletteTests(unittest.TestCase):
 
 
 class ShippedThemeTableTests(unittest.TestCase):
-    """palette.json's themes vs the table the resident actually uses.
-
-    The theme BLOB this tool packs into the assets page is read by nobody:
-    it was S4's scene demo's source, and the shipped board themes are
-    asm/sprinter/video.asm's hand-written theme_squares_rgb. So the JSON
-    is documentation for two audiences that both act on it -- the artist
-    brief quotes these square colours to judge piece contrast, and the
-    piece-set validator rejects a piece colour that repeats one -- and
-    documentation that drifts from the .asm is worse than none. Until the
-    .asm table is generated from here (port.md stage S14), this test is
-    the join."""
-
-    def _asm_themes(self) -> list[tuple[str, str, str]]:
-        text = VIDEO_ASM.read_text(encoding="utf-8", errors="replace")
-        table = text.split("theme_squares_rgb:", 1)
-        self.assertEqual(len(table), 2, "theme_squares_rgb: not found in video.asm")
-        themes: list[tuple[str, str, str]] = []
-        name: str | None = None
-        rgbs: list[str] = []
-        for line in table[1].splitlines():
-            stripped = line.strip()
-            # "; <n> <NAME>" opens a record. Guarded on n == the record we
-            # are waiting for, and on not already having a name: the first
-            # record's comment wraps onto a second "; 0 ..." line, which an
-            # unguarded match would read as a theme called "here".
-            comment = re.match(r"^;\s*(\d+)\s+([A-Za-z]+)", stripped)
-            if comment and name is None and int(comment.group(1)) == len(themes):
-                name = comment.group(2)
-                rgbs = []
-                continue
-            db = re.match(
-                r"^DB\s+#([0-9A-Fa-f]{2}),#([0-9A-Fa-f]{2}),#([0-9A-Fa-f]{2})",
-                stripped,
-            )
-            if db:
-                rgbs.append("#" + "".join(g.upper() for g in db.groups()))
-                if len(rgbs) == 2 and name is not None:
-                    themes.append((name, rgbs[0], rgbs[1]))
-                    name, rgbs = None, []
-                continue
-            if stripped and not stripped.startswith(";") and themes:
-                break          # first non-table line after the records
-        return themes
-
-    def test_json_themes_mirror_video_asm(self) -> None:
-        asm_themes = self._asm_themes()
+    def test_generated_square_table(self) -> None:
         palette = gsp.load_palette_file(PALETTE_JSON)
-        json_themes = [
-            (t["name"], t["entries"]["2"].upper(), t["entries"]["3"].upper())
-            for t in palette["themes"]
-        ]
-        self.assertEqual(json_themes, asm_themes)
-
-    def test_theme_count_equ_matches(self) -> None:
-        text = VIDEO_ASM.read_text(encoding="utf-8", errors="replace")
-        match = re.search(r"THEME_COUNT\s+EQU\s+(\d+)", text)
-        self.assertIsNotNone(match, "THEME_COUNT EQU not found in video.asm")
-        palette = gsp.load_palette_file(PALETTE_JSON)
-        self.assertEqual(int(match.group(1)), len(palette["themes"]))
+        table = gsp.render_theme_squares_inc(palette)
+        self.assertIn('INCLUDE "theme_squares.inc"', (ROOT / "asm/sprinter/zcc/menu_sprinter.asm").read_text())
+        self.assertEqual(table, gsp.render_theme_squares_inc(palette))
+        rows = [line.split("DB ")[1] for line in table.splitlines() if "DB " in line]
+        actual = bytes(int(v) for row in rows for v in row.split(","))
+        expected = bytes(v for theme in palette["themes"] for i in ("2", "3")
+                         for v in gsp._parse_rgb(theme["entries"][i], "test"))
+        self.assertEqual(actual, expected)
 
 
 class PieceSetPaletteTests(unittest.TestCase):

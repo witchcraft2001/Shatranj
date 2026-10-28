@@ -61,6 +61,7 @@
 #include "common/protocol/mqtt_session_protocol.h"
 #include "spectrum/board/board.h"
 #include "spectrum/overlay/overlay_context.h"
+#include "sprinter/menu_sprinter.h"
 #include "common/chess/rules_compact.h"
 #include "spectrum/ui/gui.h"
 #include "spectrum/ui/info_panel.h"
@@ -825,7 +826,15 @@ extern void saveload_full_redraw(void);
  * (below) -- none of the three touch net_active-guarded state, so they
  * moved back to WIN1 with the rest of the save/load section in the second
  * relief cut (main.c's own comment ahead of pending_local_ply). */
-extern void menu_cycle_theme(void);
+static unsigned char menu_theme_index;
+static void menu_palette_action(unsigned char op, unsigned char index) {
+    spectrum_overlay_context[0] = index;
+    spectrum_overlay_exec_cached(SPECTRUM_OVL_MENU_CONFIG, op);
+}
+static void menu_cycle_theme(void) {
+    menu_theme_index = (menu_theme_index + 1u) % NETCHESSZX_BOARD_THEME_COUNT;
+    menu_palette_action(SPRINTER_MENU_APPLY_THEME, menu_theme_index);
+}
 extern void menu_flip_board(void);
 
 /* Bridged from main.c (WIN1): handle_menu_action's FILE tab (below) --
@@ -2503,6 +2512,9 @@ void handle_menu_action(unsigned char action) {
         menu_reset_game();
     } else if (action == SPECTRUM_GUI_KEY_MENU_THEME) {
         menu_cycle_theme();
+    } else if (action == SPECTRUM_GUI_KEY_MENU_PIECES) {
+        menu_palette_action(SPRINTER_MENU_NEXT_PIECES, 0u);
+        saveload_full_redraw();
     } else if (action == SPECTRUM_GUI_KEY_MENU_FLIP) {
         menu_flip_board();
     } else if (action == SPECTRUM_GUI_KEY_MENU_FILE) {

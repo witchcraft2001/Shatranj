@@ -1286,14 +1286,18 @@ $(SPRINTER_RENDER_LAYOUT_H): tools/gen_sprinter_render_layout.py $(SPRINTER_REND
 	$(PYTHON) tools/gen_sprinter_render_layout.py --layout $(SPRINTER_RENDER_LAYOUT_JSON) \
 		--inc-out $(SPRINTER_RENDER_LAYOUT_INC) --h-out $(SPRINTER_RENDER_LAYOUT_H)
 
-$(SPRINTER_PALETTE_INC): tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON) | $(SPRINTER_GENERATED_DIR)
+$(SPRINTER_PALETTE_INC) $(SPRINTER_GENERATED_DIR)/theme_squares.inc $(SPRINTER_GENERATED_DIR)/piece_set_palettes.inc: tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON) | $(SPRINTER_GENERATED_DIR)
 	$(PYTHON) tools/gen_sprinter_palette.py --palette $(SPRINTER_PALETTE_JSON) \
-		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN)
+		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN) \
+		--themes-inc-out $(SPRINTER_GENERATED_DIR)/theme_squares.inc \
+		--piece-sets-inc-out $(SPRINTER_GENERATED_DIR)/piece_set_palettes.inc
 
 # Mirror rule, not a grouped "&:" target -- see the fixed_layout.h comment above.
 $(SPRINTER_THEME_BIN): tools/gen_sprinter_palette.py $(SPRINTER_PALETTE_JSON) | $(SPRINTER_GENERATED_DIR)
 	$(PYTHON) tools/gen_sprinter_palette.py --palette $(SPRINTER_PALETTE_JSON) \
-		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN)
+		--inc-out $(SPRINTER_PALETTE_INC) --theme-bin-out $(SPRINTER_THEME_BIN) \
+		--themes-inc-out $(SPRINTER_GENERATED_DIR)/theme_squares.inc \
+		--piece-sets-inc-out $(SPRINTER_GENERATED_DIR)/piece_set_palettes.inc
 
 # VERSION is the single source of truth (CLAUDE.md rule 5: no version
 # literals in code); preload_loader.asm's boot banner reads sprinter_banner_
@@ -1340,12 +1344,11 @@ $(SPRINTER_UI_ASSETS_MANIFEST): $(SPRINTER_UI_ASSETS_DEPS) | $(SPRINTER_BUILD_DI
 		--output $(SPRINTER_UI_ASSETS_BIN) --manifest-out $(SPRINTER_UI_ASSETS_MANIFEST)
 
 $(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs/afnt640/font.bin \
-                         $(SPRINTER_OVL_CONTROL_BIN) $(SPRINTER_THEME_BIN) $(SPRINTER_UI_ASSETS_BIN) \
+                         $(SPRINTER_OVL_CONTROL_BIN) $(SPRINTER_UI_ASSETS_BIN) \
                          | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_assets_page.py \
 		--font-bin extern/sprinter-libs/afnt640/font.bin \
 		--overlay-bin $(SPRINTER_OVL_CONTROL_BIN) \
-		--theme-bin $(SPRINTER_THEME_BIN) \
 		--ui-bin $(SPRINTER_UI_ASSETS_BIN) \
 		--output $(SPRINTER_ASSETS_PAGE)
 
@@ -1358,6 +1361,7 @@ $(SPRINTER_PIECE_PAGE1): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
 		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--locations-inc-out $(SPRINTER_GENERATED_DIR)/piece_locations.inc \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
 # Mirror rules, not a grouped "&:" target -- see the fixed_layout.h comment
@@ -1367,13 +1371,15 @@ $(SPRINTER_PIECE_PAGE2): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
 		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--locations-inc-out $(SPRINTER_GENERATED_DIR)/piece_locations.inc \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
-$(SPRINTER_PIECE_TILES_MANIFEST): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
+$(SPRINTER_PIECE_TILES_MANIFEST) $(SPRINTER_GENERATED_DIR)/piece_locations.inc: $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/build_sprinter_piece_tiles.py \
 		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--locations-inc-out $(SPRINTER_GENERATED_DIR)/piece_locations.inc \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
 # About artwork. Mirror rules again, one per output, for the same GNU make
@@ -1989,11 +1995,11 @@ SPRINTER_OVL_WIN3_PAGE := $(SPRINTER_BUILD_DIR)/ovl_win3_page.bin
 
 $(SPRINTER_OVL_WIN3_PAGE): tools/make_sprinter_overlay_page.py $(SPRINTER_OVL_RULES_BIN) \
                        $(SPRINTER_OVL_BOARD_BIN) $(SPRINTER_OVL_SAVELOAD_BIN) \
-                       $(SPRINTER_OVL_RESTORE_BIN) $(SPRINTER_OVL_FILEUI_BIN) | $(SPRINTER_BUILD_DIR)
+                       $(SPRINTER_OVL_RESTORE_BIN) $(SPRINTER_OVL_FILEUI_BIN) $(SPRINTER_BUILD_DIR)/overlay_menu.bin | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/make_sprinter_overlay_page.py \
 		--rules-bin $(SPRINTER_OVL_RULES_BIN) --board-bin $(SPRINTER_OVL_BOARD_BIN) \
 		--saveload-bin $(SPRINTER_OVL_SAVELOAD_BIN) --restore-bin $(SPRINTER_OVL_RESTORE_BIN) \
-		--fileui-bin $(SPRINTER_OVL_FILEUI_BIN) \
+		--fileui-bin $(SPRINTER_OVL_FILEUI_BIN) --menu_config-bin $(SPRINTER_BUILD_DIR)/overlay_menu.bin \
 		--output $(SPRINTER_OVL_WIN3_PAGE)
 
 # WIN3 overlay page 2 (S8 step 8b, S9 chat pass): NET + INPUT_EDIT, plus a
@@ -2069,7 +2075,7 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
                    $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC) \
                    $(SPRINTER_NET_FRAME_C_BIN) $(SPRINTER_RESIDENT_BIN) \
-                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_ABOUT_BIN) $(SPRINTER_OVL_NET_BIN)
+                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_ABOUT_BIN) $(SPRINTER_OVL_NET_BIN) $(SPRINTER_BUILD_DIR)/overlay_menu.bin $(SPRINTER_BUILD_DIR)/overlay_menu.map
 	tools/run_sprinter_z80_tests.sh
 
 # net_frame.c (S7 step 2) builds and behaves identically under gcc: no
@@ -2132,6 +2138,7 @@ sprinter-host-test: $(SPRINTER_DIRECT_HOST_TEST) $(SPRINTER_NET_FRAME_HOST_TEST)
 	./$(SPRINTER_NET_FRAME_HOST_TEST)
 	./$(SPRINTER_NET_UI_FIELDS_HOST_TEST)
 	./$(SPRINTER_CHAT_KEY_HOST_TEST)
+	$(PYTHON) tools/test_sprinter_menu.py
 
 SPRINTER_SIZE_REPORT_JSON := $(SPRINTER_BUILD_DIR)/size_report.json
 SPRINTER_SIZE_REPORT_MD := $(SPRINTER_BUILD_DIR)/size_report.md
@@ -2235,3 +2242,9 @@ $(SPRINTER_BUILD_DIR)/qt_direct_peer: tests/sprinter/host/qt_direct_peer.cpp src
 	    tests/sprinter/host/qt_direct_peer.cpp src/pc/client/direct_session_adapter.cpp \
 	    $(CLIENT_CMAKE_BUILD_DIR)/libshatranj-common.a \
 	    $$(pkg-config --libs Qt6Core Qt6Network) -o $@
+
+# S14: menu painter and palette selection in the MENU_CONFIG WIN3 slot.
+$(SPRINTER_BUILD_DIR)/overlay_menu.bin $(SPRINTER_BUILD_DIR)/overlay_menu.map: asm/sprinter/zcc/menu_sprinter.asm $(SPRINTER_PLATFORM_DEFS_ASM) $(SPRINTER_PALETTE_INC) $(SPRINTER_PIECE_TILES_MANIFEST) $(SPRINTER_GENERATED_DIR)/piece_locations.inc $(SPRINTER_GENERATED_DIR)/piece_set_palettes.inc $(SPRINTER_GENERATED_DIR)/theme_squares.inc tools/make_sprinter_overlay_page.py
+	$(Z80ASM) -I$(SPRINTER_GENERATED_DIR) asm/sprinter/zcc/menu_sprinter.asm
+	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
+	$(Z80ASM) -b -m -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org MENU_CONFIG) -o=$(SPRINTER_BUILD_DIR)/overlay_menu.bin asm/sprinter/zcc/menu_sprinter.o $(SPRINTER_GENERATED_DIR)/platform_defs.o

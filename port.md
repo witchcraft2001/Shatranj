@@ -3787,43 +3787,27 @@ ZX/Next/Qt побайтно не изменились. **В MAME/на живом
   в настройках; глушение на время блокирующих сетевых операций.
 - DoD: музыка не влияет на бюджет кадра и сеть (замер S2-бенчем).
 
-### - [ ] S14. Палитра набора фигур и выбор набора
+### - [x] S14. Piece palettes and set selection (automatic checks complete)
 
-Обязательный этап, не опция: порядок — до релиз-кандидата S10. Сейчас
-резидент рисует только набор 0 (`piece_slot_and_page`, slot_base 0), а
-цвета фигур одни на все наборы, из-за чего два из трёх упакованных
-наборов на экран не попадают вовсе.
+`PIECES` cycles California → MPChess → Totoy → California. Selection
+starts at California on launch and remains in a named five-byte WIN2
+`LOWRAM_PIECE_STATE` block until exit. About, fade, load and network
+session changes do not reset it. THEME owns only palette entries 2–3;
+pieces own entries 4–7 in the persistent `palette_rgb` table.
 
-- Задачи:
-  1. `piece_set_palettes.inc` — в сборку (`Makefile`:
-     `--piece-sets-inc-out`; `video.asm` INCLUDE рядом с
-     `palette_base.inc`).
-  2. `piece_set_apply(index)` в `video.asm` по образцу
-     `theme_set_squares`: индекс mod `PIECE_SET_COUNT`, 12 байт в
-     `palette_rgb+4*3`, `palette_apply_from`.
-  3. `render_core.asm`: `piece_slot_and_page` берёт slot_base и страницу
-     из ячейки текущего набора вместо зашитых set 0 / `PIECE_FLASH_SLOT_
-     BASE EQU 24`; ячейку пишет тот же код, что зовёт `piece_set_apply`.
-     Значения — из манифеста упаковщика (`sets[i].slot_base`,
-     `flash_slot_base`), тем же способом, каким сейчас сверяется EQU.
-  4. Пункт меню рядом с THEME: `menu_cycle_piece_set` в `main.c` —
-     инкремент индекса, `piece_set_apply`, установка slot_base, полная
-     перерисовка доски (в отличие от темы, одной палитрой не обойтись).
-  5. Индекс набора переживает About/fade/restore тем же путём, что
-     индекс темы (`menu_theme_index`).
-  6. Тесты: z80-тест «палитра после смены набора и после `video_init`»,
-     тест slot_base по индексу набора, host-тест пункта меню; гейты имён
-     и коллизий цветов уже есть (`tests/tools/test_sprinter_palette.py`,
-     `test_sprinter_piece_tiles.py`).
-  7. Заодно: генерировать `theme_squares_rgb` из `palette.json` (сейчас
-     таблица дублируется руками, расхождение ловит тест) и решить судьбу
-     тема-блоба в слоте 27 — либо читать его, либо перестать паковать.
-  8. Обновить `docs/sprinter-artist-assets.md`: три набора становятся
-     видимыми, у каждого своя четвёрка цветов.
-- DoD: три набора переключаются из меню, у каждого своя палитра; палитра
-  переживает About и fade; смена набора не роняет кадровый бюджет
-  (перерисовка доски — уже существующий full repaint); гейты зелёные.
-- **HW-pending:** прогон на железе вместе с ближайшей сборкой.
+The MENU_CONFIG overlay occupies 1536 bytes at `0xFA00`, reclaimed from
+FILEUI (4096-byte budget) and the old reserve. Other overlay origins are
+unchanged. Menu painting, generated palette tables and selection run in
+this overlay; board repaint runs after dispatch returns. Labels are
+staged in WIN2 before text calls, and menu X coordinates use words.
+
+`palette.json` generates theme and piece colours. The tile packer generates
+normal/flash page and slot records and checks palette set order. Slot 27
+of the asset page is zero; the unused theme blob is no longer packaged.
+Committed PNGs and their colours are unchanged.
+
+Validation and manual acceptance: [S14 tester notes](docs/sprinter-testnotes/S14.md).
+Hardware and visual MAME acceptance remain pending.
 
 > SRAM CACHE и spevosdk-подобный «полный контроль памяти» этапами не
 > являются — отвергнуты решением в конце §2. Если бенчи S2/S8 вопреки

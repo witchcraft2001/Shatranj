@@ -18,7 +18,11 @@
 
 #define GUI_KEY_LEFT 0x83u
 #define GUI_KEY_RIGHT 0x84u
+#ifdef NETCHESSZX_SPRINTER
+#define MENU_OPTION_COUNT 7u
+#else
 #define MENU_OPTION_COUNT 6u
+#endif
 
 static void render_clock_only(void);
 
@@ -912,7 +916,14 @@ uint8_t spectrum_gui_handle_menu_key(uint8_t key) NETCHESSZX_FASTCALL
         if (menu_focus == 4u) {
             return menu_action_key(SPECTRUM_GUI_KEY_MENU_THEME);
         }
+#ifdef NETCHESSZX_SPRINTER
         if (menu_focus == 5u) {
+            return menu_action_key(SPECTRUM_GUI_KEY_MENU_PIECES);
+        }
+        if (menu_focus == 6u) {
+#else
+        if (menu_focus == 5u) {
+#endif
             return menu_action_key(SPECTRUM_GUI_KEY_MENU_ABOUT);
         }
     }

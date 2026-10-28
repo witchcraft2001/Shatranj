@@ -197,9 +197,16 @@
             "desc": "Stable hosting lifecycle and session handshake state shared by NET and cold pages."
         },
         {
-            "name": "LOWRAM_NET_SPARE",
+            "name": "LOWRAM_PIECE_STATE",
             "addr": "0xB8D7",
-            "size": "0x29",
+            "size": "0x5",
+            "owner": "S14 piece selection",
+            "desc": "Index, normal physical page and slot, flash physical page and slot. Survives video reinitialization."
+        },
+        {
+            "name": "LOWRAM_NET_SPARE",
+            "addr": "0xB8DC",
+            "size": "0x24",
             "owner": "unassigned (S8 step 6 will take restore_b64_pending here)",
             "desc": "S8 step 1: remainder of the old LOWRAM_NET span after LOWRAM_NET_GATE/LOWRAM_MQTT_STREAM/LOWRAM_MQTT_PACKET are carved out; S9 follow-up gave its first 0x41 bytes to LOWRAM_TEXT_STAGE. End is flush with CANARY's start (0xB900), no gap -- same invariant the old single LOWRAM_NET region held."
         },

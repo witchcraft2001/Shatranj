@@ -14,16 +14,10 @@ packer's per-set colours, and the piece rasterizer's quantization targets
   - asm/sprinter/generated/palette_base.inc: the 16x3-byte palette_rgb
     table asm/sprinter/video_s1.asm INCLUDEs (replacing its old ad-hoc EGA
     ramp).
-  - asm/sprinter/generated/piece_set_palettes.inc (render_piece_sets_inc):
-    the per-set 4-colour records. Written on demand via
-    --piece-sets-inc-out; its Z80 consumer arrives with the set-selection
-    UI (port.md stage S14), so the build does not generate it yet.
-  - a binary theme-table blob (build_theme_blob) packed into the assets
-    page at slot 27 by tools/make_sprinter_assets_page.py's --theme-bin.
-    NOTE: no shipped code reads that blob. It was S4's scene demo's theme
-    source; the resident's own themes are asm/sprinter/video.asm's
-    hand-written theme_squares_rgb, which this file's "themes" mirror
-    verbatim under a test that parses the .asm back out.
+  - piece_set_palettes.inc and theme_squares.inc: generated palette
+    tables consumed by the S14 MENU_CONFIG overlay.
+  - a legacy binary theme-table blob (build_theme_blob), retained for
+    tooling compatibility. Production no longer packs it into slot 27.
     Format v1: byte 0 = format (1), byte 1 = theme count, byte 2 = entries
     per theme E, byte 3 = reserved (0), then per theme: 8-byte ASCII
     NUL-padded name, then E x (palette index, R, G, B).
@@ -363,14 +357,9 @@ def render_inc(palette: dict) -> str:
 def render_piece_sets_inc(palette: dict) -> str:
     """The per-set piece palettes as a z88dk-z80asm include.
 
-    Shaped like palette_base.inc rather than like the theme BLOB on
-    purpose: the theme blob went into the assets page for S4's scene demo
-    and no shipped code ever read it, while the boot palette's .inc is
-    read by video.asm every day. The consumer (a piece_set_apply routine
-    next to theme_set_squares) lands with the set-selection UI -- port.md
-    section 3.5 and stage S14; this generator is written first so the data
-    format is settled and gated before the Z80 side exists, the same split
-    build_sprinter_about.py had before S9."""
+    The MENU_CONFIG overlay copies these RGB triples to entries 4–7 of
+    the persistent base palette before applying the current fade level.
+    """
     guard = "SPRINTER_PIECE_SET_PALETTES_INC"
     piece_sets = palette["piece_sets"]
     lines = [
@@ -394,6 +383,15 @@ def render_piece_sets_inc(palette: dict) -> str:
     lines.append("        ENDIF")
     lines.append("")
     return "\n".join(lines)
+
+
+def render_theme_squares_inc(palette: dict) -> str:
+    lines = [f"THEME_COUNT EQU {len(palette['themes'])}", "theme_squares_rgb:"]
+    for theme in palette["themes"]:
+        for index in ("2", "3"):
+            rgb = _parse_rgb(theme["entries"][index], "theme")
+            lines.append("    DB " + ",".join(str(v) for v in rgb))
+    return "\n".join(lines) + "\n"
 
 
 def build_theme_blob(palette: dict) -> bytes:
@@ -677,6 +675,7 @@ def main() -> int:
                         default=Path("assets/sprinter/palette.json"))
     parser.add_argument("--inc-out", type=Path)
     parser.add_argument("--theme-bin-out", type=Path)
+    parser.add_argument("--themes-inc-out", type=Path)
     parser.add_argument("--piece-sets-inc-out", type=Path,
                         help="per-set piece palettes as a z80asm include "
                              "(consumer lands with stage S14; see the module "
@@ -714,6 +713,9 @@ def main() -> int:
     args.theme_bin_out.write_bytes(build_theme_blob(palette))
     print(f"[OK] {args.inc_out}")
     print(f"[OK] {args.theme_bin_out}")
+    if args.themes_inc_out:
+        args.themes_inc_out.parent.mkdir(parents=True, exist_ok=True)
+        args.themes_inc_out.write_text(render_theme_squares_inc(palette), encoding="ascii")
     if args.piece_sets_inc_out:
         args.piece_sets_inc_out.parent.mkdir(parents=True, exist_ok=True)
         args.piece_sets_inc_out.write_text(

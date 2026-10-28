@@ -177,6 +177,9 @@ PLATFORM_SYMBOLS = [
     # overlay lives in WIN3 and so cannot be mapped while the palette
     # registers are -- see video.asm's own comment.
     "palette_apply_from",
+    "palette_rgb",
+    "LOWRAM_PIECE_STATE_ADDR",
+    "LOWRAM_TEXT_STAGE_ADDR",
     # buffers.asm's four About image page cells (S9 About pass). The overlay
     # reads them to know which physical pages to blit from.
     "about_page0",
@@ -193,9 +196,6 @@ PLATFORM_SYMBOLS = [
     "rtc_second",
     # S5-finish plan D12 (THEME menu action): cycles the board light/dark
     # square palette entries (2/3) through a small preset table -- see
-    # video.asm's own theme_set_squares comment for why this is a palette
-    # rewrite, not a redraw, unlike ZX's ATTR-based board_theme_apply.
-    "theme_set_squares",
     # im2_s1.asm -- boot/interrupt/exit primitives, called once each from
     # crt0/_main rather than from the frame loop.
     "im2_install",
@@ -358,6 +358,7 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
 # keeps RESIDENT_TEST_SYMBOLS apart: that list is a shipping contract, this
 # one is a test fixture.
 PLATFORM_TEST_SYMBOLS = [
+    "piece_page1", "piece_page2", "palette_rgb", "video_init", "write_palette_entry",
     "ng_call",
     "ng_c_recv_poll",
     "ng_c_send",
@@ -463,6 +464,9 @@ def _clean_fixture() -> str:
         "write_palette_entry: EQU 0x000044CA\n"
         "video_init: EQU 0x00004600\n"
         "palette_apply_from: EQU 0x00004603\n"
+        "palette_rgb: EQU 0x00008000\n"
+        "LOWRAM_PIECE_STATE_ADDR: EQU 0x0000B8D7\n"
+        "LOWRAM_TEXT_STAGE_ADDR: EQU 0x0000B886\n"
         "about_page0: EQU 0x0000469A\n"
         "flip_mark_dirty_all: EQU 0x000046A0\n"
         "fade_out: EQU 0x00004650\n"
@@ -539,7 +543,6 @@ def _clean_fixture() -> str:
         "OVL_SLOT_SIZE: EQU 0x00000800\n"
         "WIN3_PORT: EQU 0x000000E2\n"
         "LOWRAM_RENDER_SHARED_ADDR: EQU 0x0000B400\n"
-        "theme_set_squares: EQU 0x00004680\n"
     )
 
 
