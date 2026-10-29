@@ -18,6 +18,7 @@
         "cell_h": 24,
         "desc": "8x8 board, 48x24 px/cell; a-h/1-8 coordinate glyphs render OUTSIDE the playfield as on ZX -- a-h in the MOVE band above it, 1-8 in the margin between the screen edge and x."
     },
+    "piece": {"w": 40, "h": 20},
     "panel": {
         "x": 408,
         "w": 232,

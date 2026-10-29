@@ -25,10 +25,16 @@ start:
     ld (text_print),a
     ld hl,record_text
     ld (text_print+1),hl
+    ld a,12
+    ld (#4007),a
     ld a,41
-    ld (plat_piece_page1),a
+    ld (#4009),a
     ld a,73
-    ld (plat_piece_page2),a
+    ld (#400A),a
+    ld a,99
+    ld (#4012),a
+    ld a,105
+    ld (#4013),a
     ; Distinct synthetic RGBs detect wrong set offsets even when artwork
     ; happens to use the same palette. The on-disk assets remain untouched.
     ld hl,colours
@@ -59,6 +65,10 @@ loop:
     ld a,1
     call t_expect_z
     ld a,(expected)
+    ld b,a
+    add a,a
+    add a,b
+    add a,a
     add a,a
     add a,a
     ld e,a
@@ -66,7 +76,7 @@ loop:
     ld hl,locations
     add hl,de
     ld de,#B8D8
-    ld b,4
+    ld b,24
 check_state:
     ld a,(de)
     cp (hl)
@@ -118,6 +128,34 @@ store:
     ld a,h
     or l
     jr nz,loop
+    ld a,11
+    ld (#4007),a
+    ld hl,(#FA07) ; switch to MPChess
+    call invoke
+    ld hl,(#FA07) ; switch to Totoy
+    call invoke
+    ld a,(#B8D8)
+    cp 99
+    ld a,8
+    call t_expect_z
+    ld a,(#B8E4)
+    cp #FF
+    ld a,9
+    call t_expect_z
+    xor a
+    ld (#4007),a
+    ld hl,(#FA03)
+    call invoke
+    ld hl,#B8D8
+    ld b,12
+unavailable:
+    ld a,(hl)
+    cp #FF
+    ld a,10
+    call t_expect_z
+    inc hl
+    inc hl
+    djnz unavailable
     xor a
     ld (text_count),a
     ld hl,#B34F
@@ -156,7 +194,10 @@ expected: db 0
 remaining: dw 0
 text_count: db 0
 last_x: dw 0
-locations: db 41,0,73,24,41,24,73,36,73,0,73,48
+locations:
+    db 41,0,41,6,41,12,41,18,41,24,41,30,41,36,41,42,41,48,41,54,73,0,73,6
+    db 73,12,73,18,73,24,73,30,73,36,73,42,73,48,73,54,99,0,99,6,99,12,99,18
+    db 99,24,99,30,99,36,99,42,99,48,99,54,105,0,105,6,105,12,105,18,105,24,105,30
 skip_rgb:
     inc hl
     inc hl

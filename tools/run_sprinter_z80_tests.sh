@@ -205,7 +205,10 @@ for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
   # default instead would only make a hung test take that much longer to be
   # reported as hung.
   cycles="${SPRINTER_Z80_TEST_CYCLES:-4000000}"
-  if [[ -z "${SPRINTER_Z80_TEST_CYCLES:-}" && "$name" == "t_net_mqtt_read" ]]; then
+  # Piece-set cycling compares 24 persistent address bytes for all 300
+  # switches (rather than the former four-byte block).
+  if [[ -z "${SPRINTER_Z80_TEST_CYCLES:-}" &&
+        ( "$name" == "t_net_mqtt_read" || "$name" == "t_piece_sets" ) ]]; then
     cycles=20000000
   fi
   "$ticks" -pc 0 -counter "$cycles" \

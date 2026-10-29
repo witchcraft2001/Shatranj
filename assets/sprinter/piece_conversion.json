@@ -1,0 +1,11 @@
+{
+  "format": "shatranj-sprinter-conversion-v1",
+  "muted_source_highlights": {
+    "california": "#707070"
+  },
+  "pieces": {},
+  "review_notes": {
+    "california/wQ,bQ": "Reviewed against SVG at 40x20: crown bead centres survive coverage reduction; old 32x16 pixel patches are unnecessary.",
+    "mpchess/wR,bR": "Reviewed against SVG at 40x20: shallow crenellations survive coverage reduction and source-derived rim; old 32x16 cuts are unnecessary."
+  }
+}

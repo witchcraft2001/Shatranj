@@ -49,6 +49,17 @@ class SprinterRenderLayoutTests(unittest.TestCase):
         self.assertEqual(symbols["PANEL_X"], 408)
         self.assertEqual(symbols["PANEL_X"] + symbols["PANEL_W"], 640)
 
+    def test_piece_geometry_and_accelerator_block(self):
+        symbols = grl.compute_symbols(grl.load_layout_file(LAYOUT_JSON))
+        self.assertEqual([symbols[n] for n in ("PIECE_W", "PIECE_H", "PIECE_STRIDE",
+                         "PIECE_BYTES", "PIECE_BLOCK_BYTES", "PIECE_SLOTS",
+                         "PIECE_X_BYTE_OFFSET", "PIECE_Y_OFFSET")],
+                         [40, 20, 20, 400, 512, 2, 2, 2])
+        for width, height in ((39, 20), (52, 20), (40, 25)):
+            layout = grl.load_layout_file(LAYOUT_JSON)
+            layout["piece"] = {"w": width, "h": height}
+            self.assertIn("invalid centred 4bpp piece geometry", grl.validate_layout(layout))
+
     def test_broken_fixtures_are_rejected(self) -> None:
         base = grl._clean_fixture()
         self.assertEqual(grl.validate_layout(base), [])

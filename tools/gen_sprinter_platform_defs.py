@@ -94,6 +94,8 @@ PLATFORM_SYMBOLS = [
     "BOARD_ROWS",
     "BOARD_CELL_W",
     "BOARD_CELL_H",
+    "HDR_ADDR", "HDR_ASSET_PAGES_OFFSET", "HDR_ASSET_PAGE0_OFFSET",
+    "PIECE_X_BYTE_OFFSET", "PIECE_Y_OFFSET", "PIECE_STRIDE", "PIECE_H",
     "LOWRAM_CHESS_BOARD_ADDR",
     # Move-log low-RAM ring (S5-finish plan D12, GUI_LOG(2) scope):
     # src/sprinter/gui_log_sprinter.c and render_core.asm's move-list
@@ -443,6 +445,13 @@ def _clean_fixture() -> str:
         "BOARD_ROWS: EQU 0x00000008\n"
         "BOARD_CELL_W: EQU 0x00000030\n"
         "BOARD_CELL_H: EQU 0x00000018\n"
+        "HDR_ADDR: EQU 0x00004000\n"
+        "HDR_ASSET_PAGES_OFFSET: EQU 0x00000007\n"
+        "HDR_ASSET_PAGE0_OFFSET: EQU 0x00000008\n"
+        "PIECE_X_BYTE_OFFSET: EQU 0x00000002\n"
+        "PIECE_Y_OFFSET: EQU 0x00000002\n"
+        "PIECE_STRIDE: EQU 0x00000014\n"
+        "PIECE_H: EQU 0x00000014\n"
         "LOWRAM_CHESS_BOARD_ADDR: EQU 0x0000B2AF\n"
         "LOWRAM_MOVE_LOG_ADDR: EQU 0x0000B36F\n"
         "LOWRAM_CHAT_LOG_ADDR: EQU 0x0000B0E0\n"

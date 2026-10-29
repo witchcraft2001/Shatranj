@@ -10,33 +10,12 @@ clobber those edits (review via git diff, matching the existing
 rasterize_sprinter_pieces.py-adjacent rule for the Next pipeline's asset
 tools -- see CLAUDE.md's asset-pipeline note).
 
-Pipeline per piece, mirroring tools/build_next_piece_sprites.py's proven
-headless-Chrome technique with two Sprinter-specific differences:
-
-  1. Render the source SVG onto a square canvas via headless Chrome/Edge,
-     wrapped in a tiny HTML page that pins the <img> CSS width/height (bare
-     SVGs with physical units like mpchess's "10mm", or percentage units
-     like totoy's "100%", render at the wrong size or get clipped
-     otherwise). Try 256, then 128, then 64 px squares in turn: an opaque
-     pixel touching the canvas border means the render clipped, so retry
-     smaller (matches the Next pipeline's own documented 64px ceiling for
-     mm-unit SVGs).
-  2. Classify the square render's source tones into semantic palette
-     indices 4-7 BEFORE reducing it, using the set and side. Independently
-     box-filter alpha coverage and each colour mask to the 32x16 stored
-     cell; require at least 50% alpha and select the colour with the most
-     coverage (dark lines win ties). This keeps thin lines and distinct
-     fills from averaging into colours that do not exist in the palette.
-     Mode #82 pixels are visually about 2:1 (width:height), so the stored
-     32x16 cell depicts a square source without stretching (port.md §3.6).
-     The import's four colours are only a starting point: the packer accepts
-     a wider artist palette (PIECE_ALLOWED_INDICES in
-     tools/build_sprinter_piece_tiles.py).
-  3. For black pieces only, guarantee_outline adds a light rim on exterior
-     transparent pixels. Flood-fill from the canvas edges excludes internal
-     holes; existing opaque pixels are preserved, and additions that bridge
-     components or seal open passages are rejected. White SVG contours are
-     left intact so they do not become thicker.
+Pipeline: Chrome renders a fixed 1024x1024 viewport via DevTools; empty or
+clipped source images are fatal. Source alpha, semantic colour and stroke
+masks share one 8% bbox fit. Nine quarter-pixel grid phases are scored by
+source topology, silhouette error, then stroke coverage, with zero preferred
+on ties. Black pieces receive a source-derived, aspect-correct exterior rim.
+Profiles record intentional per-piece exceptions; candidates go under build/.
 
 Chrome/Edge discovery order: $CHROME or $EDGE env var, common macOS
 install paths, common Windows install paths (matching the Next pipeline's
@@ -55,23 +34,26 @@ import tempfile
 import time
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gen_sprinter_palette as gsp  # noqa: E402
+from build_sprinter_piece_tiles import TILE_W, TILE_H, GEOMETRY
+from sprinter_svg_browser import SvgBrowser
 
 SVG_ROOT = ROOT / "assets/lichess/piece"
 SELECTED_SETS_JSON = ROOT / "assets/lichess/selected_next_sets.json"
 DEFAULT_PALETTE = ROOT / "assets/sprinter/palette.json"
-DEFAULT_PIECES_OUT = ROOT / "assets/sprinter/pieces"
+DEFAULT_PIECES_OUT = ROOT / "build/sprinter/pieces40-candidates"
 DEFAULT_PREVIEW_OUT = ROOT / "build/sprinter/preview/pieces_raster.png"
 
 PIECE_KINDS = ["K", "Q", "R", "B", "N", "P"]
 SIDES = ["w", "b"]
 
-TILE_W, TILE_H = 32, 16
-RENDER_SIZE_LADDER = (256, 128, 64)
+RENDER_SIZE_LADDER = (1024,)
+PROFILE_PATH = ROOT / "assets/sprinter/piece_conversion.json"
+_RENDERER = None
 ALPHA_THRESHOLD = 255 / 2  # exactly 50% coverage, including float masks
 CLIP_ALPHA_THRESHOLD = 40   # lower bar: catch faint AA fringes at the border
 MARGIN_FRAC = 0.08          # fraction of the square canvas reserved as margin
@@ -290,71 +272,26 @@ def _opaque_components(image: Image.Image) -> tuple[list[list[int]], int]:
 
 def render_svg_square(browser: Path, svg: Path, tmpdir: Path,
                        sizes: tuple[int, ...] = RENDER_SIZE_LADDER) -> tuple[Image.Image, int]:
-    """Render svg onto a square canvas, retrying at smaller sizes if the
-    result clips against the border. Returns (image, size_used)."""
-    last_image = None
-    for size in sizes:
-        out = tmpdir / f"{svg.parent.name}_{svg.stem}_{size}.png"
-        if out.exists():
-            out.unlink()
-        page = tmpdir / f"{svg.parent.name}_{svg.stem}_{size}.html"
-        page.write_text(
-            "<!doctype html><style>*{margin:0;padding:0}img{display:block;"
-            f"width:{size}px;height:{size}px}}</style>"
-            f'<img src="{file_uri(svg)}">',
-            encoding="utf-8",
-        )
-        profile = tmpdir / f"profile_{size}"
-        cmd = [
-            str(browser),
-            "--headless=new",
-            "--disable-gpu",
-            "--disable-breakpad",
-            "--disable-crash-reporter",
-            "--no-first-run",
-            "--no-sandbox",
-            f"--user-data-dir={profile}",
-            "--default-background-color=00000000",
-            f"--screenshot={out}",
-            f"--window-size={size},{size}",
-            file_uri(page),
-        ]
-        # subprocess.run() here would block until Chrome's process fully
-        # exits -- on this machine "--headless=new" reliably writes the
-        # screenshot but then hangs around (a GPU-helper shutdown quirk,
-        # not a rendering problem), so wait for the *file* instead and
-        # terminate the process explicitly once it's there.
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.monotonic() + 15.0
-        while not out.exists() and time.monotonic() < deadline:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.05)
-        if not out.exists():
-            proc.kill()
-            proc.wait(timeout=5)
-            fail(f"browser did not render {svg} at {size}px")
-        time.sleep(0.2)  # let the PNG write finish flushing before killing
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-        image = Image.open(out).convert("RGBA")
-        if image.getchannel("A").getbbox() is None:
-            fail(f"{svg}: rendered fully transparent at every tried size")
-        last_image = image
-        if not detect_border_clip(image):
-            return image, size
-    fail(
-        f"{svg}: still clips against the render border at the smallest "
-        f"tried size ({sizes[-1]}px) -- pure-Python SVG rasterization is "
-        "not an acceptable fallback (port.md section 4 fidelity rule); "
-        "needs a human decision"
-    )
-    assert last_image is not None  # unreachable, fail() raises
+    """Render once at the explicit viewport; clipping is never retried smaller."""
+    if sizes != (1024,):
+        fail("SVG viewport must be 1024x1024")
+    size = sizes[0]
+    page = tmpdir / f"{svg.parent.name}_{svg.stem}.html"
+    page.write_text('<!doctype html><meta name="viewport" content="width=1024">'
+                    '<style>html,body{margin:0;width:1024px;height:1024px;overflow:hidden}'
+                    'img{display:block;width:1024px;height:1024px;object-fit:contain}</style>'
+                    f'<img src="{file_uri(svg)}">', encoding="utf-8")
+    renderer = _RENDERER or SvgBrowser(browser, tmpdir / "profile")
+    try:
+        image = renderer.render(file_uri(page), size)
+    finally:
+        if _RENDERER is None:
+            renderer.close()
+    if image.size != (size, size) or image.getchannel("A").getbbox() is None:
+        fail(f"{svg}: empty or incorrectly sized browser render")
+    if detect_border_clip(image):
+        fail(f"{svg}: clipped at the 1024x1024 viewport border")
+    return image, size
 
 
 # The colours an imported SVG is quantized DOWN to. This is an import
@@ -397,58 +334,209 @@ def source_index(rgb: tuple[int, int, int], set_name: str, side: str) -> int:
     return 6 if luminance <= fill_ceiling else 7
 
 
-def classify_and_downscale(image: Image.Image, set_name: str, side: str,
-                           palette: dict, fit_size: int | None = None) -> Image.Image:
-    """Classify before fitting and reduce each colour coverage independently.
-
-    Alpha and each classified colour are box-filtered separately. An output
-    pixel must have at least 50% alpha coverage; ties go to the dark line.
-    Float masks avoid byte rounding introducing false coverage ties.
-    """
-    w, h = image.size
-    src = image.load()
-    classes = PIECE_QUANTIZE_INDICES
-    masks = {index: Image.new("F", (w, h), 0) for index in classes}
-    mask_px = {index: masks[index].load() for index in classes}
-    alpha = image.getchannel("A").convert("F")
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = src[x, y]
+def source_masks(image: Image.Image, set_name: str, side: str,
+                 fit_size: int | None = None) -> tuple[Image.Image, dict]:
+    """Keep silhouette, colour regions and original dark strokes separate."""
+    masks = {index: Image.new("F", image.size, 0) for index in PIECE_QUANTIZE_INDICES}
+    source = image.load()
+    pixels = {index: mask.load() for index, mask in masks.items()}
+    for y in range(image.height):
+        for x in range(image.width):
+            r, g, b, a = source[x, y]
             if a:
-                index = source_index((r, g, b), set_name, side)
-                mask_px[index][x, y] = a
-    # Classify BEFORE the bbox fit as well: fitting RGB with a smooth
-    # filter would invent a gray fill where black strokes meet white.
+                pixels[source_index((r, g, b), set_name, side)][x, y] = a
+    alpha = image.getchannel("A").convert("F")
     if fit_size is not None:
         bbox = image.getchannel("A").getbbox()
-        if bbox is not None:
-            alpha = fit_to_square(alpha, fit_size, bbox=bbox)
-            masks = {index: fit_to_square(mask, fit_size, bbox=bbox)
-                     for index, mask in masks.items()}
-    alpha_small = alpha.resize((TILE_W, TILE_H), Image.Resampling.BOX)
-    covers = {index: masks[index].resize((TILE_W, TILE_H), Image.Resampling.BOX)
-              for index in classes}
-    refs = piece_palette(palette, set_name)
+        alpha = fit_to_square(alpha, fit_size, bbox=bbox)
+        masks = {index: fit_to_square(mask, fit_size, bbox=bbox) for index, mask in masks.items()}
+    return alpha, masks
+
+
+def reduce_mask(mask: Image.Image, phase=(0, 0)) -> Image.Image:
+    """Translate all source masks by the same fraction of an output pixel."""
+    dx, dy = phase
+    if dx or dy:
+        mask = mask.transform(mask.size, Image.Transform.AFFINE,
+                              (1, 0, -dx*mask.width/TILE_W,
+                               0, 1, -dy*mask.height/TILE_H), Image.Resampling.BILINEAR)
+    return mask.resize((TILE_W, TILE_H), Image.Resampling.BOX)
+
+
+def paint_masks(alpha, masks, refs, phase=(0, 0), threshold=ALPHA_THRESHOLD):
+    small = reduce_mask(alpha, phase)
+    covers = {index: reduce_mask(mask, phase) for index, mask in masks.items()}
     out = Image.new("RGBA", (TILE_W, TILE_H), (0, 0, 0, 0))
-    dst = out.load()
     for y in range(TILE_H):
         for x in range(TILE_W):
-            if alpha_small.getpixel((x, y)) < ALPHA_THRESHOLD:
+            if small.getpixel((x, y)) < threshold:
                 continue
-            # Stable priority at equal coverage: dark strokes, body, then
-            # medium and light detail.
             index = max((5, 4, 6, 7), key=lambda i: (covers[i].getpixel((x, y)), i == 5))
-            dst[x, y] = refs[index] + (255,)
+            out.putpixel((x, y), refs[index] + (255,))
     return out
+
+
+def classify_and_downscale(image: Image.Image, set_name: str, side: str,
+                           palette: dict, fit_size: int | None = None) -> Image.Image:
+    alpha, masks = source_masks(image, set_name, side, fit_size)
+    return paint_masks(alpha, masks, piece_palette(palette, set_name))
+
+
+def topology(image):
+    """Foreground is 8-connected, background 4-connected (digital dual)."""
+    components = _opaque_components(image)[1]
+    exterior = _exterior_transparency(image)
+    holes = 0
+    seen = set()
+    for y in range(image.height):
+        for x in range(image.width):
+            if image.getpixel((x, y))[3] or exterior[y][x] or (x, y) in seen:
+                continue
+            holes += 1
+            stack = [(x, y)]
+            while stack:
+                point = stack.pop()
+                if point in seen: continue
+                seen.add(point)
+                px, py = point
+                for nx, ny in ((px+1, py), (px-1, py), (px, py+1), (px, py-1)):
+                    if (0 <= nx < image.width and 0 <= ny < image.height
+                            and not image.getpixel((nx, ny))[3]
+                            and (nx, ny) not in seen):
+                        stack.append((nx, ny))
+    return components, holes
+
+
+def binary_image(alpha, size):
+    out = Image.new("RGBA", size, (255, 255, 255, 0))
+    out.putalpha(alpha.resize(size, Image.Resampling.BOX).convert("L").point(
+        lambda a: 255 if a >= ALPHA_THRESHOLD else 0))
+    return out
+
+
+def source_rim(alpha):
+    """Derive the light rim before reduction, with square physical pixels.
+
+    At 4x physical resolution, three pixels are 0.75 output columns or
+    0.375 output rows. Topology protection acts on SOURCE passages and
+    components, so quantization cracks never become protected features.
+    """
+    size = TILE_W * 4
+    source = binary_image(alpha, (size, size))
+    expanded = source
+    for _ in range(3):
+        expanded = guarantee_outline(expanded, (255, 255, 255))
+    return expanded.getchannel("A").convert("F").resize(alpha.size, Image.Resampling.BOX)
+
+
+def reopen_source_passages(image, alpha, phase):
+    """Reopen reduction-created holes only where the source is exterior.
+
+    A diagonal cut may survive as diagonally touching transparent pixels,
+    which a four-connected background sees as holes. The shortest path uses
+    source coverage as its cost, so it follows the cut instead of crossing
+    the piece body. Source holes remain protected.
+    """
+    shifted = alpha
+    if phase != (0, 0):
+        dx, dy = phase
+        shifted = alpha.transform(alpha.size, Image.Transform.AFFINE,
+                                  (1,0,-dx*alpha.width/TILE_W,0,1,-dy*alpha.height/TILE_H),
+                                  Image.Resampling.BILINEAR)
+    reference = binary_image(shifted, (TILE_W*4,TILE_H*4))
+    source_exterior = _exterior_transparency(reference)
+    coverage = reduce_mask(alpha, phase)
+    out = image.copy()
+    exterior = _exterior_transparency(out)
+    for y in range(TILE_H):
+        for x in range(TILE_W):
+            if out.getpixel((x,y))[3] or exterior[y][x]: continue
+            if not source_exterior[y*4+2][x*4+2]: continue
+            queue=[(0,x,y)]
+            distances={(x,y):0}
+            previous={}
+            end=None
+            while queue:
+                cost,cx,cy=heapq.heappop(queue)
+                if cost!=distances[cx,cy]: continue
+                if exterior[cy][cx]: end=(cx,cy); break
+                for nx,ny in ((cx+1,cy),(cx-1,cy),(cx,cy+1),(cx,cy-1)):
+                    if not (0<=nx<TILE_W and 0<=ny<TILE_H): continue
+                    step=1+(coverage.getpixel((nx,ny)) if out.getpixel((nx,ny))[3] else 0)
+                    new_cost=cost+step
+                    if new_cost<distances.get((nx,ny),float('inf')):
+                        distances[nx,ny]=new_cost; previous[nx,ny]=(cx,cy)
+                        heapq.heappush(queue,(new_cost,nx,ny))
+            while end is not None:
+                out.putpixel(end,(0,0,0,0)); end=previous.get(end)
+            exterior=_exterior_transparency(out)
+    return out
+
+
+def select_grid_phase(alpha, masks, refs, profile=None):
+    """Lexicographic source-feature, silhouette, stroke error; stable ties."""
+    profile = profile or {}
+    reference = binary_image(alpha, (TILE_W*4, TILE_H*4))
+    expected = topology(reference)
+    threshold = profile.get("alpha_threshold", ALPHA_THRESHOLD)
+    candidates = []
+    for dy in (-0.25, 0, 0.25):
+        for dx in (-0.25, 0, 0.25):
+            phase = (dx, dy)
+            candidate = reopen_source_passages(paint_masks(alpha, masks, refs, phase, threshold), alpha, phase)
+            actual = topology(candidate)
+            # Source components/holes outrank pixel error. Compare silhouette
+            # against the unshifted source so phases cannot move the goal.
+            feature_error = abs(actual[0]-expected[0]) + abs(actual[1]-expected[1])
+            up = candidate.getchannel("A").resize(reference.size, Image.Resampling.NEAREST)
+            silhouette_error = sum(value*count for value,count in enumerate(
+                ImageChops.difference(up, reference.getchannel("A")).histogram()))
+            strokes = reduce_mask(masks[5], phase)
+            stroke_error = sum(abs(strokes.getpixel((x, y)) -
+                                   (255 if candidate.getpixel((x, y)) == refs[5]+(255,) else 0))
+                               for y in range(TILE_H) for x in range(TILE_W))
+            score = (feature_error, silhouette_error, stroke_error,
+                     abs(dx)+abs(dy), abs(dy), abs(dx), dy, dx)
+            candidates.append((score, phase, candidate))
+    _, phase, candidate = min(candidates, key=lambda c: c[0])
+    return candidate, phase, candidates
 
 
 def process_piece(browser: Path, svg: Path, set_name: str, side: str,
                   palette: dict, tmpdir: Path) -> Image.Image:
     square, used_size = render_svg_square(browser, svg, tmpdir)
-    quantized = classify_and_downscale(square, set_name, side, palette, fit_size=used_size)
+    alpha, masks = source_masks(square, set_name, side, fit_size=used_size)
+    profile = json.loads(PROFILE_PATH.read_text())
+    exceptions = profile.get("pieces", {}).get(set_name + "/" + svg.stem, {})
+    refs = piece_palette(palette, set_name)
+    quantized, phase, candidates = select_grid_phase(alpha, masks, refs, exceptions)
+    # California's SVG gray highlights use the shared gray, distinct from
+    # the brighter ADDED rim. This is a source-class override, not pixels.
+    if side == "b" and set_name in profile.get("muted_source_highlights", []):
+        gray = gsp._parse_rgb(profile["muted_source_highlights"][set_name], "highlight")
+        for y in range(TILE_H):
+            for x in range(TILE_W):
+                if quantized.getpixel((x, y)) == refs[7]+(255,):
+                    quantized.putpixel((x, y), gray+(255,))
     if side == "b":
-        outline = piece_palette(palette, set_name)[7]
-        return guarantee_outline(quantized, outline)
+        rim = reduce_mask(source_rim(alpha), phase)
+        # The source-derived coverage limits rim thickness; the digital
+        # topology guard keeps the already source-checked passages/parts.
+        safe_rim = guarantee_outline(quantized, refs[7])
+        for y in range(TILE_H):
+            for x in range(TILE_W):
+                if (not quantized.getpixel((x, y))[3] and safe_rim.getpixel((x, y))[3]
+                        and rim.getpixel((x, y)) >= ALPHA_THRESHOLD):
+                    quantized.putpixel((x, y), refs[7]+(255,))
+    for x, y, index in exceptions.get("pixels", []):
+        quantized.putpixel((x, y), refs[index]+(255,) if index is not None else (0, 0, 0, 0))
+    cache = DEFAULT_PREVIEW_OUT.parent / "source1024"
+    cache.mkdir(parents=True, exist_ok=True)
+    square.save(cache / f"{set_name}_{svg.stem}.png")
+    report = {"phase": phase, "source_topology": topology(binary_image(alpha, (TILE_W*4,TILE_H*4))),
+              "output_topology": topology(quantized),
+              "candidates": [{"phase": c[1], "score": c[0]} for c in candidates]}
+    (cache / f"{set_name}_{svg.stem}.json").write_text(json.dumps(report, indent=2)+'\n')
     return quantized
 
 
@@ -462,9 +550,9 @@ def load_selected_sets(path: Path, override: list[str] | None) -> list[str]:
 def build_preview(tiles: dict[str, dict[str, Image.Image]], palette: dict,
                   out_path: Path) -> None:
     order = [f"{side}{kind}" for side in SIDES for kind in PIECE_KINDS]
-    # Centre the unscaled 32x16 tile in its real 48x24 mode-82 square and
+    # Centre the unscaled piece tile in its real 48x24 mode-82 square and
     # correct the pixel aspect ratio vertically by 2x.
-    cell_w, stored_h = 48, 24
+    cell_w, stored_h = GEOMETRY["BOARD_CELL_W"], GEOMETRY["BOARD_CELL_H"]
     row_h = stored_h * 2
     pad, label_w = 6, 112
     themes = palette["themes"]
@@ -486,7 +574,8 @@ def build_preview(tiles: dict[str, dict[str, Image.Image]], palette: dict,
             bg = gsp._parse_rgb(background, "preview square")
             for col, key in enumerate(order):
                 cell = Image.new("RGBA", (cell_w, stored_h), bg + (255,))
-                cell.alpha_composite(tiles[set_name][key], dest=(8, 4))
+                tile = tiles[set_name][key]
+                cell.alpha_composite(tile, dest=((cell_w-tile.width)//2, (stored_h-tile.height)//2))
                 # Double height for the physical pixel aspect ratio.
                 cell = cell.resize((cell_w, row_h), Image.Resampling.NEAREST)
                 if zoom != 1:
@@ -525,28 +614,34 @@ def main() -> int:
     browser = args.browser or find_browser()
     print(f"[..] using browser: {browser}")
 
+    global _RENDERER
     tiles: dict[str, dict[str, Image.Image]] = {}
     with tempfile.TemporaryDirectory(prefix="sprinter-piece-raster-") as tmp:
         tmpdir = Path(tmp)
-        for set_name in sets:
-            set_dir = SVG_ROOT / set_name
-            if not set_dir.is_dir():
-                fail(f"missing SVG set dir: {set_dir}")
-            out_dir = args.pieces_out / set_name
-            out_dir.mkdir(parents=True, exist_ok=True)
-            tiles[set_name] = {}
-            for side in SIDES:
-                for kind in PIECE_KINDS:
-                    key = f"{side}{kind}"
-                    svg = set_dir / f"{key}.svg"
-                    if not svg.is_file():
-                        fail(f"missing SVG: {svg}")
-                    image = process_piece(browser, svg, set_name, side, palette, tmpdir)
-                    tiles[set_name][key] = image
-                    out_path = out_dir / f"{key}.png"
-                    image.save(out_path)
-                    print(f"[OK] {out_path}")
+        _RENDERER = SvgBrowser(browser, tmpdir / "profile")
+        try:
+            for set_name in sets:
+                set_dir = SVG_ROOT / set_name
+                if not set_dir.is_dir():
+                    fail(f"missing SVG set dir: {set_dir}")
+                out_dir = args.pieces_out / set_name
+                out_dir.mkdir(parents=True, exist_ok=True)
+                tiles[set_name] = {}
+                for side in SIDES:
+                    for kind in PIECE_KINDS:
+                        key = f"{side}{kind}"
+                        svg = set_dir / f"{key}.svg"
+                        if not svg.is_file():
+                            fail(f"missing SVG: {svg}")
+                        image = process_piece(browser, svg, set_name, side, palette, tmpdir)
+                        tiles[set_name][key] = image
+                        out_path = out_dir / f"{key}.png"
+                        image.save(out_path)
+                        print(f"[OK] {out_path}")
 
+        finally:
+            _RENDERER.close()
+            _RENDERER = None
     build_preview(tiles, palette, args.preview_out)
     print(f"[OK] {args.preview_out}")
     return 0

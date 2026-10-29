@@ -40,42 +40,12 @@
 ; -- and the genuinely per-frame work (frame_wait/flip_sync, buffers.asm)
 ; was never in this file and is untouched.
 ;
-; The real (LOWRAM_CHESS_BOARD-driven) counterpart of S4's scene_s4.asm
-; demo: the same proven arithmetic (cell_bg, piece_slot_and_page,
-; MUL_CELL_TABLE, the +4/+4 piece-centring offsets, the tile_* parameter
-; cell contract) recovered from the S2/S4 commits (2bf4680) rather than
-; re-derived from scratch, since both were already MAME-measured
-; (docs/sprinter-render-budget.md) and hardware-proven there. Differs from
-; scene_s4.asm in exactly what plan D4 said it would: reads the real
-; starting position from LOWRAM_CHESS_BOARD_ADDR (spectrum/lowram_map.h's
-; NETCHESSZX_SPRINTER branch, ASCII-encoded -- uppercase white, lowercase
-; black, '.' empty, same convention spectrum/board/board.c uses) instead
-; of a hardcoded demo table, and drops S4's theme/piece-set hotkey
-; switching (UI-only, not part of the real game) -- this file always
-; paints piece set 0 (tools/build_sprinter_piece_tiles.py's slot_base 0).
-;
-; Deliberately NOT the strip-composited board-redraw strategy bench_s2.asm
-; measured at 13.9ms (vs. 74ms per-cell) -- that number was only ever
-; proven for a plain checkerboard with no pieces; compositing pieces into
-; a RAM row buffer before blitting is new, unproven code this pass does
-; not want to carry the same evidentiary burden the SP+2/ovl_ctx bugs
-; already cost this session (port.md, docs/sprinter-testnotes/S5.md,
-; 2026-08-10). render_board_full below is scene_s4.asm's own per-cell
-; loop (scene_draw_board_and_markers, MAME-tested as part of S4's
-; sign-off) minus its demo markers, reading real board data. The ~74ms
-; that costs is a one-time boot paint, not a per-frame or per-move
-; budget -- render_square's single-square repaint (the path any future
-; move/highlight update will actually use) is well inside budget per
-; docs/sprinter-render-budget.md's own conclusion (only the FULL board
-; and FULL text line measured over budget, not single small ops). The
-; strip strategy remains available for a later pass if a full-board
-; repaint ever needs to happen mid-game (it does not yet -- nothing calls
-; render_board_full more than once per boot).
-;
-; Draws into BOTH VRAM buffers unconditionally (matching video_init's own
-; precedent), rather than tracking front/back via resolve_buffers: this is
-; a boot-time paint, not a flip-aware per-frame update, and drawing both
-; keeps them consistent regardless of which one RGMOD currently displays.
+; The production painter reads model-space board data and draws one cell
+; into the back buffer. gfx primitives log dirty rectangles; frame_wait
+; swaps and synchronizes the other buffer. Full redraw uses the same cell
+; path. Geometry is generated from render_layout.json; MENU_CONFIG resolves
+; twelve piece group addresses into persistent WIN2 state for the selected
+; set. Cursor, selection and hint geometry remains cell-based.
 ;
 ; Local labels use z88dk-z80asm's own "@name" convention (scoped to the
 ; last non-local label), NOT sjasmplus's ".name" -- confirmed 2026-08-10
@@ -90,8 +60,7 @@
     EXTERN gfx_fill_rect
     EXTERN gfx_draw_tile
     EXTERN gfx_clear_buffer
-    EXTERN piece_page1
-    EXTERN piece_page2              ; S9 move-flash tiles (piece_slot_and_page)
+    EXTERN PIECE_X_BYTE_OFFSET, PIECE_Y_OFFSET, PIECE_STRIDE, PIECE_H
     EXTERN back_base
     EXTERN tile_dest_base
     EXTERN tile_x_byte
@@ -259,7 +228,7 @@ selected_col  EQU LOWRAM_RENDER_SHARED_ADDR+4
 ;
 ; The flash covers the WHOLE cell, piece included: draw_square_into asks
 ; piece_slot_and_page for the third, flash-background tile variant while
-; this is set, so the 32x16 piece tile's own precomposed background is the
+; this is set, so the 40x20 piece tile's own precomposed background is the
 ; flash colour too. Filling around an opaque light/dark tile (the first
 ; version of this) left the piece sitting on an unchanged square with only
 ; the 8px/4px margin flashing, which the human tester read as a rendering
@@ -330,34 +299,27 @@ cell_bg:
 
 ; A=piece index, B=background (light/dark/flash). The MENU_CONFIG
 ; overlay resolves manifest page indices into persistent WIN2 parameters.
-; Returns A=slot, E=physical page. Clobbers AF,C.
+; Returns A=slot, E=physical page. Clobbers AF,HL,DE.
 PIECE_FLASH_BG_OFFSET EQU 2
 piece_slot_and_page:
-    ld c,a
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,LOWRAM_PIECE_STATE_ADDR+1
+    add hl,de
+    ld e,(hl)
+    inc hl
     ld a,b
-    cp PIECE_FLASH_BG_OFFSET
-    jr z,@flash
-    ld a,(LOWRAM_PIECE_STATE_ADDR+1)
-    ld e,a
-    ld a,(LOWRAM_PIECE_STATE_ADDR+2)
-    add a,c
-    add a,c
-    add a,b
-    ret
-@flash:
-    ld a,(LOWRAM_PIECE_STATE_ADDR+3)
-    ld e,a
-    ld a,(LOWRAM_PIECE_STATE_ADDR+4)
-    add a,c
+    add a,a                    ; two accelerator slots per tile
+    add a,(hl)
     ret
 
 ; --- single square --------------------------------------------------------
 
 ; B=row(0-7), C=col(0-7), HL=dest_base (VRAM_BUF0/VRAM_BUF1). Repaints
 ; that square's background, and its piece if occupied, into the given
-; VRAM buffer. No-op piece draw (background only) if piece_page1 is #FF
-; (fewer than 3 asset pages published -- bench_init's own guard, buffers.
-; asm). Clobbers everything.
+; VRAM buffer. An unavailable physical page (#FF) leaves the background
+; intact and skips the piece blit. Clobbers everything.
 ;
 ; S9 (move-flash): when hilite_bg is non-zero, BOTH the fill colour and the
 ; piece-tile variant come from it (flash colour, flash-background tile), so
@@ -459,10 +421,6 @@ draw_square_into:
     ret c                      ; empty square -- background already painted
     ld (@piece_index),a
 
-    ld a,(piece_page1)
-    cp $FF
-    ret z                      ; no piece pages published -- skip silently
-
     ld b,PIECE_FLASH_BG_OFFSET  ; move-flash: piece tile precomposed on the
     ld a,(hilite_bg)             ; flash colour, so the WHOLE cell changes
     or a                         ; (ld b,n leaves the or's flags alone)
@@ -475,21 +433,24 @@ draw_square_into:
     call piece_slot_and_page
     ld (tile_src_slot),a
     ld a,e
+    cp $FF
+    ret z                      ; this piece group is unavailable
     ld (tile_src_page),a
 
     ld hl,(@dest_base)
     ld (tile_dest_base),hl
     ld a,(@x_byte)
-    add a,4                    ; centre: (48-32)/2 = 8px = 4 bytes
+    add a,PIECE_X_BYTE_OFFSET   ; centred in the unchanged board cell
     ld (tile_x_byte),a
     xor a
     ld (tile_x_hi),a
     ld a,(@y)
-    add a,4                    ; centre: (24-16)/2 = 4px
+    add a,PIECE_Y_OFFSET
     ld (tile_y),a
-    ld a,16
+    ld a,PIECE_STRIDE
     ld (tile_width),a
     ld (tile_stride),a
+    ld a,PIECE_H
     ld (tile_rows),a
     ld a,VRAM_ALIAS_OPAQUE
     ld (tile_alias),a

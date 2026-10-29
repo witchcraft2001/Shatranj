@@ -27,6 +27,7 @@ from pathlib import Path
 # back to prove draw_frame_at_sized handed the blitter the right parameters.
 COLD_RENDER_SYMBOLS = [
     "piece_slot_and_page",
+    "render_square", "hilite_bg",
     "render_hint_marker",
     "render_cursor_marker",
     "draw_frame_at_slot",

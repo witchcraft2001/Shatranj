@@ -356,3 +356,46 @@ predicts.
   `OUT` is the front→back dirty-rectangle sync after a confirmed flip
   (`flip_sync`, `asm/sprinter/buffers.asm`), which runs *after* the flip,
   off the critical path these benches measure, not before it.
+
+## S12 production renderer, 40×20 comparison (2026-10-29)
+
+These measurements use the shipping renderer in MAME with turbo enabled
+(21 MHz), not the retired S2 checkerboard stand. The baseline PNGs, EXE,
+resident, platform symbols and cold page were archived before replacement
+under `build/sprinter/pieces40-baseline/`. Both runs used the canonical
+`build/sprinter/SHATRANJ-SMOKE.IMG`, with the appropriate baseline or final
+EXE verified inside it. The final delivered image contains the final EXE.
+
+`tools/test_sprinter_piece_mame.py` prepares six matched probes per scenario.
+The diagnostic harness temporarily occupies the inactive WIN2 overlay slot
+at 0xAB00; it restores the slot and the original `frame_wait` entry before
+ordinary gameplay. It never overlaps the board, state, stack or network
+buffers. Every measured draw calls real release code and then real
+`frame_wait`, including buffer synchronization. Debugger `totalcycles`
+markers give emulated time, independent of host speed. A first probe that
+overlapped the board was discarded; only the corrected matched runs below
+are included in `build/sprinter/pieces40-mame/report.json`.
+
+| Scenario | 32×16 draw | 40×20 draw | Change | 32×16 total | 40×20 total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| One tile, including parameter setup | 0.3869 ms | 0.4771 ms | +23.34% | 21.6303 ms | 22.0823 ms |
+| Occupied cell (fill + piece) | 1.3771 ms | 1.4663 ms | +6.47% | 23.7133 ms | 24.1661 ms |
+| Full initial board, 32 pieces | 68.2799 ms | 71.1311 ms | +4.18% | 277.1174 ms | 277.1176 ms |
+| PIECES palette/address update + full repaint | 77.3159 ms | 80.3909 ms | +3.98% | 277.1111 ms | 277.1111 ms |
+
+Values are medians of six samples; raw markers and min/max are in the
+report. Total includes waiting for the next interrupt and synchronizing the
+other buffer. Large redraws use the existing full-buffer dirty path; frame
+alignment absorbs this increase in draw time in these samples. Equal total
+time does not imply that copying more piece pixels is free. The observed
+tile increase is within the preliminary 20–35% estimate.
+
+`tools/verify_sprinter_piece_review.py` checks 544 piece rectangles
+(435200 pixels): all three sets on all five themes, plus FLIP and About
+restoration with selection. It also verifies hint/selection colours and
+six exact pre-move flash captures against the committed tile art. Source
+comparisons and corrected-scale previews are in
+`build/sprinter/preview/pieces40/`.
+
+Hardware timing and hardware visual acceptance for this revision: **pending**.
+Earlier S2 hardware measurements remain evidence for their own code only.

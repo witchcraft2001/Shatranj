@@ -1,57 +1,11 @@
 #!/usr/bin/env python3
-"""Pack the committed Sprinter piece PNGs into precomposed 4bpp tile pages.
+"""Pack committed PNGs into four opaque 4bpp piece pages.
 
-port.md section 4 step B and section 3.6: reads ONLY the PNGs
-tools/rasterize_sprinter_pieces.py committed to assets/sprinter/pieces/ (no
-SVG, no headless Chrome -- this tool is part of the build and must be
-reproducible on any machine). Each of the 3 selected sets' 12 piece PNGs
-gets precomposed onto both board-square colours (palette indices 2 and 3),
-yielding 24 opaque 4bpp tiles per set -- the blit is then always opaque, no
-hardware-key pair problem (port.md section 3.6). This is a purpose-built
-fork of extern/sprinter-libs/gfx640/tools/tilepack.py's conventions (row-
-major packed 4bpp, high nibble = left pixel), not that script itself: the
-donor takes one already-indexed PNG per output page, this tool takes 12
-already-separate RGBA piece PNGs per set and must precompose+pack them
-itself, plus validate every opaque pixel against the palette entries a
-piece is allowed to use -- the set's OWN four colours (palette.json's
-"piece_sets") plus the shared accents, PIECE_ALLOWED_INDICES below --
-rather than against an arbitrary input palette.
-
-Slot layout (asm/sprinter's tile-ref convention, slot*256 = byte offset
-within a 16384-byte, 64-slot page -- see tools/make_sprinter_assets_page.py
-for the sibling font/UI page):
-
-    page 1 (HDR asset page index 1): slots 0-23  = sets[0] (e.g. california)
-                                      slots 24-47 = sets[1] (e.g. mpchess)
-    page 2 (HDR asset page index 2): slots 0-23  = sets[2] (e.g. totoy)
-                                      slots 24-35 = sets[0] flash background
-                                      slots 36-47 = sets[1] flash background
-                                      slots 48-59 = sets[2] flash background
-
-Within a set's 24-slot span: slot = set_base + piece_index*2 + background,
-piece_index 0..11 in PIECE_ORDER (wK,wQ,wR,wB,wN,wP,bK,bQ,bR,bB,bN,bP),
-background 0 = light square (palette index 2), 1 = dark square (index 3).
-
-The flash block (S9 move animation) is a THIRD background for the same 12
-pieces -- palette index 8, hud_select -- but only one tile per piece, not a
-light/dark pair: the flash colour replaces the square colour outright, so
-which square the piece stands on stops mattering while it is up. It is
-packed as its own block after the last set's normal block rather than
-widening every set's span to 36, because 36-slot sets would need one page
-per set and the resident publishes exactly two piece pages (buffers.asm's
-bench_init). asm/sprinter/zcc/render_core.asm hand-copies set 0's page and
-slot base into PIECE_FLASH_SLOT_BASE; tests/tools/test_sprinter_piece_
-tiles.py parses that EQU back out of the .asm and fails if it drifts from
-the manifest this tool writes.
-
-Why a precomposed third variant at all, rather than one keyed (transparent)
-piece tile drawn over a filled square: VRAM_ALIAS_KEY skips whole #FF
-BYTES, i.e. transparency is 2-pixel granular, so any byte straddling a
-piece edge would have to be opaque -- the same "hardware-key pair problem"
-that made the light/dark pair the original design (port.md section 3.6).
-
-The output is a pure function of the inputs (committed PNGs + palette.json;
-no timestamps), so reruns are byte-identical.
+Geometry comes from render_layout.json. Accelerator addresses remain 256-byte
+slots; a 400-byte tile occupies two slots (112 zero pad bytes). Each piece's
+light/dark/flash variants occupy six consecutive slots. Ten groups fit a
+page; the HDR asset indices are 1, 2, 10, 11, preserving all earlier assets.
+SVG conversion is an explicit manual operation, never a build dependency.
 """
 
 from __future__ import annotations
@@ -75,7 +29,16 @@ DEFAULT_PIECES_ROOT = ROOT / "assets/sprinter/pieces"
 DEFAULT_SETS_JSON = ROOT / "assets/lichess/selected_next_sets.json"
 DEFAULT_PALETTE = ROOT / "assets/sprinter/palette.json"
 
-MANIFEST_FORMAT = "shatranj-sprinter-tiles-v1"
+import gen_sprinter_render_layout as geometry
+GEOMETRY_PATH = ROOT / "src/sprinter/render_layout.json"
+GEOMETRY = geometry.compute_symbols(geometry.load_layout_file(GEOMETRY_PATH))
+TILE_W, TILE_H = GEOMETRY["PIECE_W"], GEOMETRY["PIECE_H"]
+TILE_SLOTS = GEOMETRY["PIECE_SLOTS"]
+BLOCK_BYTES = GEOMETRY["PIECE_BLOCK_BYTES"]
+GROUP_SLOTS = TILE_SLOTS * 3
+GROUPS_PER_PAGE = (PAGE_SIZE // SLOT_SIZE) // GROUP_SLOTS
+ASSET_PAGE_INDICES = (1, 2, 10, 11)
+MANIFEST_FORMAT = "shatranj-sprinter-tiles-v2"
 LAYOUT = "row-major-packed-4bpp-high-nibble-left"
 
 SIDES = ["w", "b"]
@@ -137,7 +100,6 @@ PIECE_SHARED_INDICES = [
 SLOTS_PER_PAGE = PAGE_SIZE // SLOT_SIZE                   # 64
 TILES_PER_SET = len(PIECE_ORDER) * len(BACKGROUND_ORDER)  # 24
 FLASH_TILES_PER_SET = len(PIECE_ORDER)                    # 12
-SETS_PER_PAGE = SLOTS_PER_PAGE // TILES_PER_SET           # 64 // 24 = 2
 
 
 def fail(message: str) -> None:
@@ -149,7 +111,7 @@ def parse_cell(spec: str) -> tuple[int, int]:
         w_str, h_str = spec.lower().split("x")
         return int(w_str), int(h_str)
     except ValueError:
-        fail(f"invalid --cell {spec!r}, want WxH (e.g. 32x16)")
+        fail(f"invalid --cell {spec!r}, want WxH (e.g. 40x20)")
 
 
 def resolve_stride(cell_w: int, stride: int | None) -> int:
@@ -253,127 +215,62 @@ def precompose_tile(piece: Image.Image, cell_w: int, cell_h: int,
 
 def build_pages(pieces_root: Path, sets: list[str], palette: dict,
                  cell_w: int, cell_h: int) -> tuple[list[bytes], dict]:
-    if TILES_PER_SET * SLOT_SIZE > PAGE_SIZE:
-        fail(f"{TILES_PER_SET} tiles/set do not fit in one {PAGE_SIZE}-byte page")
-
-    # Set order is a contract, not a coincidence: the resident indexes the
-    # palette records by the same ordinal it uses for the tile slot base,
-    # so a set list that disagrees with the palette's order would draw one
-    # set's tiles through another's colours.
-    palette_set_names = [entry["name"] for entry in palette["piece_sets"]]
-    if palette_set_names != list(sets):
-        fail(f"set list {list(sets)} does not match the palette's piece_sets "
-             f"{palette_set_names} (same names, same order -- the resident "
-             "picks a set's palette record and its tile slot base by the same "
-             "index)")
-
-    bg_ref = _rgb_set(palette, BACKGROUND_INDICES)
-    bg_rgb_by_order = [
-        next(rgb for rgb, idx in bg_ref.items() if idx == pi)
-        for pi in BACKGROUND_INDICES
-    ]
-    flash_ref = _rgb_set(palette, [FLASH_BACKGROUND_INDEX])
-    flash_rgb = next(iter(flash_ref))
-
-    page_count = -(-len(sets) // SETS_PER_PAGE)
-    pages = [bytearray(PAGE_SIZE) for _ in range(page_count)]
-    manifest_sets = []
-    input_shas: dict[str, str] = {}
-    piece_images_by_set: dict[str, dict[str, Image.Image]] = {}
-
+    if (cell_w, cell_h) != (TILE_W, TILE_H):
+        fail(f"piece geometry must match {GEOMETRY_PATH}: {TILE_W}x{TILE_H}")
+    palette_names = [entry["name"] for entry in palette["piece_sets"]]
+    if palette_names != list(sets):
+        fail(f"set list {list(sets)} does not match palette piece_sets {palette_names} (same names, same order)")
+    if len(sets) != 3:
+        fail("expected exactly three piece sets")
+    pages = [bytearray(PAGE_SIZE) for _ in ASSET_PAGE_INDICES]
+    records, input_shas = [], {}
+    backgrounds = BACKGROUND_INDICES + [FLASH_BACKGROUND_INDEX]
+    bg_ref = _rgb_set(palette, backgrounds)
+    rgb_by_index = {index: rgb for rgb, index in bg_ref.items()}
     for set_index, set_name in enumerate(sets):
-        page_no = set_index // SETS_PER_PAGE          # 0-based page index
-        slot_base = (set_index % SETS_PER_PAGE) * TILES_PER_SET
-        page = pages[page_no]
-        piece_ref = piece_colours(palette, set_name)
-        piece_images: dict[str, Image.Image] = {}
-        for key in PIECE_ORDER:
-            png_path = pieces_root / set_name / f"{key}.png"
-            piece_images[key] = load_and_validate_piece(png_path, cell_w, cell_h, piece_ref)
+        refs = piece_colours(palette, set_name)
+        groups = []
+        for piece_index, key in enumerate(PIECE_ORDER):
+            ordinal = set_index * len(PIECE_ORDER) + piece_index
+            page_no, group_index = divmod(ordinal, GROUPS_PER_PAGE)
+            start_slot = group_index * GROUP_SLOTS
+            groups.append({"piece": key, "asset_page_index": ASSET_PAGE_INDICES[page_no],
+                           "slot_base": start_slot})
+            path = pieces_root / set_name / f"{key}.png"
+            piece = load_and_validate_piece(path, cell_w, cell_h, refs)
             try:
-                key_path = str(png_path.resolve().relative_to(ROOT))
+                key_path = str(path.resolve().relative_to(ROOT))
             except ValueError:
-                key_path = str(png_path)
-            input_shas[key_path] = hashlib.sha256(png_path.read_bytes()).hexdigest()
-
-        for p_index, key in enumerate(PIECE_ORDER):
-            for bg_index, bg_rgb in enumerate(bg_rgb_by_order):
-                slot = slot_base + p_index * 2 + bg_index
-                tile = precompose_tile(
-                    piece_images[key], cell_w, cell_h, bg_ref, bg_rgb, piece_ref
-                )
-                offset = slot * SLOT_SIZE
-                if len(tile) > SLOT_SIZE:
-                    fail(f"tile for {set_name}/{key} bg={bg_index} is "
-                         f"{len(tile)} bytes, exceeds one slot ({SLOT_SIZE})")
-                page[offset:offset + len(tile)] = tile
-                if 0xFF in tile:
-                    fail(f"tile for {set_name}/{key} bg={bg_index} contains "
-                         "a 0xFF byte in opaque tile data (would be "
-                         "misread as the hardware transparency key)")
-
-        piece_images_by_set[set_name] = piece_images
-        manifest_sets.append({
-            "name": set_name,
-            "asset_page_index": page_no + 1,  # 1-based: matches HDR order
-            "slot_base": slot_base,
-            "palette": {
-                str(index): "#{:02X}{:02X}{:02X}".format(*rgb)
-                for rgb, index in sorted(piece_ref.items(), key=lambda kv: kv[1])
-                if index in set(PIECE_SET_INDICES)
-            },
-        })
-
-    # Flash blocks, packed after the last set's normal block and continuing
-    # across the same pages (see the module docstring's layout table). Kept
-    # out of the per-set loop above on purpose: every normal block's slot
-    # arithmetic stays exactly what it was before the flash tiles existed,
-    # so page 1's bytes are unchanged by this addition.
-    last_index = len(sets) - 1
-    cursor_page = last_index // SETS_PER_PAGE
-    cursor_slot = ((last_index % SETS_PER_PAGE) + 1) * TILES_PER_SET
-    for set_index, set_name in enumerate(sets):
-        if cursor_slot + FLASH_TILES_PER_SET > SLOTS_PER_PAGE:
-            cursor_page += 1
-            cursor_slot = 0
-        if cursor_page >= page_count:
-            fail(f"flash tiles for {set_name} do not fit: {len(sets)} sets need "
-                 f"{page_count} page(s) for their normal blocks and there is no "
-                 f"room left for a {FLASH_TILES_PER_SET}-slot flash block "
-                 "(asm/sprinter/buffers.asm's bench_init publishes exactly two "
-                 "piece pages -- adding a third is a resident change, not a "
-                 "tool change)")
-        page = pages[cursor_page]
-        for p_index, key in enumerate(PIECE_ORDER):
-            slot = cursor_slot + p_index
-            tile = precompose_tile(
-                piece_images_by_set[set_name][key], cell_w, cell_h,
-                flash_ref, flash_rgb, piece_colours(palette, set_name)
-            )
-            offset = slot * SLOT_SIZE
-            page[offset:offset + len(tile)] = tile
-            if 0xFF in tile:
-                fail(f"flash tile for {set_name}/{key} contains a 0xFF byte in "
-                     "opaque tile data (would be misread as the hardware "
-                     "transparency key)")
-        manifest_sets[set_index]["flash_asset_page_index"] = cursor_page + 1
-        manifest_sets[set_index]["flash_slot_base"] = cursor_slot
-        cursor_slot += FLASH_TILES_PER_SET
-
-    return [bytes(p) for p in pages], {
-        "sets": manifest_sets,
-        "input_shas": input_shas,
-    }
+                key_path = str(path)
+            input_shas[key_path] = hashlib.sha256(path.read_bytes()).hexdigest()
+            for bg, index in enumerate(backgrounds):
+                tile = precompose_tile(piece, cell_w, cell_h, bg_ref, rgb_by_index[index], refs)
+                if len(tile) > BLOCK_BYTES or 0xFF in tile:
+                    fail(f"invalid tile {set_name}/{key} background {index}")
+                offset = (start_slot + bg * TILE_SLOTS) * SLOT_SIZE
+                assert offset + BLOCK_BYTES <= PAGE_SIZE
+                pages[page_no][offset:offset + len(tile)] = tile
+        records.append({"name": set_name, "groups": groups})
+    return [bytes(page) for page in pages], {"sets": records, "input_shas": input_shas}
 
 
 def build_manifest(sets_info: dict, cell_w: int, cell_h: int, stride: int,
                     palette_path: Path) -> dict:
+    resolve_stride(cell_w, stride)
     return {
         "format": MANIFEST_FORMAT,
         "layout": LAYOUT,
         "cell": {"w": cell_w, "h": cell_h},
         "stride": stride,
         "tile_bytes": stride * cell_h,
+        "block_bytes": BLOCK_BYTES,
+        "slot_bytes": SLOT_SIZE,
+        "slots_per_tile": TILE_SLOTS,
+        "slots_per_group": GROUP_SLOTS,
+        "variant_order": ["light", "dark", "flash"],
+        "variant_palette_indices": [2, 3, FLASH_BACKGROUND_INDEX],
+        "groups_per_page": GROUPS_PER_PAGE,
+        "asset_page_indices": list(ASSET_PAGE_INDICES),
         "tiles_per_set": TILES_PER_SET,
         "flash_tiles_per_set": FLASH_TILES_PER_SET,
         "flash_background_palette_index": FLASH_BACKGROUND_INDEX,
@@ -408,17 +305,16 @@ def render_set_locations_inc(sets_info: dict, palette: dict) -> str:
         "piece_set_locations:",
     ]
     for record in records:
-        values = [record["asset_page_index"], record["slot_base"],
-                  record["flash_asset_page_index"], record["flash_slot_base"]]
-        if any(not isinstance(value, int) or not 0 <= value <= 255 for value in values):
-            raise ValueError(f"invalid location for {record['name']!r}: {values!r}")
-        for page_key, slot_key, length in (
-                ("asset_page_index", "slot_base", TILES_PER_SET),
-                ("flash_asset_page_index", "flash_slot_base", FLASH_TILES_PER_SET)):
-            if record[page_key] not in (1, 2) or not 0 <= record[slot_key] <= SLOTS_PER_PAGE - length:
-                raise ValueError(f"unsupported tile block for {record['name']!r}: {record!r}")
-        lines.append("    DB " + ",".join(str(value) for value in values)
-                     + f" ; {record['name']}")
+        groups = record["groups"]
+        if [g["piece"] for g in groups] != PIECE_ORDER:
+            raise ValueError(f"invalid piece order for {record['name']}")
+        lines.append(f"    ; {record['name']}")
+        for group in groups:
+            page, slot = group["asset_page_index"], group["slot_base"]
+            if (page not in ASSET_PAGE_INDICES or not isinstance(slot, int)
+                    or slot % GROUP_SLOTS or not 0 <= slot <= SLOTS_PER_PAGE - GROUP_SLOTS):
+                raise ValueError(f"invalid piece group {group}")
+            lines.append(f"    DB {page},{slot} ; {group['piece']}")
     return "\n".join(lines) + "\n"
 
 
@@ -468,7 +364,7 @@ def main() -> int:
     parser.add_argument("--sets-json", type=Path, default=DEFAULT_SETS_JSON)
     parser.add_argument("--sets", nargs="+", default=None)
     parser.add_argument("--palette", type=Path, default=DEFAULT_PALETTE)
-    parser.add_argument("--cell", default="32x16")
+    parser.add_argument("--cell", default=f"{TILE_W}x{TILE_H}")
     parser.add_argument("--stride", type=int, default=None,
                         help="source bytes per tile row; must equal cell width/2 "
                              "(precompose_tile packs rows tightly -- the flag "
@@ -476,6 +372,8 @@ def main() -> int:
                              "to select a padded layout)")
     parser.add_argument("--page1-out", type=Path, required=True)
     parser.add_argument("--page2-out", type=Path, required=True)
+    parser.add_argument("--page3-out", type=Path, required=True)
+    parser.add_argument("--page4-out", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
     parser.add_argument("--locations-inc-out", type=Path,
                         help="optional assembly table of packed set locations")
@@ -495,12 +393,12 @@ def main() -> int:
         fail(f"expected exactly 3 sets, got {len(sets)}: {sets}")
 
     pages, sets_info = build_pages(args.pieces_root, sets, palette, cell_w, cell_h)
-    if len(pages) != 2:
-        fail(f"expected exactly 2 output pages for 3 sets, got {len(pages)}")
+    if len(pages) != 4:
+        fail(f"expected exactly 4 output pages for 3 sets, got {len(pages)}")
 
     manifest = build_manifest(sets_info, cell_w, cell_h, stride, args.palette)
 
-    for out_path, page in zip((args.page1_out, args.page2_out), pages):
+    for out_path, page in zip((args.page1_out, args.page2_out, args.page3_out, args.page4_out), pages):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(page)
         print(f"[OK] {out_path}: {len(page)} bytes, "

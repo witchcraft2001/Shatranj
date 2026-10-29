@@ -16,7 +16,7 @@ start:
 set_loop:
     ld hl,(record)
     ld de,#B8D8
-    ld bc,4
+    ld bc,24
     ldir
     ld (record),hl
     xor a
@@ -32,29 +32,22 @@ bg_loop:
     ld (got_slot),a
     ld a,e
     ld (got_page),a
-    ld a,(background)
-    cp 2
-    jr z,flash
-    ld a,(#B8D8)
-    ld hl,got_page
+    ld a,(piece)
+    add a,a
+    ld l,a
+    ld h,0
+    ld de,#B8D8
+    add hl,de
+    ld a,(hl)
+    ld de,got_page
+    ex de,hl
     cp (hl)
     ld a,1
     call t_expect_z
-    ld a,(piece)
+    ex de,hl
+    inc hl
+    ld a,(background)
     add a,a
-    ld hl,background
-    add a,(hl)
-    ld hl,#B8D9
-    add a,(hl)
-    jr slot
-flash:
-    ld a,(#B8DA)
-    ld hl,got_page
-    cp (hl)
-    ld a,2
-    call t_expect_z
-    ld a,(piece)
-    ld hl,#B8DB
     add a,(hl)
 slot:
     ld hl,got_slot
@@ -82,6 +75,9 @@ piece: db 0
 background: db 0
 got_slot: db 0
 got_page: db 0
-locations: db 41,0,73,24,41,24,73,36,73,0,73,48
+locations:
+    db 41,0,41,6,41,12,41,18,41,24,41,30,41,36,41,42,41,48,41,54,73,0,73,6
+    db 73,12,73,18,73,24,73,30,73,36,73,42,73,48,73,54,99,0,99,6,99,12,99,18
+    db 99,24,99,30,99,36,99,42,99,48,99,54,105,0,105,6,105,12,105,18,105,24,105,30
     ds #C000-$,0
     incbin "cold_win3_page.bin"

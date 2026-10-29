@@ -52,56 +52,57 @@ def _with_sets(palette: dict, names: list[str],
     return {**palette, "piece_sets": piece_sets}
 
 
-class SetLocationValidationTests(unittest.TestCase):
-    def test_runtime_page_and_block_limits_are_enforced(self) -> None:
-        palette = {"piece_sets": [{"name": "test"}]}
-        valid = {"name": "test", "asset_page_index": 1, "slot_base": 40,
-                 "flash_asset_page_index": 2, "flash_slot_base": 52}
-        bspt.render_set_locations_inc({"sets": [valid]}, palette)
-        for key, value in (("asset_page_index", 3), ("flash_asset_page_index", 0),
-                           ("slot_base", 41), ("flash_slot_base", 53)):
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                bspt.render_set_locations_inc({"sets": [{**valid, key: value}]}, palette)
-
-
 class CommittedPieceRoundTripTests(unittest.TestCase):
-    def test_all_108_normal_and_flash_tiles_match_committed_pixels(self) -> None:
+    def test_all_108_tiles_pixels_padding_and_page_boundaries(self):
         palette = gsp.load_palette_file(PALETTE_JSON)
         sets = json.loads((ROOT / "assets/lichess/selected_next_sets.json").read_text())["selected"]
-        pieces = ROOT / "assets/sprinter/pieces"
-        pages, info = bspt.build_pages(pieces, sets, palette, 32, 16)
-        locations = bspt.render_set_locations_inc(info, palette)
-        self.assertEqual(locations, bspt.render_set_locations_inc(info, palette))
-        for record in info["sets"]:
-            values = (record["asset_page_index"], record["slot_base"],
-                      record["flash_asset_page_index"], record["flash_slot_base"])
-            self.assertIn("DB " + ",".join(map(str, values)) + " ; " + record["name"],
-                          locations)
-        with self.assertRaises(ValueError):
-            bspt.render_set_locations_inc({"sets": list(reversed(info["sets"]))}, palette)
+        root = ROOT / "assets/sprinter/pieces"
+        pages, info = bspt.build_pages(root, sets, palette, 40, 20)
+        self.assertEqual(list(map(len, pages)), [16384]*4)
+        occupied = set()
         checked = 0
         for record in info["sets"]:
+            self.assertEqual([g["piece"] for g in record["groups"]], bspt.PIECE_ORDER)
             refs = bspt.piece_colours(palette, record["name"])
-            for piece_index, key in enumerate(bspt.PIECE_ORDER):
-                png = bspt.load_and_validate_piece(pieces / record["name"] / (key + ".png"), 32, 16, refs)
-                for background in (2, 3, 8):
-                    with self.subTest(set=record["name"], piece=key, background=background):
-                        if background == 8:
-                            page = record["flash_asset_page_index"] - 1
-                            slot = record["flash_slot_base"] + piece_index
-                        else:
-                            page = record["asset_page_index"] - 1
-                            slot = record["slot_base"] + piece_index * 2 + background - 2
-                        packed = pages[page][slot * bspt.SLOT_SIZE:(slot + 1) * bspt.SLOT_SIZE]
-                        for y in range(16):
-                            for x in range(32):
-                                byte = packed[y * 16 + x // 2]
-                                decoded = (byte >> 4) if x % 2 == 0 else (byte & 15)
-                                pixel = png.getpixel((x, y))
-                                expected = refs[pixel[:3]] if pixel[3] else background
-                                self.assertEqual(decoded, expected, (x, y))
-                        checked += 1
-        self.assertEqual(checked, 108)
+            for group in record["groups"]:
+                png = Image.open(root / record["name"] / (group["piece"] + ".png")).convert("RGBA")
+                page = bspt.ASSET_PAGE_INDICES.index(group["asset_page_index"])
+                self.assertLessEqual(group["slot_base"]+6,64)
+                for bg, index in enumerate((2,3,8)):
+                    offset = (group["slot_base"]+bg*2)*256
+                    block = pages[page][offset:offset+512]
+                    self.assertEqual(block[400:],bytes(112))
+                    for pos in range(offset,offset+512):
+                        self.assertNotIn((page,pos),occupied)
+                        occupied.add((page,pos))
+                    for y in range(20):
+                        for x in range(40):
+                            byte=block[y*20+x//2]
+                            decoded=byte>>4 if x%2==0 else byte&15
+                            pixel=png.getpixel((x,y))
+                            self.assertEqual(decoded,refs[pixel[:3]] if pixel[3] else index)
+                    checked+=1
+        self.assertEqual(checked,108)
+        for page, data in enumerate(pages):
+            self.assertNotIn(255,data)
+            self.assertTrue(all(value==0 for pos,value in enumerate(data) if (page,pos) not in occupied))
+        self.assertEqual(bspt.build_pages(root,sets,palette,40,20),(pages,info))
+        locations=bspt.render_set_locations_inc(info,palette)
+        self.assertEqual(locations.count("    DB "),36)
+        with self.assertRaises(ValueError):
+            bspt.render_set_locations_inc({"sets":list(reversed(info["sets"]))},palette)
+        import copy
+        for key,value in (("asset_page_index",3),("slot_base",60),("slot_base",1)):
+            broken=copy.deepcopy(info)
+            broken["sets"][0]["groups"][0][key]=value
+            with self.assertRaises(ValueError): bspt.render_set_locations_inc(broken,palette)
+
+    def test_transitions_within_each_set(self):
+        palette=gsp.load_palette_file(PALETTE_JSON)
+        sets=[r["name"] for r in palette["piece_sets"]]
+        _,info=bspt.build_pages(ROOT/"assets/sprinter/pieces",sets,palette,40,20)
+        self.assertEqual([[g["asset_page_index"] for g in r["groups"]] for r in info["sets"]],
+                         [[1]*10+[2]*2,[2]*8+[10]*4,[10]*6+[11]*6])
 
 
 class PieceTilesTestBase(unittest.TestCase):
@@ -113,7 +114,7 @@ class PieceTilesTestBase(unittest.TestCase):
         self.pieces_root = self.tmpdir / "pieces"
 
     def _write_solid_piece(self, set_name: str, key: str, rgb: tuple[int, int, int],
-                            cell_w: int = 32, cell_h: int = 16) -> Path:
+                            cell_w: int = 40, cell_h: int = 20) -> Path:
         out_dir = self.pieces_root / set_name
         out_dir.mkdir(parents=True, exist_ok=True)
         img = Image.new("RGBA", (cell_w, cell_h), rgb + (255,))
@@ -121,7 +122,7 @@ class PieceTilesTestBase(unittest.TestCase):
         img.save(path)
         return path
 
-    def _write_full_set(self, set_name: str, cell_w: int = 32, cell_h: int = 16,
+    def _write_full_set(self, set_name: str, cell_w: int = 40, cell_h: int = 20,
                          w_body: tuple[int, int, int] | None = None,
                          b_body: tuple[int, int, int] | None = None) -> None:
         w_body = w_body or _rgb(self.palette, 4)
@@ -131,155 +132,47 @@ class PieceTilesTestBase(unittest.TestCase):
             self._write_solid_piece(set_name, key, rgb, cell_w, cell_h)
 
 
-class BuildPagesTests(PieceTilesTestBase):
-    def setUp(self) -> None:
-        super().setUp()
-        for name in ("setA", "setB", "setC"):
-            self._write_full_set(name)
-
-    def test_produces_exactly_two_pages_of_16384_bytes(self) -> None:
-        pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     self.palette, 32, 16)
-        self.assertEqual(len(pages), 2)
-        for page in pages:
-            self.assertEqual(len(page), bspt.PAGE_SIZE)
-
-    def test_deterministic(self) -> None:
-        pages1, info1 = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                          self.palette, 32, 16)
-        pages2, info2 = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                          self.palette, 32, 16)
-        self.assertEqual(pages1, pages2)
-        self.assertEqual(info1["sets"], info2["sets"])
-
-    def test_slot_base_arithmetic(self) -> None:
-        _, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                    self.palette, 32, 16)
-        by_name = {s["name"]: s for s in info["sets"]}
-        self.assertEqual(by_name["setA"]["asset_page_index"], 1)
-        self.assertEqual(by_name["setA"]["slot_base"], 0)
-        self.assertEqual(by_name["setB"]["asset_page_index"], 1)
-        self.assertEqual(by_name["setB"]["slot_base"], 24)
-        self.assertEqual(by_name["setC"]["asset_page_index"], 2)
-        self.assertEqual(by_name["setC"]["slot_base"], 0)
-
-    def test_corner_slot_47_is_setB_last_piece_dark_background(self) -> None:
-        pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     self.palette, 32, 16)
-        page0 = pages[0]
-        # setB base 24, PIECE_ORDER[-1] == 'bP' at index 11, background 1
-        # (dark) -> slot 24 + 11*2 + 1 = 47.
-        slot = 24 + 11 * 2 + 1
-        self.assertEqual(slot, 47)
-        tile = page0[slot * bspt.SLOT_SIZE:(slot + 1) * bspt.SLOT_SIZE]
-        self.assertTrue(any(b != 0 for b in tile), "corner slot 47 is all-zero")
-        # bP is a solid opaque black-piece body colour everywhere -> every
-        # nibble pair in the tile packs to the same index twice.
-        b_body_idx = 6
-        expected_byte = (b_body_idx << 4) | b_body_idx
-        stride = 32 // 2
-        first_row = tile[:stride]
-        self.assertTrue(all(b == expected_byte for b in first_row))
-
-    def test_unused_tail_of_page_stays_zero(self) -> None:
-        pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     self.palette, 32, 16)
-        page1 = pages[1]
-        # setC occupies slots 0-23 of page 1 (0-based index 1) and the three
-        # sets' flash blocks slots 24-59; the rest (slots 60-63) stays zero.
-        tail = page1[60 * bspt.SLOT_SIZE:]
-        self.assertEqual(tail, bytes(len(tail)))
-
-    def test_flash_blocks_follow_the_last_normal_block(self) -> None:
-        _, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                    self.palette, 32, 16)
-        by_name = {s["name"]: s for s in info["sets"]}
-        for name, base in (("setA", 24), ("setB", 36), ("setC", 48)):
-            self.assertEqual(by_name[name]["flash_asset_page_index"], 2)
-            self.assertEqual(by_name[name]["flash_slot_base"], base)
-
-    def test_flash_tile_is_the_piece_on_the_flash_background(self) -> None:
-        pages, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                        self.palette, 32, 16)
-        base = next(s for s in info["sets"] if s["name"] == "setA")["flash_slot_base"]
-        # The fixture pieces are fully opaque, so a flash tile is solid piece
-        # colour; the fully-transparent-piece case below is what pins the
-        # flash BACKGROUND index itself.
-        slot = base + bspt.PIECE_ORDER.index("wK")
-        tile = pages[1][slot * bspt.SLOT_SIZE:(slot + 1) * bspt.SLOT_SIZE]
-        expected_byte = (4 << 4) | 4
-        self.assertTrue(all(b == expected_byte for b in tile[:16]))
-
-    def test_flash_background_is_the_hud_select_index(self) -> None:
-        # A fully transparent piece leaves nothing but background, which is
-        # what pins FLASH_BACKGROUND_INDEX into the packed bytes.
-        for key in bspt.PIECE_ORDER:
-            out_dir = self.pieces_root / "clear"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            Image.new("RGBA", (32, 16), (0, 0, 0, 0)).save(out_dir / f"{key}.png")
-        pages, info = bspt.build_pages(self.pieces_root, ["clear", "setB", "setC"],
-                                        _with_sets(self.palette,
-                                                   ["clear", "setB", "setC"]),
-                                        32, 16)
-        base = next(s for s in info["sets"] if s["name"] == "clear")["flash_slot_base"]
-        tile = pages[1][base * bspt.SLOT_SIZE:(base + 1) * bspt.SLOT_SIZE]
-        idx = bspt.FLASH_BACKGROUND_INDEX
-        self.assertTrue(all(b == ((idx << 4) | idx) for b in tile[:16]))
-
-    def test_renderer_reads_selected_flash_parameters(self) -> None:
-        source = (ROOT / "asm/sprinter/zcc/render_core.asm").read_text()
-        self.assertIn("ld a,(LOWRAM_PIECE_STATE_ADDR+3)", source)
-        self.assertIn("ld a,(LOWRAM_PIECE_STATE_ADDR+4)", source)
-        self.assertNotIn("PIECE_FLASH_SLOT_BASE EQU", source)
-
-    def test_no_0xff_byte_in_opaque_tiles(self) -> None:
-        pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     self.palette, 32, 16)
-        for page in pages:
-            self.assertNotIn(0xFF, page)
-
-
 class ValidationTests(PieceTilesTestBase):
     def test_wrong_canvas_size_is_rejected_with_filename(self) -> None:
         path = self._write_solid_piece("bad", "wK", _rgb(self.palette, 4),
                                         cell_w=16, cell_h=16)
         with self.assertRaises(SystemExit) as cm:
-            bspt.load_and_validate_piece(path, 32, 16, {})
+            bspt.load_and_validate_piece(path, 40, 20, {})
         self.assertIn(str(path), str(cm.exception))
         self.assertIn("size", str(cm.exception))
 
     def test_partial_alpha_is_rejected(self) -> None:
-        img = Image.new("RGBA", (32, 16), (0, 0, 0, 0))
+        img = Image.new("RGBA", (40, 20), (0, 0, 0, 0))
         img.putpixel((5, 5), (250, 250, 240, 128))  # neither 0 nor 255
         path = self.pieces_root / "bad" / "wK.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path)
         ref = {_rgb(self.palette, 4): 4}
         with self.assertRaises(SystemExit) as cm:
-            bspt.load_and_validate_piece(path, 32, 16, ref)
+            bspt.load_and_validate_piece(path, 40, 20, ref)
         self.assertIn(str(path), str(cm.exception))
         self.assertIn("alpha", str(cm.exception))
 
     def test_off_palette_opaque_pixel_is_rejected_with_rgb(self) -> None:
-        img = Image.new("RGBA", (32, 16), (0, 0, 0, 0))
+        img = Image.new("RGBA", (40, 20), (0, 0, 0, 0))
         img.putpixel((3, 2), (1, 2, 3, 255))  # not a reference colour
         path = self.pieces_root / "bad" / "wK.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path)
         ref = {_rgb(self.palette, 4): 4, _rgb(self.palette, 5): 5}
         with self.assertRaises(SystemExit) as cm:
-            bspt.load_and_validate_piece(path, 32, 16, ref)
+            bspt.load_and_validate_piece(path, 40, 20, ref)
         self.assertIn(str(path), str(cm.exception))
         self.assertIn("010203", str(cm.exception).upper())
 
     def test_missing_file_is_rejected(self) -> None:
         with self.assertRaises(SystemExit):
             bspt.load_and_validate_piece(self.pieces_root / "nope" / "wK.png",
-                                          32, 16, {})
+                                          40, 20, {})
 
     def test_wrong_set_count_is_rejected(self) -> None:
         with self.assertRaises(SystemExit):
-            bspt.build_pages(self.pieces_root, ["only-one-set"], self.palette, 32, 16)
+            bspt.build_pages(self.pieces_root, ["only-one-set"], self.palette, 40, 20)
 
 
 class PrecomposeTileTests(unittest.TestCase):
@@ -312,7 +205,7 @@ class PrecomposeTileTests(unittest.TestCase):
 
 class CellParsingTests(unittest.TestCase):
     def test_parses_wxh(self) -> None:
-        self.assertEqual(bspt.parse_cell("32x16"), (32, 16))
+        self.assertEqual(bspt.parse_cell("40x20"), (40, 20))
 
     def test_rejects_malformed_spec(self) -> None:
         with self.assertRaises(SystemExit):
@@ -324,7 +217,7 @@ class StrideTests(unittest.TestCase):
         self.assertEqual(bspt.resolve_stride(32, None), 16)
 
     def test_matching_stride_is_accepted(self) -> None:
-        self.assertEqual(bspt.resolve_stride(32, 16), 16)
+        self.assertEqual(bspt.resolve_stride(40, 20), 20)
 
     def test_mismatched_stride_is_rejected(self) -> None:
         # precompose_tile packs rows tightly; a padded stride would only
@@ -369,9 +262,9 @@ class AllowedPieceColoursTests(PieceTilesTestBase):
             with self.subTest(index=index):
                 rgb = _rgb(self.palette, index)
                 path = self._write_solid_piece("hud", "wK", rgb)
-                piece = bspt.load_and_validate_piece(path, 32, 16, self._allowed_map())
+                piece = bspt.load_and_validate_piece(path, 40, 20, self._allowed_map())
                 tile = bspt.precompose_tile(
-                    piece, 32, 16,
+                    piece, 40, 20,
                     bspt._rgb_set(self.palette, bspt.BACKGROUND_INDICES),
                     _rgb(self.palette, 2), self._allowed_map(),
                 )
@@ -385,13 +278,13 @@ class AllowedPieceColoursTests(PieceTilesTestBase):
             with self.subTest(index=index):
                 path = self._write_solid_piece("bad", "wK", _rgb(self.palette, index))
                 with self.assertRaises(SystemExit) as cm:
-                    bspt.load_and_validate_piece(path, 32, 16, self._allowed_map())
+                    bspt.load_and_validate_piece(path, 40, 20, self._allowed_map())
                 self.assertIn(str(path), str(cm.exception))
 
     def test_diagnostic_names_the_allowed_colours_by_index(self) -> None:
         path = self._write_solid_piece("bad", "wK", (1, 2, 3))
         with self.assertRaises(SystemExit) as cm:
-            bspt.load_and_validate_piece(path, 32, 16, self._allowed_map())
+            bspt.load_and_validate_piece(path, 40, 20, self._allowed_map())
         message = str(cm.exception)
         self.assertIn("11 #D6453A", message)   # a HUD colour, spelled out
         self.assertNotIn(" 8 #", message)      # ... and the excluded ones are not
@@ -418,7 +311,7 @@ class PerSetPaletteTests(PieceTilesTestBase):
         self._write_full_set("setB", w_body=self.SET_B_BODY)
         self._write_full_set("setC")
         pages, _ = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     palette, 32, 16)
+                                     palette, 40, 20)
         # setB is the second set on page 1: slot_base 24, wK light square.
         tile = pages[0][24 * 256:24 * 256 + 8]
         self.assertEqual(set(tile), {(4 << 4) | 4})
@@ -430,7 +323,7 @@ class PerSetPaletteTests(PieceTilesTestBase):
         self._write_full_set("setC")
         with self.assertRaises(SystemExit) as cm:
             bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                              palette, 32, 16)
+                              palette, 40, 20)
         self.assertIn("EFD6A8", str(cm.exception).upper())
 
     def test_shared_accents_stay_legal_in_every_set(self) -> None:
@@ -450,7 +343,7 @@ class PerSetPaletteTests(PieceTilesTestBase):
             self._write_full_set(name)
         with self.assertRaises(SystemExit) as cm:
             bspt.build_pages(self.pieces_root, ["setB", "setA", "setC"],
-                              self.palette, 32, 16)
+                              self.palette, 40, 20)
         self.assertIn("same order", str(cm.exception))
 
     def test_real_palette_names_the_real_sets(self) -> None:
@@ -471,12 +364,12 @@ class ManifestTests(PieceTilesTestBase):
 
     def test_manifest_has_expected_shape(self) -> None:
         _, info = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                    self.palette, 32, 16)
-        manifest = bspt.build_manifest(info, 32, 16, 16, PALETTE_JSON)
-        self.assertEqual(manifest["format"], "shatranj-sprinter-tiles-v1")
+                                    self.palette, 40, 20)
+        manifest = bspt.build_manifest(info, 40, 20, 20, PALETTE_JSON)
+        self.assertEqual(manifest["format"], "shatranj-sprinter-tiles-v2")
         self.assertEqual(manifest["layout"], "row-major-packed-4bpp-high-nibble-left")
-        self.assertEqual(manifest["cell"], {"w": 32, "h": 16})
-        self.assertEqual(manifest["tile_bytes"], 256)
+        self.assertEqual(manifest["cell"], {"w": 40, "h": 20})
+        self.assertEqual(manifest["tile_bytes"], 400)
         self.assertEqual(len(manifest["piece_order"]), 12)
         self.assertEqual(manifest["flash_tiles_per_set"], 12)
         self.assertEqual(manifest["flash_background_palette_index"], 8)
@@ -486,11 +379,11 @@ class ManifestTests(PieceTilesTestBase):
 
     def test_manifest_deterministic(self) -> None:
         _, info1 = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     self.palette, 32, 16)
+                                     self.palette, 40, 20)
         _, info2 = bspt.build_pages(self.pieces_root, ["setA", "setB", "setC"],
-                                     self.palette, 32, 16)
-        m1 = bspt.build_manifest(info1, 32, 16, 16, PALETTE_JSON)
-        m2 = bspt.build_manifest(info2, 32, 16, 16, PALETTE_JSON)
+                                     self.palette, 40, 20)
+        m1 = bspt.build_manifest(info1, 40, 20, 20, PALETTE_JSON)
+        m2 = bspt.build_manifest(info2, 40, 20, 20, PALETTE_JSON)
         self.assertEqual(m1, m2)
 
 

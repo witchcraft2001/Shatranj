@@ -70,6 +70,7 @@ def parse_layout(raw: dict) -> dict:
         "bands": bands,
         "board": board_parsed,
         "panel": panel_parsed,
+        "piece": raw["piece"],
     }
 
 
@@ -118,6 +119,12 @@ def validate_layout(layout: dict) -> list[str]:
     bands = layout["bands"]
     board = layout["board"]
     panel = layout["panel"]
+    piece = layout["piece"]
+    if (piece["w"] <= 0 or piece["h"] <= 0 or piece["w"] % 4
+            or (board["cell_w"] - piece["w"]) % 4
+            or (board["cell_h"] - piece["h"]) % 2
+            or piece["w"] > board["cell_w"] or piece["h"] > board["cell_h"]):
+        errors.append("invalid centred 4bpp piece geometry")
 
     names = [b["name"] for b in bands]
     if len(names) != len(set(names)):
@@ -194,6 +201,15 @@ def compute_symbols(layout: dict) -> dict:
     symbols["BOARD_CELL_H"] = board["cell_h"]
     symbols["BOARD_W"] = board["cols"] * board["cell_w"]
     symbols["BOARD_H"] = board["rows"] * board["cell_h"]
+    piece = layout["piece"]
+    symbols["PIECE_W"] = piece["w"]
+    symbols["PIECE_H"] = piece["h"]
+    symbols["PIECE_STRIDE"] = piece["w"] // 2
+    symbols["PIECE_BYTES"] = piece["w"] // 2 * piece["h"]
+    symbols["PIECE_BLOCK_BYTES"] = (symbols["PIECE_BYTES"] + 255) // 256 * 256
+    symbols["PIECE_SLOTS"] = symbols["PIECE_BLOCK_BYTES"] // 256
+    symbols["PIECE_X_BYTE_OFFSET"] = (board["cell_w"] - piece["w"]) // 4
+    symbols["PIECE_Y_OFFSET"] = (board["cell_h"] - piece["h"]) // 2
 
     panel = layout["panel"]
     symbols["PANEL_X"] = panel["x"]
@@ -267,6 +283,7 @@ def _clean_fixture() -> dict:
             {"name": "INPUT", "y": 244, "h": 12},
         ],
         "board": {"x": 16, "cols": 8, "rows": 8, "cell_w": 48, "cell_h": 24},
+        "piece": {"w": 40, "h": 20},
         "panel": {
             "x": 408,
             "w": 232,

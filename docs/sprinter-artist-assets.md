@@ -1,285 +1,110 @@
-# Sprinter: памятка для художника
+# Sprinter artist assets
 
-Здесь всё, что нужно знать, чтобы нарисованное попало в игру без правок с
-нашей стороны: как устроен экран, какие файлы мы ждём обратно и какие
-требования проверяет сборка.
+The game uses 640×256 pixels with one shared 16-colour palette. View PNGs
+with vertical scaling ×2: a stored 48×24 board square then appears square.
+Use nearest-neighbour scaling when inspecting finished pixel art.
 
----
+## Piece geometry and files
 
-## 1. Экран Sprinter в двух абзацах
+Edit `assets/sprinter/pieces/{california,mpchess,totoy}/*.png`. Each set has
+`wK,wQ,wR,wB,wN,wP,bK,bQ,bR,bB,bN,bP`, in that order. Preserve filenames,
+directories and the **40×20 RGBA canvas**. Every alpha value must be 0 or
+255. Piece transparency may have any shape; individual transparent pixels
+are supported by precomposing the artwork onto its background.
 
-Игра работает в режиме **640×256 точек, 16 цветов одновременно на весь
-экран**. Эти 16 цветов делят между собой доска, фигуры, маркеры, текст и
-логотип — см. таблицу в разделе 4.
+The renderer centres the tile in the unchanged 48×24 cell, with **4 pixels
+on either side and 2 rows above and below**. Transparent space inside the
+PNG is additional to those margins. Cursor/selection frames remain 48×24;
+hint dots and last-move rings remain 16×8.
 
-Главная особенность: **пиксель этого режима вдвое меньше по ширине, чем его высота**. Всё,
-что должно выглядеть квадратным на экране, в файле в два раза шире. Клетка доски — 48×24 точки в файле, на экране это квадрат. Поэтому
-в редакторе картинку надо смотреть растянутой по вертикали ×2 — либо
-пользоваться превью из архива (`build/sprinter/preview/piece_tiles_*.png`):
-там фигуры уже показаны с правильными пропорциями, на всех фонах, крупно.
+`src/sprinter/render_layout.json` owns piece and cell geometry. The packer,
+assembly constants and previews derive dimensions from it. Each packed
+4bpp row has 20 bytes, with the left pixel in the high nibble. A tile has
+400 useful bytes and 112 zero padding bytes, occupying two 256-byte
+accelerator slots. Artists supply PNGs, never padded binary tiles.
 
----
+## Colours
 
-## 2. Что лежит в архиве
+Use the exact RGB values in `assets/sprinter/palette.json`. Colour profiles,
+antialiasing and partial alpha can change values and cause build errors.
+Each set owns indices 4–7; changing PIECES uploads that set's four colours.
 
-| Файл(ы) | Что это |
-| --- | --- |
-| `assets/sprinter/pieces/<набор>/*.png` | фигуры: 3 набора по 12 файлов |
-| `assets/sprinter/markers/*.png` | точка и кольцо-маркер, рамка курсора, рамка выбранной клетки |
-| `assets/sprinter/logo_sprinter.png` | логотип Sprinter |
-| `assets/sprinter/source/sprinter_logo_source.png` | рабочий исходник логотипа |
-| `assets/sprinter/about640.png` | картинка экрана About — то, что реально идёт в сборку |
-| `assets/pc-client/about/about-shatranj.png` | оригинал картинки About, 1254×1254, до сжатия в 512×256×14 цветов — для детальной перерисовки |
-| `assets/sprinter/palette.json` | палитра: здесь же лежат четыре цвета каждого набора (раздел 4) |
-| `build/sprinter/preview/piece_tiles_*.png` | превью фигур с исправленными пропорциями — только для просмотра |
-
-Обратно ждём **те же файлы с теми же именами, в тех же папках и тех же
-размеров**.
-Переименование, смена формата или размера холста ломает сборку.
-
----
-
-## 3. Три правила, общие для всей графики
-
-1. **Никакого сглаживания и полупрозрачности.** Пиксель либо полностью
-   непрозрачный, либо полностью прозрачный — промежуточных значений
-   альфы нет. (Исключение — экран About, у него другой формат, см. раздел 9.)
-2. **Цвета должны совпадать точно, байт в байт.** Отключите в редакторе
-   управление цветом и цветовые профили: сдвиг даже на единицу — это
-   отказ сборки, а не «почти тот же оттенок».
-3. **Размер холста не меняется.** Он задан для каждого файла ниже.
-
----
-
-## 4. Цвета
-
-У графики фигур две категории цветов: четыре своих на каждый набор и
-общие цвета экрана.
-
-### Четыре цвета набора — ваши
-
-| Роль | Значение сейчас |
-| --- | --- |
-| Тело белой фигуры | `#F8F8F0` |
-| Контур белой фигуры | `#202020` |
-| Тело чёрной фигуры | `#4C4C4C` |
-| Контур чёрной фигуры | `#C8C8C0` |
-
-Это единственные четыре цвета, чьи значения вы назначаете сами, — **и у
-каждого набора они свои**.
-
-Значения лежат в `assets/sprinter/palette.json`, блок `piece_sets`, и
-правятся в любом текстовом редакторе:
-
-```json
-"piece_sets": [
-  {"name": "california",
-   "entries": {"4": "#F8F8F0", "5": "#202020", "6": "#4C4C4C", "7": "#C8C8C0"}},
-  ...
-]
-```
-
-Index `4` is white fill, `5` is dark strokes for either side, `6` is
-charcoal fill for black California/Totoy pieces, and `7` is light detail,
-white shading, and the outer rim of black pieces. MPChess black silhouettes
-use index `5`.
-
-Цвет набора не должен совпадать ни с другим цветом этого же набора, ни с любым цветом из таблицы ниже, ни с цветом клетки любой темы   (раздел 5). Совпадение означало бы фигуру цветом доски или маркера, и   сборка такое не пропускает.
-
-Названия ролей — условность. Если в вашем наборе «контур белой» на самом
-деле тёплая тень или блик, это ваше решение: игра знает только «четыре
-цвета набора».
-
-### Общие цвета экрана
-
-Остальные двенадцать цветов общие для всей игры и одинаковы во всех
-наборах. Восемь из них можно свободно использовать в фигурах как акценты.
-
-| Цвет | HEX | Где его использует игра | В фигурах |
-| --- | --- | --- | :---: |
-| Фон | `#000000` | фон экрана вокруг доски | да |
-| Текст | `#E8E8E8` | основной текст интерфейса | да |
-| Светлая клетка | `#F0D9B5` * | светлые клетки доски | **нет** |
-| Тёмная клетка | `#B58863` * | тёмные клетки доски | **нет** |
-| Жёлтый выбора | `#FFD24A` | рамка выбранной клетки, вспышка после хода | **нет** |
-| Зелёный подсказки | `#39C15A` | точки возможных ходов | да |
-| Синий последнего хода | `#4A90D9` | кольцо на последнем ходе | да |
-| Красный ошибки | `#D6453A` | сообщения об ошибке | да |
-| Зелёный успеха | `#3AD68C` | сообщения «успешно», «подключено» | да |
-| Серый | `#707070` | второстепенный текст, разделители | да |
-| Голубой акцент | `#00BEFE` | рамка курсора, логотип | да |
-| Розовый курсор | `#FF3D7F` | курсор в полях ввода | **нет** |
-
-\* меняется темой доски, см. раздел 5.
-
-Почему четыре «нет»:
-
-- два цвета клеток и жёлтый — это то, что игра подкладывает **под**
-  фигуру (раздел 6): пиксель фигуры того же цвета на таком фоне просто
-  исчезнет, а цвета клеток вдобавок меняются вместе с темой;
-- розовый — технический-служебный: пара соседних пикселей этого цвета читается
-  железом как «прозрачно». Его нельзя использовать ни в одном файле
-  архива.
-
-Эти двенадцать значений тоже не высечены в камне — они задаются там же, в
-`palette.json`. Но они общие: перекрасив, например, «зелёный подсказки»,
-вы меняете и точки возможных ходов, и все пиксели фигур этого цвета во
-всех наборах. Поэтому такие правки — отдельный разговор, а не рабочий
-инструмент набора; для набора есть его собственная четвёрка.
-
----
-
-## 5. Темы доски
-
-Тему выбирает игрок; она меняет **только два цвета клеток**:
-
-| Тема | Светлая клетка | Тёмная клетка |
+| Index | Role | Current RGB |
 | --- | --- | --- |
-| CLASSIC | `#F0D9B5` | `#B58863` |
-| BLUE | `#D9E6F5` | `#5A78B5` |
-| GREEN | `#E2F0D9` | `#6B9E5A` |
-| CYAN | `#D9F5F0` | `#4AA8A0` |
-| MAGENTA | `#F5D9F0` | `#A84A9E` |
+| 4 | White fill | `#F8F8F0` |
+| 5 | Source dark strokes / MPChess black body | `#202020` |
+| 6 | California/Totoy black fill | `#4C4C4C` |
+| 7 | Light detail / added black rim | `#C8C8C0` |
 
-Фигуры при этом не перекрашиваются: набор выглядит одинаково во всех
-темах. Значит, силуэт должен читаться на всех десяти цветах клеток —
-самые тяжёлые случаи: тёмная фигура на `#5A78B5` и светлая на `#D9F5F0`.
+Finished pieces may also use the shared colours at indices
+0, 1, 9, 10, 11, 12, 13 and 14. Index 13 (`#707070`) carries California's
+original gray highlights, distinct from its added brighter rim.
 
----
+Do not use indices 2, 3 or 8 in pieces: these are the two board backgrounds
+and move-flash yellow, and using them makes parts disappear. Index 15 is
+reserved for the hardware transparency key and is also forbidden.
 
-## 6. Фигуры
+Review every piece on light and dark squares of CLASSIC, BLUE, GREEN,
+CYAN and MAGENTA, plus flash yellow (`#FFD24A`). The source's holes, open
+cuts and separate components take priority over a continuous outside rim.
+White pieces receive no additional rim.
 
-**Файлы.** Три набора — `california`, `mpchess`, `totoy`, в каждом 12
-файлов: `wK`, `wQ`, `wR`, `wB`, `wN`, `wP` (белые: король, ферзь, ладья,
-слон, конь, пешка) и `bK`, `bQ`, `bR`, `bB`, `bN`, `bP` (чёрные).
+## Manual SVG import and review
 
-**Формат.** PNG с альфой, холст ровно **32×16**. Напоминание из раздела 1:
-на экране это квадрат, а не лежачий прямоугольник.
+`tools/rasterize_sprinter_pieces.py` is a manual import tool. Normal builds
+read committed PNGs only. Its default output is the separate candidate
+folder `build/sprinter/pieces40-candidates`; review before copying files
+into `assets/sprinter/pieces/` so artist edits are never silently replaced.
 
-**Как фигура попадает на доску.** Игра берёт клетку 48×24, заливает её
-цветом клетки и кладёт фигуру по центру. Вокруг остаётся поле цвета
-клетки: 8 точек слева и справа, 4 сверху и снизу. То есть 32×16 — это
-сама фигура в полный рост, поля добавляются автоматически. Прозрачные
-пиксели внутри холста — это и есть цвет клетки, «дырки» в фигуре видны как
-клетка.
+Chrome renders each SVG in a fixed 1024×1024 viewport. An empty or clipped
+render fails. Alpha, colour-region and original-stroke masks receive the
+same proportional bbox fit with 8% margin. Nine quarter-pixel grid phases
+are ranked by source features, silhouette error and stroke preservation;
+zero wins equal scores. Thin diagonal passages are reopened only when the
+high-resolution source marks them as exterior. The black rim comes from
+source geometry, with physical pixel aspect ratio accounted for, and must
+preserve source components and holes.
 
-**Цвета.** Четыре собственных цвета набора плюс восемь общих акцентов —
-итого 12, см. раздел 4. Прозрачность у фигур может быть любой формы:
-здесь, в отличие от маркеров и логотипа, нет требования парности.
+Intentional exceptions belong in `assets/sprinter/piece_conversion.json`.
+The California gray-highlight rule is reproduced there. The old 32×16
+California queen bead and MPChess rook notch coordinates were reviewed
+again against the SVGs at 40×20: the new coverage conversion retains them
+without coordinate patches. Do not scale the old patch coordinates.
 
-**Три фона, на которых окажется каждая фигура:**
+Conversion comparisons are under `build/sprinter/preview/pieces40/`:
+`*-comparison.png` shows SVG → archived 32×16 → 40×20 in colour and
+silhouette. `*-themes.png` and `*-themes_zoom.png` show all backgrounds at
+actual corrected scale and 4× without smoothing. Archived theme previews
+have `-old-themes` in their names. Source renders and per-phase scores are
+under `build/sprinter/preview/source1024/`.
 
-1. светлая клетка,
-2. тёмная клетка,
-3. жёлтая вспышка `#FFD24A` — после хода игра ненадолго заливает клетку
-   целиком жёлтым, вместе с полем вокруг фигуры.
+## Markers and logo
 
-Фигура должна читаться на всех трёх. На практике это значит, что по
-внешнему краю силуэта нужен контур контрастного цвета: без него чёрная
-фигура на тёмной клетке и любая фигура на жёлтой вспышке теряют границу.
+| File | Canvas | Current colour |
+| --- | --- | --- |
+| `markers/dot.png` | 16×8 | `#39C15A` |
+| `markers/ring.png` | 16×8 | `#4A90D9` |
+| `markers/cursor.png` | 48×24 | `#00BEFE` |
+| `markers/select.png` | 48×24 | `#FFD24A` |
+| `logo_sprinter.png` | 172×16 | `#E8E8E8`, `#00BEFE` |
 
-**Наборы независимы.** Разные наборы могут быть решены в разных стилях и
-разными цветовыми сочетаниями — общая только палитра из раздела 4.
+These assets use hardware transparency: for each horizontal pair starting
+at even X, both pixels must be opaque or both transparent. Index 15 is the
+key, not an opaque colour. Return both the logo and its working source
+`source/sprinter_logo_source.png` if editing the source. Asset preparation
+scripts are manual tools and their outputs must be reviewed before merging.
 
----
+## About artwork
 
-## 7. Маркеры и рамки
+`about640.png` is a 512×256 indexed PNG with its own palette. Use only the
+first 14 palette entries in the artwork; the final two are reserved for
+the overlaid version caption. Antialiasing and dithering are permitted
+within the 14-colour limit. `assets/pc-client/about/about-shatranj.png` is
+the 1254×1254 reference, not a Sprinter build input.
 
-| Файл | Размер | Назначение | Цвет сейчас |
-| --- | --- | --- | --- |
-| `markers/dot.png` | 16×8 | точка возможного хода | зелёный `#39C15A` |
-| `markers/ring.png` | 16×8 | маркер последнего хода | синий `#4A90D9` |
-| `markers/cursor.png` | 48×24 | рамка клетки под курсором | голубой `#00BEFE` |
-| `markers/select.png` | 48×24 | рамка выбранной клетки | жёлтый `#FFD24A` |
+## In-game selection
 
-Эти четыре файла рисуются **поверх** клетки с фигурой, поэтому у них
-прозрачность аппаратная и работает парами:
-
-> мысленно разбейте картинку на столбики по 2 пикселя, начиная от левого
-> края; в каждой такой паре либо оба пикселя прозрачны, либо оба
-> непрозрачны. Одиночный прозрачный пиксель на нечётной позиции
-> невозможен.
-
-Отсюда же: ширина всегда чётная, а вертикальные линии и точки лучше
-ставить на чётные координаты. Цвета — любые из таблицы, кроме розового;
-цвета клеток брать не стоит — маркер на такой клетке пропадёт.
-
----
-
-## 8. Логотип Sprinter
-
-- `logo_sprinter.png`, **172×16**.
-- Прозрачность — парами, как у маркеров (раздел 7).
-- Цвета — любые из таблицы, кроме розового. Сейчас использованы всего два
-  (`#E8E8E8` и `#00BEFE`), но это не ограничение.
-- `source/sprinter_logo_source.png` — рабочий исходник. Правите его —
-  верните оба файла.
-
----
-
-## 9. Экран About
-
-- `about640.png`, ровно **512×256**, палитровый (индексированный) PNG.
-  512×256 — это те же пропорции 2:1: на экране картинка выглядит
-  квадратной.
-- **У этого экрана своя палитра.** Он открывается на весь экран, поэтому
-  таблица раздела 4 на него не распространяется: цвета берутся прямо из
-  файла и могут быть любыми.
-- Картинке доступны **14 цветов** — первые 14 ячеек палитры файла.
-  Сглаживание и дизеринг здесь допустимы: ограничение только на
-  количество цветов.
-- Две последние ячейки палитры принадлежат подписи с номером версии,
-  которую игра печатает поверх картинки: предпоследняя — плашка под
-  текстом (сейчас чёрная), последняя — цвет самого текста (сейчас
-  кремовый `#F0E0C0`). Рисовать ими нельзя; поменять эти два цвета можно,
-  если подпись останется читаемой.
-- Исходная картинка тёмная, «при свечах».
-- В архиве также лежит `about-shatranj.png` — оригинал 1254×1254 без
-  сжатия в 14 цветов, тот же, что видно в About Qt-версии игры. Он не
-  идёт в сборку и сам по себе ничего не меняет: правите вы `about640.png`
-  напрямую (512×256, не больше 14 цветов), а оригинал — только справка,
-  если нужно разглядеть деталь без артефактов сжатия. 
-
-
-
-## Piece conversion review, 2026-10-11
-
-The importer classifies source colours before the bbox fit and downsamples
-separate float coverage masks. Black rims cover exterior diagonal corners;
-internal holes, one- and two-pixel cuts, and separate silhouette parts are
-preserved. White source contours receive no extra rim. Index 6 was reduced
-from `#787878` to `#4C4C4C` after visual feedback that the black pieces were
-too light. All set palettes and the California base palette agree.
-
-All 36 PNGs were compared with their SVGs and both earlier raster versions.
-The king crosses, queen and rook crowns, bishop cuts, knight profiles, and
-pawn heads/necks were reviewed on both squares of all five themes and the
-flash yellow. Preview geometry is an unscaled 32x16 tile centred at (8,4)
-in a 48x24 square, then stretched vertically by 2; a separate 4x zoom uses
-nearest-neighbour sampling.
-
-The final PNGs include these manual edits (zero-based stored coordinates):
-
-- California black pieces: mute the original gray highlight regions to the
-  permitted shared gray, index 13 `#707070`. The exterior rim remains index 7
-  `#C8C8C0`; fill stays index 6 `#4C4C4C`. This keeps source shading without
-  making the black pieces look white.
-- California `wQ`/`bQ`: restore the small centre of the upper right crown
-  bead at (19,2), using the respective fill colour.
-- MPChess `wR`/`bR`: restore the shallow crenellations at x=11,12,19,20,
-  y=2; define their lower edge at y=3. The black rim above the cuts at y=1
-  is cleared so the notches remain open.
-
-These PNGs are independent source assets. Regenerating the SVG import will
-lose the manual edits: always render into a separate `--pieces-out`, compare,
-and merge deliberately. Normal builds consume the committed PNGs only.
-
-## S14: selecting artwork in the application
-
-The PIECES menu cycles California, MPChess and Totoy, starting with
-California on each launch. Every set uses its own four colours from
-`palette.json` entries 4–7. Board themes affect only entries 2–3.
-Check each edited set on all five themes and on the yellow move-flash
-background. About, fade and game loading preserve the current set.
-The build reads the committed PNGs; it does not rasterize SVGs or replace
-artist edits. See [S14 acceptance notes](sprinter-testnotes/S14.md).
+PIECES cycles California → MPChess → Totoy → California. Launch starts
+with California. About/fade, save/load, reset and session changes retain
+the selected set. Theme changes affect square colours only. The palette,
+set order, cell geometry and marker behaviour are unchanged by 40×20 art.

@@ -27,7 +27,7 @@
 | --- | --- |
 | MQTT-клиент (host и join роли — в MQTT «host» не слушает сокет) | — (DIRECT HOST is implemented; see docs/sprinter-testnotes/S7.md#direct-host-acceptance) |
 | DIRECT HOST / JOIN (incoming and outgoing TCP) | SRAM CACHE и «полный контроль памяти» по образцу spevosdk — отвергнуты (см. решение в конце §2) |
-| Поле 384×192, клетка 48×24, фигура 32×16 (апгрейд до 40×20 — этап S12) | |
+| Board 384×192, cell 48×24, piece 40×20 (S12) | |
 | Клавиатура + курсорные клавиши | Мышь — опциональный этап S11 |
 | About в 320×256×8bpp | AY-музыка — опциональный этап S13 |
 
@@ -3859,3 +3859,26 @@ Hardware and visual MAME acceptance remain pending.
   (весь GUI-стек 640×256: `fninit/fnwin/fnprint/fnmouse`), weather-forecast
   (uNet-транспорт, пины), ftpclient (окна+DLL+оверлеи), spevosdk
   `HW_NOTES.md` (ловушки), gifview/gfxview (кэш, буферы).
+
+
+### S12: 40×20 piece geometry
+
+Piece geometry now comes from `src/sprinter/render_layout.json`: 40×20,
+20 bytes/row, 400 useful bytes. Each tile occupies two 256-byte accelerator
+slots with 112 zero bytes of padding. Light/dark/flash variants of a piece
+are adjacent (+0/+2/+4 slots); ten six-slot groups fit each page. The four
+piece pages use HDR indices 1, 2, 10, 11. The first ten asset indices retain
+their meanings; the EXE gains 32768 asset bytes.
+
+`LOWRAM_PIECE_STATE` at 0xB8D7 now has 25 bytes: selected set index plus
+twelve physical-page/start-slot pairs. Its extra 20 bytes come from
+`LOWRAM_NET_SPARE` (now 0xB8F0, 16 bytes). Network buffers, canary and stack
+anchors are unchanged. MENU_CONFIG resolves each logical page through HDR
+at initialization and set changes, publishing 0xFF for unavailable pages.
+The painter adds twice the background ordinal to the piece's start slot
+and issues one 20-byte-wide, 20-row opaque blit, centred at (+4,+2) pixels.
+
+See `docs/sprinter-artist-assets.md` for import/profile and geometry details,
+`docs/sprinter-testnotes/S12.md` for acceptance, and
+`docs/sprinter-render-budget.md` for the production-path comparison. Earlier
+S2 stand timings describe their historical code, not the S12 baseline.

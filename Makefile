@@ -1122,6 +1122,8 @@ SPRINTER_SELECTED_SETS_JSON := assets/lichess/selected_next_sets.json
 SPRINTER_PIECES_ROOT := assets/sprinter/pieces
 SPRINTER_PIECE_PAGE1 := $(SPRINTER_BUILD_DIR)/piece_page1.bin
 SPRINTER_PIECE_PAGE2 := $(SPRINTER_BUILD_DIR)/piece_page2.bin
+SPRINTER_PIECE_PAGE3 := $(SPRINTER_BUILD_DIR)/piece_page3.bin
+SPRINTER_PIECE_PAGE4 := $(SPRINTER_BUILD_DIR)/piece_page4.bin
 SPRINTER_PIECE_TILES_MANIFEST := $(SPRINTER_BUILD_DIR)/piece_tiles_manifest.json
 SPRINTER_PIECE_PNGS := $(wildcard $(SPRINTER_PIECES_ROOT)/*/*.png)
 # $(wildcard) is expanded once, at parse time: DELETING a piece PNG would
@@ -1352,7 +1354,7 @@ $(SPRINTER_ASSETS_PAGE): tools/make_sprinter_assets_page.py extern/sprinter-libs
 		--ui-bin $(SPRINTER_UI_ASSETS_BIN) \
 		--output $(SPRINTER_ASSETS_PAGE)
 
-SPRINTER_PIECE_TILES_DEPS := tools/build_sprinter_piece_tiles.py $(SPRINTER_PALETTE_JSON) \
+SPRINTER_PIECE_TILES_DEPS := tools/build_sprinter_piece_tiles.py src/sprinter/render_layout.json tools/gen_sprinter_render_layout.py $(SPRINTER_PALETTE_JSON) \
                              $(SPRINTER_SELECTED_SETS_JSON) $(SPRINTER_PIECE_PNGS) \
                              $(SPRINTER_PIECE_DIRS)
 
@@ -1361,16 +1363,18 @@ $(SPRINTER_PIECE_PAGE1): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
 		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--page3-out $(SPRINTER_PIECE_PAGE3) --page4-out $(SPRINTER_PIECE_PAGE4) \
 		--locations-inc-out $(SPRINTER_GENERATED_DIR)/piece_locations.inc \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
 # Mirror rules, not a grouped "&:" target -- see the fixed_layout.h comment
 # above (macOS ships GNU make 3.81, no grouped-target support).
-$(SPRINTER_PIECE_PAGE2): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
+$(SPRINTER_PIECE_PAGE2) $(SPRINTER_PIECE_PAGE3) $(SPRINTER_PIECE_PAGE4): $(SPRINTER_PIECE_TILES_DEPS) | $(SPRINTER_BUILD_DIR)
 	$(PYTHON) tools/build_sprinter_piece_tiles.py \
 		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--page3-out $(SPRINTER_PIECE_PAGE3) --page4-out $(SPRINTER_PIECE_PAGE4) \
 		--locations-inc-out $(SPRINTER_GENERATED_DIR)/piece_locations.inc \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
@@ -1379,6 +1383,7 @@ $(SPRINTER_PIECE_TILES_MANIFEST) $(SPRINTER_GENERATED_DIR)/piece_locations.inc: 
 		--pieces-root $(SPRINTER_PIECES_ROOT) --sets-json $(SPRINTER_SELECTED_SETS_JSON) \
 		--palette $(SPRINTER_PALETTE_JSON) \
 		--page1-out $(SPRINTER_PIECE_PAGE1) --page2-out $(SPRINTER_PIECE_PAGE2) \
+		--page3-out $(SPRINTER_PIECE_PAGE3) --page4-out $(SPRINTER_PIECE_PAGE4) \
 		--locations-inc-out $(SPRINTER_GENERATED_DIR)/piece_locations.inc \
 		--manifest-out $(SPRINTER_PIECE_TILES_MANIFEST) --preview-dir $(SPRINTER_BUILD_DIR)/preview
 
@@ -2033,6 +2038,7 @@ $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSE
                  $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_WIN3_PAGE2) \
                  $(SPRINTER_ABOUT_PAGE0) $(SPRINTER_ABOUT_PAGE1) \
                  $(SPRINTER_ABOUT_PAGE2) $(SPRINTER_ABOUT_PAGE3) \
+                 $(SPRINTER_PIECE_PAGE3) $(SPRINTER_PIECE_PAGE4) \
                  tools/make_sprinter_exe.py $(SPRINTER_LAYOUT_JSON) VERSION $(SPRINTER_DLLS)
 	mkdir -p $(SPRINTER_RELEASE_DIR)
 	$(PYTHON) tools/make_sprinter_exe.py --loader $(SPRINTER_LOADER_BIN) \
@@ -2042,6 +2048,7 @@ $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSE
 		--assets $(SPRINTER_OVL_WIN3_PAGE2) \
 		--assets $(SPRINTER_ABOUT_PAGE0) --assets $(SPRINTER_ABOUT_PAGE1) \
 		--assets $(SPRINTER_ABOUT_PAGE2) --assets $(SPRINTER_ABOUT_PAGE3) \
+		--assets $(SPRINTER_PIECE_PAGE3) --assets $(SPRINTER_PIECE_PAGE4) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -2178,7 +2185,7 @@ sprinter-hw-zip: exe tools/make_sprinter_hw_zip.py
 
 # The piece pages are a prerequisite for their side effect: the same rule
 # writes build/sprinter/preview/ -- the aspect-corrected mosaics that are
-# the only way to judge 32x16 art without loading it on real hardware, so
+# the only way to judge 40x20 art without loading it on real hardware, so
 # they travel with the PNGs rather than being described in the brief.
 sprinter-artist-assets-zip: $(SPRINTER_ARTIST_ASSETS_INPUTS) $(SPRINTER_PIECE_PAGE1) \
                             | $(SPRINTER_BUILD_DIR)
@@ -2248,3 +2255,12 @@ $(SPRINTER_BUILD_DIR)/overlay_menu.bin $(SPRINTER_BUILD_DIR)/overlay_menu.map: a
 	$(Z80ASM) -I$(SPRINTER_GENERATED_DIR) asm/sprinter/zcc/menu_sprinter.asm
 	$(Z80ASM) $(SPRINTER_PLATFORM_DEFS_ASM)
 	$(Z80ASM) -b -m -r$$($(PYTHON) tools/make_sprinter_overlay_page.py --print-org MENU_CONFIG) -o=$(SPRINTER_BUILD_DIR)/overlay_menu.bin asm/sprinter/zcc/menu_sprinter.o $(SPRINTER_GENERATED_DIR)/platform_defs.o
+
+# Diagnostic replay of a captured 32x16 baseline on the ONE supported
+# MAME medium. Always restore `make sprinter-smoke-image` after this run.
+.PHONY: sprinter-piece-baseline-image
+sprinter-piece-baseline-image:
+	$(PYTHON) tools/make_sprinter_smoke_image.py \
+		--exe $(SPRINTER_BUILD_DIR)/pieces40-baseline/SHATRANJ.EXE \
+		$(foreach dll,$(SPRINTER_DLLS),--dll $(dll)) \
+		--output $(SPRINTER_SMOKE_IMG)

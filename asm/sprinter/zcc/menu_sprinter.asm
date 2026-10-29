@@ -3,7 +3,8 @@
 ; focus/theme parameter. Piece state lives in WIN2 across video_init.
 SECTION code_user
 EXTERN gfx_fill_rect, text_print, back_base
-EXTERN piece_page1, piece_page2, palette_rgb, palette_apply_from
+EXTERN HDR_ADDR, HDR_ASSET_PAGES_OFFSET, HDR_ASSET_PAGE0_OFFSET
+EXTERN palette_rgb, palette_apply_from
 EXTERN MENU_Y, PANEL_X
     defb 4
     defw menu_render, pieces_init, theme_apply, pieces_next
@@ -25,22 +26,36 @@ pieces_select:
 @valid:
     ld (LOWRAM_PIECE_STATE_ADDR),a
     push af
-    add a,a
-    add a,a
-    ld e,a
-    ld d,0
+    ; Each selected set owns twelve logical-page/start-slot pairs (24 bytes).
     ld hl,piece_set_locations
+    or a
+    jr z,@locations
+    ld b,a
+@set_stride:
+    ld de,24
     add hl,de
+    djnz @set_stride
+@locations:
     ld de,LOWRAM_PIECE_STATE_ADDR+1
-    ld b,2
+    ld b,12
 @pair:
     ld a,(hl)
     inc hl
-    cp 1
-    ld a,(piece_page1)
+    ld c,a
+    push hl
+    ld a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
+    cp c
+    ld a,$FF
     jr z,@page
-    ld a,(piece_page2)
+    jr c,@page
+    ld hl,HDR_ADDR+HDR_ASSET_PAGE0_OFFSET
+    push bc
+    ld b,0
+    add hl,bc
+    ld a,(hl)
+    pop bc
 @page:
+    pop hl
     ld (de),a
     inc de
     ld a,(hl)

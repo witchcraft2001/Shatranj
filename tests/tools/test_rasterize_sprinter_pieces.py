@@ -221,24 +221,24 @@ class SourceClassificationTests(unittest.TestCase):
 
     def test_dark_stroke_wins_a_coverage_tie_without_inventing_gray(self) -> None:
         palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
-        img = Image.new("RGBA", (64, 32), (255, 255, 255, 255))
-        for y in range(32):
-            for x in range(0, 64, 2):
+        img = Image.new("RGBA", (80, 40), (255, 255, 255, 255))
+        for y in range(40):
+            for x in range(0, 80, 2):
                 img.putpixel((x, y), (0, 0, 0, 255))
         out = rsp.classify_and_downscale(img, "california", "w", palette)
         self.assertEqual(set(pixels(out)), {OUTLINE + (255,)})
 
     def test_fill_wins_a_small_coverage_advantage_without_a_false_byte_tie(self) -> None:
         palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
-        img = Image.new("RGBA", (128, 64), (255, 255, 255, 254))
+        img = Image.new("RGBA", (160, 80), (255, 255, 255, 254))
         # Each 4x4 block has eight pixels of each class. White has one
         # extra unit of alpha: coverage 127.0625 versus 127.0. Byte masks
         # round both to 127 and incorrectly prefer the dark line.
-        for y in range(64):
-            for x in range(0, 128, 2):
+        for y in range(80):
+            for x in range(0, 160, 2):
                 img.putpixel((x, y), (0, 0, 0, 254))
-        for y in range(0, 64, 4):
-            for x in range(1, 128, 4):
+        for y in range(0, 80, 4):
+            for x in range(1, 160, 4):
                 img.putpixel((x, y), (255, 255, 255, 255))
         out = rsp.classify_and_downscale(img, "california", "w", palette)
         self.assertEqual(set(pixels(out)), {BODY + (255,)})
@@ -250,7 +250,7 @@ class SourceClassificationTests(unittest.TestCase):
 
     def test_alpha_threshold_is_exactly_half_coverage(self) -> None:
         palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
-        img = Image.new("RGBA", (64, 32), (0, 0, 0, 0))
+        img = Image.new("RGBA", (80, 40), (0, 0, 0, 0))
         img.putpixel((0, 0), (0, 0, 0, 255))
         img.putpixel((0, 1), (0, 0, 0, 255))
         img.putpixel((2, 0), (0, 0, 0, 255))
@@ -283,8 +283,10 @@ class SourceClassificationTests(unittest.TestCase):
             for x in range(32, 96):
                 rgb = (0, 0, 0) if x < 40 or x >= 88 or y < 32 or y >= 96 else (255, 255, 255)
                 square.putpixel((x, y), rgb + (255,))
-        expected = rsp.classify_and_downscale(square, "california", "w", palette, fit_size=128)
-        with unittest.mock.patch.object(rsp, "render_svg_square", return_value=(square, 128)):
+        alpha, masks = rsp.source_masks(square, "california", "w", fit_size=128)
+        expected, _, _ = rsp.select_grid_phase(alpha, masks, rsp.piece_palette(palette, "california"))
+        with unittest.mock.patch.object(rsp, "guarantee_outline", side_effect=AssertionError("white rim")), \
+             unittest.mock.patch.object(rsp, "render_svg_square", return_value=(square, 128)):
             result = rsp.process_piece(Path("unused"), Path("unused.svg"), "california", "w", palette, Path("."))
         self.assertEqual(result.tobytes(), expected.tobytes())
         self.assertIn(OUTLINE + (255,), set(pixels(result)))
@@ -330,6 +332,63 @@ class QuantizeTargetsTests(unittest.TestCase):
             set(raw["piece_import_quantize_indices"])
             < set(raw["piece_allowed_indices"])
         )
+
+
+class SourceFeatureRegressionTests(unittest.TestCase):
+    def test_committed_art_retains_real_source_parts_and_holes(self):
+        # Reviewed against all 36 SVGs: MPChess black bases are separate;
+        # California bishop cuts and MPChess white bishop/king have holes.
+        root=Path(__file__).resolve().parents[2]/"assets/sprinter/pieces"
+        expected={"california/wB":(1,1), "california/bB":(1,1),
+                  "mpchess/wK":(1,2), "mpchess/wB":(1,1),
+                  "mpchess/bK":(2,2), "mpchess/bQ":(2,0),
+                  "mpchess/bR":(3,0), "mpchess/bB":(2,0), "mpchess/bN":(2,0)}
+        for path in root.glob("*/*.png"):
+            key=path.parent.name+"/"+path.stem
+            with self.subTest(piece=key):
+                with Image.open(path) as image:
+                    self.assertEqual(rsp.topology(image.convert("RGBA")),expected.get(key,(1,0)))
+
+    def test_diagonals_arcs_bridges_slots_and_components(self):
+        from PIL import ImageDraw
+        palette=rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        refs=rsp.piece_palette(palette,"mpchess")
+        fixtures=[]
+        for shape in ("diagonal","arc","bridge","slot","parts","cross"):
+            image=Image.new("RGBA",(160,80),(0,0,0,0)); draw=ImageDraw.Draw(image)
+            if shape=="diagonal": draw.line((20,60,120,12),fill="black",width=6)
+            if shape=="arc": draw.arc((20,12,140,68),20,300,fill="black",width=6)
+            if shape=="bridge":
+                draw.rectangle((12,24,56,60),fill="black"); draw.rectangle((100,24,144,60),fill="black")
+                draw.rectangle((52,36,104,40),fill="black")
+            if shape=="slot":
+                draw.rectangle((20,12,140,68),fill="black"); draw.rectangle((76,12,83,48),fill=(0,0,0,0))
+            if shape=="parts":
+                draw.rectangle((20,12,140,32),fill="black"); draw.rectangle((20,44,140,68),fill="black")
+            if shape=="cross":
+                draw.rectangle((76,12,83,68),fill="black"); draw.rectangle((44,24,116,28),fill="black")
+            alpha,masks=rsp.source_masks(image,"mpchess","b")
+            result,phase,candidates=rsp.select_grid_phase(alpha,masks,refs)
+            with self.subTest(shape=shape):
+                self.assertEqual(len(candidates),9)
+                if shape=="cross":
+                    for px,py in ((11,6),(28,6),(19,3),(19,16)):
+                        self.assertTrue(any(result.getpixel((x,y))[3]
+                                            for x in range(px-1,px+2)
+                                            for y in range(py-1,py+2)))
+                if shape=="bridge":
+                    self.assertTrue(all(any(result.getpixel((x,y))[3] for y in (8,9,10))
+                                        for x in range(14,25)))
+                self.assertEqual(rsp.topology(result),rsp.topology(image))
+                again,again_phase,_=rsp.select_grid_phase(alpha,masks,refs)
+                self.assertEqual((result.tobytes(),phase),(again.tobytes(),again_phase))
+
+    def test_equal_phase_scores_prefer_zero(self):
+        alpha=Image.new("F",(160,80),0)
+        masks={i:alpha.copy() for i in (4,5,6,7)}
+        refs={i:(i,i,i) for i in masks}
+        _,phase,_=rsp.select_grid_phase(alpha,masks,refs)
+        self.assertEqual(phase,(0,0))
 
 
 class FindBrowserTests(unittest.TestCase):
