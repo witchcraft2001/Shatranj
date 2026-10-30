@@ -124,6 +124,9 @@ if match is None:
 Path(sys.argv[2]).write_text("menu_piece_rgb EQU $" + match.group(1) + "\n")
 PYCODE
 
+python3 "$repo_root/tools/gen_sprinter_render_aux_defs.py" --sym "$repo_root/build/sprinter/platform_primitives.sym" --prefix ra_ --out "$generated_dir/render_aux_test_defs.inc"
+cp "$repo_root/build/sprinter/generated/glyph_layout.inc" "$generated_dir/glyph_layout.inc"
+
 for src in "$repo_root"/tests/sprinter/z80/t_*.asm; do
   ran=$((ran + 1))
   name="$(basename "$src" .asm)"

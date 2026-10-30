@@ -204,11 +204,11 @@
             "desc": "Selected set index followed by twelve physical-page/start-slot pairs. Survives video reinitialization."
         },
         {
-            "name": "LOWRAM_NET_SPARE",
+            "name": "LOWRAM_RENDER_PARAMS",
             "addr": "0xB8F0",
             "size": "0x10",
-            "owner": "unassigned (S8 step 6 will take restore_b64_pending here)",
-            "desc": "S8 step 1: remainder of the old LOWRAM_NET span after LOWRAM_NET_GATE/LOWRAM_MQTT_STREAM/LOWRAM_MQTT_PACKET are carved out; S9 follow-up gave its first 0x41 bytes to LOWRAM_TEXT_STAGE. End is flush with CANARY's start (0xB900), no gap -- same invariant the old single LOWRAM_NET region held."
+            "owner": "asm/sprinter/buffers.asm, asm/sprinter/text640.asm",
+            "desc": "Rendering parameter cells in the former unused 16-byte spare. The resident image initializes this reserve to zero; all network buffers and stack anchors stay fixed. Byte offsets are asserted by the renderer."
         },
         {
             "name": "CANARY",
@@ -230,6 +230,13 @@
             "size": "0x47E",
             "owner": "im2_s1.asm",
             "desc": "Resident stack, must be >= 1024 bytes (R4). STACK_TOP = addr + size = 0xBD80."
+        },
+        {
+            "name": "LOWRAM_FLIP_RING",
+            "addr": "0xBD81",
+            "size": "0x30",
+            "owner": "asm/sprinter/buffers.asm",
+            "desc": "Eight coalesced dirty rectangles in the existing reserve after RTC_PRESENT, above the unchanged stack top and below IM2_STUB. Count is reset before use; no initialized bytes are needed."
         },
         {
             "name": "IM2_STUB",

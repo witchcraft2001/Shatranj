@@ -64,6 +64,7 @@
         ; first -- buffers.asm's own comment on the same INCLUDE, and the
         ; reason the z80 unit tests can assemble this file standalone.
         INCLUDE "fixed_layout.inc"
+        INCLUDE "glyph_layout.inc"
 
 ; The font page is normally WIN0-resident at address 0 (win0_map_di maps
 ; WIN0's base to #0000, so table offsets are direct addresses). A z80 unit
@@ -89,6 +90,10 @@ text_font_page: DB 0
 ; (#C000 buf0 or #C140 buf1). Silently does not draw if X is odd or
 ; Y>248 (leaves no room for the 8-row glyph). Clobbers AF, BC, DE, HL, IX.
 text_print:
+        push    af
+        xor     a
+        ld      (text_cache_pending),a
+        pop     af
         ld      (.color),a
         ld      (.dest_base),hl
         ld      (.text_in),de
@@ -111,6 +116,29 @@ text_print:
         in      a,(WIN3_PORT)
         ld      (.saved_win3),a
 
+        ld      a,(text_cache_enabled)
+        or      a
+        jr      z,.fast_checked
+        ld      hl,(.text_in)
+        ld      de,TEXT_STAGE
+        ld      b,TEXT_STAGE_MAX
+.fast_stage:
+        ld      a,(hl)
+        ld      (de),a
+        inc     hl
+        inc     de
+        or      a
+        jr      z,.fast_lookup
+        djnz    .fast_stage
+        xor     a
+        ld      (de),a
+.fast_lookup:
+        ld      hl,#C01B
+        call    render_aux_call
+        ld      a,(text_cache_hit)
+        or      a
+        ret     nz
+.fast_checked:
         ld      a,(text_font_page)
         win0_map_di
 
@@ -130,77 +158,26 @@ text_print:
 
 ; B=colour (bg<<4|fg). Skips the rebuild if B matches the last colour this
 ; call site prepared. Clobbers AF, BC, HL (and the alternate set).
-.prepare_print_colors:
-        ld      a,(color_valid)
-        or      a
-        jr      z,.ppc_rebuild
-        ld      a,b
-.ppc_prev:
-        cp      0
-        ret     z
-.ppc_rebuild:
-        ld      a,1
-        ld      (color_valid),a
-        ld      a,b
-        ld      (.ppc_prev+1),a
-        and     #0F
-        ld      c,a
-        rlca
-        rlca
-        rlca
-        rlca
-        or      c
-        ld      (fg_pattern),a
-        ld      a,b
-        and     #F0
-        ld      c,a
-        rrca
-        rrca
-        rrca
-        rrca
-        or      c
-        ld      (bg_pattern),a
-        ld      c,a
-        ld      a,(fg_pattern)
-        xor     c                       ; foreground XOR background
-        exx
-        ld      hl,foreground_buffer
-        call    .fill_colour_buffer_640
-        ld      a,(bg_pattern)
-        ld      hl,background_buffer
-        call    .fill_colour_buffer_640
-        exx
-        ret
-
-; Active in the alternate register set. Fill eight bytes at HL with A.
-.fill_colour_buffer_640:
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        inc     hl
-        ld      (hl),a
-        ret
-
-; --- accelerated per-column renderer (afnt640.asm text_out_640_rows_*,
-; ported unchanged apart from raw opcodes -> ACC_* macros) -----------------
-;
-; Entered only via the self-modified dispatch jump in .char below. Main
-; BC=staged string pointer, HL/DE=current glyph raster pointer/8 (column
-; stride); alternate BC'=destination column address (constant), HL'/DE'=
 ; foreground_buffer/background_buffer pointers (constant). B=remaining
 ; byte-columns for the current glyph (DJNZ). Composites
 ; background XOR (mask AND (foreground XOR background)); the black-
 ; background path omits the XOR pass since it is identically zero.
+.rows_precoloured:
+        ACC_COPY_H
+        ld      a,(hl)
+        ACC_OFF
+        exx
+        ld      a,(.y)
+        out     (PORT_Y),a
+        ACC_COPY_V
+        ld      (bc),a
+        ACC_OFF
+        inc     bc
+        exx
+        add     hl,de
+        djnz    .rows_precoloured
+        jp      .char_done
+
 .rows_general:
         ACC_COPY_H
         ld      a,(hl)
@@ -256,12 +233,8 @@ text_print:
         ; goes back to the caller's page across the yield and returns to
         ; the font afterwards. The accelerator's block size is latched once
         ; for the whole string and no interrupt handler touches it.
-        acc_park_y                      ; no VRAM row selected across an EI
-        win0_restore                    ; WIN0 back to the caller's page, EI
-        ld      a,(text_font_page)      ; the interrupt lands after THIS
-        win0_map_di                     ; DI again, WIN0 back to the font
-        ld      a,VRAM_ALIAS_OPAQUE     ; DSS is documented to remap page 3
-        out     (WIN3_PORT),a           ; without restoring it
+        ld      a,VRAM_ALIAS_OPAQUE
+        call    .yield_font
 
         ld      a,(bc)
         inc     bc
@@ -331,6 +304,8 @@ text_print:
         ld      a,(.staged)
         inc     a
         ld      (.staged),a
+        and     7
+        call    z,.yield_prescan
         jr      .scan_loop
 .scan_done:
         ld      hl,(.stage_out)
@@ -340,6 +315,11 @@ text_print:
         ld      a,(.staged)
         or      a
         jp      z,.close                ; nothing fit -> nothing to render
+
+        ; No font bytes are needed while merging dirty regions. Restore
+        ; system WIN0 so the coalescer can admit keyboard interrupts.
+        acc_park_y
+        win0_restore
 
         ; S5-finish plan D11: log the painted rect before rendering (the
         ; cells below don't change during rendering, so the order versus
@@ -360,14 +340,34 @@ text_print:
         ld      (flip_arg_h),a          ; banner: 8 rows/glyph)
         call    flip_log_rect
 
+        ld      a,(text_cache_enabled)
+        or      a
+        jr      z,.cache_map_font
+        ld      hl,#C00F
+        call    render_aux_call
+        ld      a,(text_cache_hit)
+        or      a
+        ret     nz
+.cache_map_font:
+        ld      a,(text_font_page)
+        win0_map_di
+.cache_checked:
+        ld      hl,#C009
+        call    render_aux_call
+
         ; --- render the staged string (afnt640.asm text_out_640, from "read_page"
         ; through "text_out_640_exit" above) ------------------------------
         ld      a,VRAM_ALIAS_OPAQUE
         out     (WIN3_PORT),a
 
         ld      a,(.color)
+        ld      hl,text_previous_color
+        cp      (hl)
+        jr      z,.colors_ready
         ld      b,a
-        call    .prepare_print_colors
+        ld      hl,#C018
+        call    render_aux_call
+.colors_ready:
 
         ; EXX swaps the WHOLE register file, not just what's named after
         ; it -- a value computed in the main set before EXX is not visible
@@ -407,6 +407,7 @@ text_print:
         jp      z,.close
 
 .char:
+        ld      (text_char),a
         push    bc
         ld      bc,FONT_BASE
         ld      l,a
@@ -420,9 +421,50 @@ text_print:
         ld      hl,FONT_BASE
         add     hl,de
         ld      de,8
+        ld      a,(text_attr_index)
+        cp      #FF
+        jr      z,.dispatch
+        ld      de,(text_glyph_bias)
+        add     hl,de
+        ld      de,GLYPH_PAGE_CUT
+        or      a
+        sbc     hl,de
+        add     hl,de
+        jr      c,.glyph_no_pad
+        ld      de,GLYPH_PAGE_PAD
+        add     hl,de
+.glyph_no_pad:
+        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+17)
+        bit     6,h
+        jr      z,.glyph_page_ready
+        res     6,h
+        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+18)
+.glyph_page_ready:
+        ld      (text_glyph_page),a
+        acc_park_y
+        win0_restore
+        ld      a,(text_glyph_page)
+        win0_map_di
+        ld      de,8
+        jp      .rows_precoloured
 
 .dispatch:
         jp      .rows_general
+
+; Eight staged characters are the largest pre-scan DI unit. The source
+; string can live in WIN3, so this yield restores its original page.
+.yield_prescan:
+        ld      a,(.saved_win3)
+        jp      .yield_font
+.yield_font:
+        push    af
+        acc_park_y
+        win0_restore
+        ld      a,(text_font_page)
+        win0_map_di
+        pop     af
+        out     (WIN3_PORT),a
+        ret
 
 ; Single close/return point for text_print, reached from three places
 ; above (nothing staged; the render setup's empty-string safety check;
@@ -438,7 +480,11 @@ text_print:
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
         win0_restore
-        ret
+        ld      a,(text_cache_pending)
+        or      a
+        ret     z
+        ld      hl,#C012
+        jp      render_aux_call
 
 .color:      DB 0
 .dest_base:  DW 0
@@ -461,6 +507,19 @@ text_print:
         ASSERT  LOWRAM_TEXT_STAGE_SIZE >= TEXT_STAGE_MAX+1
 
 ; --- module-scope runtime state (small, initialised data) -----------------
+text_color EQU text_print.color
+text_start_col EQU text_print.start_col
+text_scan_col EQU text_print.scan_col
+text_y EQU text_print.y
+text_dest_base EQU text_print.dest_base
+text_previous_color EQU LOWRAM_RENDER_PARAMS_ADDR+5
+text_glyph_bias EQU LOWRAM_RENDER_PARAMS_ADDR+6
+text_font_version EQU LOWRAM_RENDER_PARAMS_ADDR+8
+; Optional paths stay disabled until measured miss cost justifies them.
+text_precoloured_enabled EQU LOWRAM_RENDER_PARAMS_ADDR+9
+text_cache_enabled EQU LOWRAM_RENDER_PARAMS_ADDR+10
+text_cache_pending EQU LOWRAM_RENDER_PARAMS_ADDR+11
+text_cache_hit EQU LOWRAM_RENDER_PARAMS_ADDR+12
 color_valid:        DB 0
 fg_pattern:         DB 0
 bg_pattern:         DB 0

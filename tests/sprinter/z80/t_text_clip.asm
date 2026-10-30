@@ -33,6 +33,13 @@
 start:
         ld      sp,#e800
         call    t_begin
+        ; Isolate the primitive from separately tested paging/coalescing.
+        ld      a,1
+        ld      (flip_log_suspended),a
+        ld      a,#C9
+        ld      (render_aux_call),a
+        ld      a,#FF
+        ld      (text_attr_index),a
 
         ; --- synthetic font fixture: width table @FONT_BASE, offset
         ; lo/hi @+256/+512. Raster content doesn't matter here (see the

@@ -30,8 +30,8 @@ def timings(phase):
     return result
 
 
-def verify_images(palette):
-    snaps=REVIEW/'final/snap'
+def verify_images(palette, snaps=None):
+    snaps=snaps or REVIEW/'final/snap'
     keys=['bR','bN','bB','bQ','bK','bB','bN','bR']+['bP']*8
     keys+=['.']*32+['wP']*8+['wR','wN','wB','wQ','wK','wB','wN','wR']
     checked=0
@@ -62,6 +62,9 @@ def verify_images(palette):
             verify(snaps/f'set{set_index}-theme{theme_index}.png',record['name'],theme)
     for file in ('03-flipped.png','05-about-return.png'):
         verify(snaps/file,'totoy',palette['themes'][0],True)
+    for file in ('08-loaded.png','09-session.png'):
+        if (snaps/file).is_file():
+            verify(snaps/file,palette['piece_sets'][0]['name'],palette['themes'][0])
     # Hint dots and selection survive set changes, flip and About/fade.
     for file in ('03-selected-hints.png','03-selected-new-set.png','03-flipped.png','05-about-return.png'):
         with Image.open(snaps/file) as image:

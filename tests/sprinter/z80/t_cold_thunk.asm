@@ -40,6 +40,7 @@ WIN3_PORT EQU #E2
 ; Not #FF: the trampoline treats #FF as "bench_init has not published the
 ; page yet" and skips the call entirely. Any other value is "a page".
 cold_win3_page: db #40
+cold_win3_page2: db #41
 
         include "cold_thunks_test.inc"
 

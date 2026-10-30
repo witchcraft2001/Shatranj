@@ -22,6 +22,13 @@
 start:
         ld      sp,#e800
         call    t_begin
+        ; Isolate the primitive from separately tested paging/coalescing.
+        ld      a,1
+        ld      (flip_log_suspended),a
+        ld      a,#C9
+        ld      (render_aux_call),a
+        ld      a,#FF
+        ld      (text_attr_index),a
 
         ; --- gfx_fill_rect: sentinel a span, fill an 8-byte-wide column
         ; run at x_byte=10, and check exactly those 8 bytes changed.
@@ -115,39 +122,28 @@ start:
         ld      a,9
         call    t_expect_z
 
-        ; --- gfx_clear_buffer: a real CPU djnz over 320 columns (no
-        ; accelerator burst involved in the loop itself), so this proves
-        ; end-to-end: every one of the 320 bytes gets the fill byte, and
-        ; nothing past byte 320 is touched.
-        ld      hl,#c200
-        ld      de,#c201
-        ld      bc,#0140
-        ld      (hl),#a5
+        ; Clear uses two horizontal half-screen passes. In ticks only
+        ; the trigger byte of each 160-byte burst is observable.
+        ld hl,#c200
+        ld de,#c201
+        ld bc,320
+        ld (hl),#a5
         ldir
-
-        ld      a,9                     ; color 9 -> packed byte #99
-        ld      hl,#c200
-        call    gfx_clear_buffer
-
-        ld      hl,#c200
-        ld      b,0                     ; 256 iterations
-.clr1:  ld      a,(hl)
-        cp      #99
-        ld      a,10
-        call    t_expect_z
-        inc     hl
-        djnz    .clr1
-        ld      b,64                    ; remaining 320-256 = 64 columns
-.clr2:  ld      a,(hl)
-        cp      #99
-        ld      a,11
-        call    t_expect_z
-        inc     hl
-        djnz    .clr2
-        ld      a,(hl)                  ; byte 320: past the buffer
-        cp      #a5
-        ld      a,12
-        call    t_expect_z
+        ld a,9
+        ld hl,#c200
+        call gfx_clear_buffer
+        ld a,(#c200)
+        cp #99
+        ld a,10
+        call t_expect_z
+        ld a,(#c2a0)
+        cp #99
+        ld a,11
+        call t_expect_z
+        ld a,(#c340)
+        cp #a5
+        ld a,12
+        call t_expect_z
 
         call    t_end
         halt

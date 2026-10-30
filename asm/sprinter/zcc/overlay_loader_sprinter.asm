@@ -3,9 +3,10 @@
 ; platform_primitives.asm) -- assembled together with src/sprinter/*.c by
 ; the same zcc invocation.
 ;
-; Same DISPATCH ABI as asm/esxdos/overlay_loader.asm (context pointer in
-; BOTH DE and HL -- native ASM entries read DE; a future C fastcall entry
-; would read HL --, DI on entry, `ovl_return: ei/ret`). The CALLER-side
+; Context and return registers match asm/esxdos/overlay_loader.asm: the
+; context pointer is in BOTH DE and HL and the return trampoline ends EI/RET.
+; Sprinter enters computation with EI (see docs/sprinter-render-contract.md)
+; while every WIN3 map/restore is protected by DI. The CALLER-side
 ; argument layout is NOT byte-for-byte the same, and must not be assumed to
 ; be: ZX/Next's ovl_exec is called from SDCC (-clib=sdcc_iy), which packs
 ; each uint8_t argument into its own stack byte (SP+2=ovl_id, SP+3=
@@ -113,7 +114,7 @@ ovl_exec:
 
 ; SP+4=ovl_id, SP+2=entry_id. Copies only if ovl_v_loaded_id != ovl_id.
 ; Out (bad entry_id only): A=OVL_ERR_BAD_ENTRY, CF=1, dispatch never
-; happens. Otherwise runs the entry (DI on entry, EI on return via
+; happens. Otherwise runs the entry (EI on entry, EI on return via
 ; ovl_return) and returns whatever it left in the registers, CF=0.
 ovl_exec_cached:
     ld hl,2
@@ -196,8 +197,7 @@ ovl_map_win3:
     cp 0xFF
     jp z,ovl_dispatch_fail      ; no overlay page published (HDR < 4/6 pages)
     ld b,a
-    di                          ; R7: WIN3 replaced only under DI, whole
-                                ; duration, restored before EI
+    di                          ; R7: the window change is atomic
     in a,(WIN3_PORT)
     ld (ovl_v_saved_win3),a
     ld a,b
@@ -230,18 +230,21 @@ ovl_dispatch:
     push de                      ; entry target, to be RET'd into
     ld de,ovl_ctx
     ld hl,ovl_ctx
-    di
+    ; As with cold-code calls, the ISR preserves these registers and WIN3.
+    ; Hints can run for >10ms, so pure computation must admit interrupts.
+    ei
     ret
 
 ovl_return:
     ei
     ret
 
-; Mode-1 return trampoline: unmap WIN3 before re-enabling interrupts.
+; Mode-1 return trampoline: disable interrupts for the WIN3 restore.
 ; Preserves HL (the C return value) and, via push/pop af, the flags the
 ; entry left -- ovl_return's own contract, just with the window put back.
 ovl_return_win3:
     push af
+    di
     xor a
     ld (ovl_v_win3_mapped),a
     ld a,(ovl_v_saved_win3)

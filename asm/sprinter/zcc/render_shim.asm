@@ -41,8 +41,7 @@
 ; port's own frame_wait (im2_s1.asm), which main.c already calls directly;
 ; gui.c needs the portable name to link.
     PUBLIC _spectrum_frame_wait
-_spectrum_frame_wait:
-    jp frame_wait
+    defc _spectrum_frame_wait = frame_wait
 
 ; No arguments. uart.h's spectrum_uart_background_pump -- Sprinter has no
 ; UART transport (uNet/DSS is the only network path, port.md), so this is

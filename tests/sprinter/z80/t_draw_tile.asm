@@ -35,6 +35,13 @@
 start:
         ld      sp,#e800
         call    t_begin
+        ; Isolate the primitive from separately tested paging/coalescing.
+        ld      a,1
+        ld      (flip_log_suspended),a
+        ld      a,#C9
+        ld      (render_aux_call),a
+        ld      a,#FF
+        ld      (text_attr_index),a
 
         ; Source fixtures live far above any code/harness address this
         ; small test could reach (org 0, well under 32 KiB assembled), so

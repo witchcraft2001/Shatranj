@@ -89,7 +89,15 @@ start:
         ld      (flip_arg_w),hl
         ld      a,1
         ld      (flip_arg_h),a
-        call    flip_log_rect
+        ; Frame scheduling consumes a prepared ring; merge policy is tested
+        ; against the shipped coalescer in t_flip_ring.
+        ld      hl,0
+        ld      (flip_ring),hl
+        ld      (flip_ring+2),hl
+        ld      a,1
+        ld      (flip_ring+3),a
+        ld      (flip_ring+5),a
+        ld      (flip_ring_count),a
         ld      a,(flip_ring_count)
         cp      1
         ld      a,6

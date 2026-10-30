@@ -22,108 +22,39 @@
         ; concern that made z80 unit tests need it explicitly here too).
         INCLUDE "fixed_layout.inc"
 
-; Reads the asset pages' physical numbers from HDR (0 pages -> #FF, the
-; "unavailable" marker render_core.asm/render.c check before drawing any
-; tile). Called once from C's main(). Piece pages 1/2 need >=3 asset pages
-; total (page 0 is font/UI); scene_s4.asm's scene_init established this
-; same >=3 gate and #FF-when-unavailable convention for the piece pages
-; before it was deleted (plan D4) -- centralised here instead of repeated
-; per render_core.asm call, since it is boot-time HDR state, not per-draw
-; state. ovl_win3_page (S5 substep 3b: RULES/BOARD overlay blobs, tools/
-; make_sprinter_overlay_page.py) is the fourth asset page, needing >=4
-; total, same #FF-when-unavailable convention. cold_win3_page (S7 step 4:
-; the whole of render_core.asm/render_core_cold.asm, tools/make_sprinter_
-; cold_page.py, reached through tools/gen_sprinter_cold_thunks.py's WIN1
-; stubs) is the fifth, needing >=5, same convention again. ovl_win3_page2
-; (S8 step 8b: the NET overlay's own second WIN3 page, tools/make_sprinter_
-; overlay_page.py's LAYOUT2) is the SIXTH asset page, needing >=6 -- added
-; last in the --assets order specifically so it never shifts any of the
-; first five pages' own indices. Clobbers AF.
+; Resolve the existing asset cells and the second rendering code page from
+; HDR once. Missing indices receive FF. The table preserves all old page
+; indices; cells are contiguous in the same order as .indices.
 bench_init:
+        ld      hl,.indices
+        ld      de,bench_asset_page
+        ld      b,11
+.next:
+        ld      a,(hl)
+        inc     hl
+        push    hl
+        ld      c,a
         ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
-        or      a
-        jr      nz,.have
+        cp      c
         ld      a,#FF
-        ld      (bench_asset_page),a
-        ld      (piece_page1),a
-        ld      (piece_page2),a
-        ld      (ovl_win3_page),a
-        ld      (cold_win3_page),a
-        ld      (ovl_win3_page2),a
-        ret
-.have:
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET)
-        ld      (bench_asset_page),a
+        jr      z,.store
+        jr      c,.store
+        ld      l,c
+        ld      h,0
+        push    de
+        ld      de,HDR_ADDR+HDR_ASSET_PAGE0_OFFSET
+        add     hl,de
+        pop     de
+        ld      a,(hl)
+.store:
+        ld      (de),a
+        inc     de
+        pop     hl
+        djnz    .next
+        ld      a,(bench_asset_page)
         ld      (text_font_page),a
-
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
-        cp      3
-        jr      nc,.have_pieces
-        ld      a,#FF
-        ld      (piece_page1),a
-        ld      (piece_page2),a
-        ld      (ovl_win3_page),a
-        ld      (cold_win3_page),a
-        ld      (ovl_win3_page2),a
         ret
-.have_pieces:
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+1)
-        ld      (piece_page1),a
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+2)
-        ld      (piece_page2),a
-
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
-        cp      4
-        jr      nc,.have_ovl_win3_page
-        ld      a,#FF
-        ld      (ovl_win3_page),a
-        ld      (cold_win3_page),a
-        ld      (ovl_win3_page2),a
-        ret
-.have_ovl_win3_page:
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+3)
-        ld      (ovl_win3_page),a
-
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
-        cp      5
-        jr      nc,.have_cold_win3_page
-        ld      a,#FF
-        ld      (cold_win3_page),a
-        ld      (ovl_win3_page2),a
-        ret
-.have_cold_win3_page:
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+4)
-        ld      (cold_win3_page),a
-
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
-        cp      6
-        jr      nc,.have_ovl_win3_page2
-        ld      a,#FF
-        ld      (ovl_win3_page2),a
-        ret
-.have_ovl_win3_page2:
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+5)
-        ld      (ovl_win3_page2),a
-
-        ; The four About image pages (S9 About pass) are the SEVENTH through
-        ; TENTH, appended last for the same reason page 2 was: every index
-        ; ahead of them keeps its meaning. Unlike the singles above these are
-        ; copied as a block -- they are consumed as a block too (the About
-        ; overlay walks all four in order), and one guard on the count covers
-        ; the set. about_page0 alone carries the #FF "unavailable" sentinel
-        ; the overlay checks, matching every other page cell's convention.
-        ld      a,(HDR_ADDR+HDR_ASSET_PAGES_OFFSET)
-        cp      10
-        jr      nc,.have_about_pages
-        ld      a,#FF
-        ld      (about_page0),a
-        ret
-.have_about_pages:
-        ld      hl,HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+6
-        ld      de,about_page0
-        ld      bc,4
-        ldir
-        ret
+.indices: DB 0,1,2,3,4,5,6,7,8,9,16
 bench_asset_page: DB #FF
 piece_page1: DB #FF
 piece_page2: DB #FF
@@ -136,6 +67,7 @@ about_page0: DB #FF
 about_page1: DB #FF
 about_page2: DB #FF
 about_page3: DB #FF
+cold_win3_page2: DB #FF
 
 ; Reads RGMOD once and stores both buffer bases: front = currently
 ; displayed, back = the other. Clobbers AF, HL.
@@ -178,50 +110,61 @@ back_base:  DW #c140
 ; PANEL_X-driven draws live past column 255 (the same reason gfx_core.asm's
 ; tile_x_byte/tile_x_hi is a word, not a byte -- see that file's own S4
 ; comment). y/h are bytes (0-255 rows is the whole buffer height already).
-FLIP_RING_MAX EQU 16
+FLIP_RING_MAX EQU 8
 
 flip_arg_x: DW 0
 flip_arg_y: DB 0
 flip_arg_w: DW 0
 flip_arg_h: DB 0
 
-; Appends one ring entry from (flip_arg_x/y/w/h). Ring full -> dirty_all
-; instead (a superset of any rect it would have held, so nothing is lost,
-; only coalesced). Clobbers AF, DE, HL.
+; The merge policy lives in the additional WIN3 rendering page. Arguments
+; and ring storage remain always mapped; BC is preserved for existing loops.
 flip_log_rect:
-        ld      a,(flip_ring_count)
-        cp      FLIP_RING_MAX
-        jr      nc,.overflow
-        ld      l,a
-        ld      h,0
-        add     hl,hl                   ; *2
-        ld      d,h
-        ld      e,l
-        add     hl,hl                   ; *4
-        add     hl,de                   ; *6 (entry size)
-        ld      de,flip_ring
-        add     hl,de
-        ld      de,(flip_arg_x)
-        ld      (hl),e
-        inc     hl
-        ld      (hl),d
-        inc     hl
-        ld      a,(flip_arg_y)
-        ld      (hl),a
-        inc     hl
-        ld      de,(flip_arg_w)
-        ld      (hl),e
-        inc     hl
-        ld      (hl),d
-        inc     hl
-        ld      a,(flip_arg_h)
-        ld      (hl),a
-        ld      a,(flip_ring_count)
-        inc     a
-        ld      (flip_ring_count),a
+        ld      a,(flip_log_suspended)
+        or      a
+        ret     nz
+        ld      a,(flip_dirty_all)
+        or      a
+        ret     nz
+        push    bc
+        ld      hl,#C000
+        call    render_aux_call
+        pop     bc
         ret
-.overflow:
-        jp      flip_mark_dirty_all
+
+; Register-argument helper boundary. WIN3 is saved on the stack, so nesting
+; restores the actual caller's page. No EI here: a caller may own WIN0.
+; Helpers use fixed parameter cells and preserve IX/IY. AF is preserved.
+render_aux_call:
+        push    af
+        ld      a,i
+        push    af
+        di
+        in      a,(WIN3_PORT)
+        push    af
+        ld      a,(HDR_ADDR+HDR_ASSET_PAGE0_OFFSET+16)
+        out     (WIN3_PORT),a
+        call    .jump
+        di                              ; a helper may admit interrupts
+        pop     af
+        out     (WIN3_PORT),a
+        pop     af
+        jp      po,.disabled
+        ei
+.disabled:
+        pop     af
+        ret
+.jump:  jp      (hl)
+
+flip_log_suspended: DB 0
+board_background_done EQU LOWRAM_RENDER_PARAMS_ADDR
+cell_piece EQU LOWRAM_RENDER_PARAMS_ADDR+1
+cell_background EQU LOWRAM_RENDER_PARAMS_ADDR+2
+text_attr_index EQU LOWRAM_RENDER_PARAMS_ADDR+3
+text_glyph_page EQU LOWRAM_RENDER_PARAMS_ADDR+4
+text_char EQU LOWRAM_RENDER_PARAMS_ADDR+13
+text_glyph_offset EQU LOWRAM_RENDER_PARAMS_ADDR+14
+        ASSERT LOWRAM_RENDER_PARAMS_SIZE >= 16
 
 ; Marks the whole buffer pair dirty. Clobbers AF.
 flip_mark_dirty_all:
@@ -286,25 +229,9 @@ irq_yield_vram:
 ; is the copy SOURCE here) -- frame_wait's own sequencing already does
 ; this (resolve_buffers immediately before flip_sync).
 ;
-; Plain per-row LDIR, not the accelerator: front_base/back_base differ by
-; exactly 320 bytes (VRAM_BUF1-VRAM_BUF0), the row width itself, so both
-; buffers' bytes for one PORT_Y-selected row coexist in the SAME mapped
-; WIN3 window -- an ordinary CPU copy, no accelerator trigger needed. This
-; deliberately does NOT attempt an accelerator-based whole-buffer copy
-; (gfx_blit_rows) for the dirty_all case either: VRAM-to-VRAM through the
-; accelerator is a genuinely new use of the hardware no reference
-; implementation available to this port has ever exercised (every existing
-; ACC_COPY_* use here sources from WIN0/RAM, never from VRAM itself), so
-; this sticks to the proven-shape plain LDIR uniformly rather than carry
-; that unproven assumption into the very first flip checkpoint. A later
-; pass can revisit this once MAME/hardware time budget is measured
-; (docs/sprinter-render-budget.md).
-;
-; Duplicate/overlapping ring entries are harmless (the copy is idempotent).
-; Each rectangle's copy runs under one DI span covering every row (S5-
-; finish plan D11 audit defect #2: no EI gap inside a rectangle, matching
-; every other VRAM primitive's own "whole call under DI" discipline).
-; Clobbers AF, BC, DE, HL.
+; Same-row VRAM mirror copies follow gfx640 copy_direct_chunk. Blocks
+; never exceed 256 bytes; both buffer directions share PORT_Y. Each row
+; yields with the accelerator off and PORT_Y parked.
 flip_sync:
         ld      a,(flip_dirty_all)
         or      a
@@ -372,6 +299,17 @@ flip_sync:
         ld      (.rows_left),a
         ld      a,(.y)
         ld      (.row),a
+        jr      .copy_row
+.copy_chunk:
+        ld      (.copy_size+1),a
+        ACC_SET_SIZE
+.copy_size:
+        ld      a,0
+        ACC_COPY_H
+        ld      a,(hl)
+        ld      (de),a
+        ACC_OFF
+        ret
 .copy_row:
         ld      a,(.row)
         out     (PORT_Y),a
@@ -384,18 +322,33 @@ flip_sync:
         ex      de,hl
         pop     hl
         ld      bc,(.w)
-        ldir
+        ld      a,b
+        or      a
+        jr      z,.short_row
+        xor     a                       ; 256-byte first block
+        call    .copy_chunk
+        ld      a,c
+        or      a
+        jr      z,.row_done
+        push    bc
+        ld      bc,256
+        add     hl,bc
+        ex      de,hl
+        add     hl,bc
+        ex      de,hl
+        pop     bc
+.short_row:
+        ld      a,c
+        call    .copy_chunk
+.row_done:
         ld      hl,.row
         inc     (hl)
         ld      hl,.rows_left
         dec     (hl)
         jr      z,.copy_done
 
-        ; Keyboard rescue between rows (~0.3ms of DI each). See
-        ; irq_yield_vram just above: a dirty_all sync is 320x256 bytes
-        ; of LDIR, ~80ms with interrupts off, and DSS's keyboard FIFO is
-        ; three bytes deep before its overrun handler starts discarding
-        ; scancodes. Every register this loop needs is re-read from memory
+        ; Keyboard rescue between rows (at most two hardware bursts).
+        ; Every register this loop needs is re-read from memory
         ; at .copy_row, so only AF is at risk here. Safe against a mid-copy
         ; flip: frame_wait only calls flip_sync once the ISR has already
         ; consumed flip_request, so the interrupt admitted here has no
@@ -419,7 +372,8 @@ flip_sync:
 .remaining:  DB 0
 .entry:      DW 0
 
-flip_ring:       DS FLIP_RING_MAX*6, 0
+flip_ring EQU LOWRAM_FLIP_RING_ADDR
+        ASSERT LOWRAM_FLIP_RING_SIZE >= FLIP_RING_MAX*6
 flip_ring_count: DB 0
 flip_dirty_all:  DB 0
 

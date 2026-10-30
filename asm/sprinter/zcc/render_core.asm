@@ -42,8 +42,10 @@
 ;
 ; The production painter reads model-space board data and draws one cell
 ; into the back buffer. gfx primitives log dirty rectangles; frame_wait
-; swaps and synchronizes the other buffer. Full redraw uses the same cell
-; path. Geometry is generated from render_layout.json; MENU_CONFIG resolves
+; swaps and synchronizes the other buffer. Individual cells use the packed
+; opaque 48x24 path. The second code page draws full backgrounds as wide
+; strips, then occupied squares through the original piece-only path.
+; Geometry is generated from render_layout.json; MENU_CONFIG resolves
 ; twelve piece group addresses into persistent WIN2 state for the selected
 ; set. Cursor, selection and hint geometry remains cell-based.
 ;
@@ -59,6 +61,12 @@
 
     EXTERN gfx_fill_rect
     EXTERN gfx_draw_tile
+    EXTERN gfx_draw_tile_offset, tile_src_offset, render_aux_call
+    EXTERN render_board_full
+    EXTERN board_background_done
+    EXTERN cell_piece, cell_background, flip_log_suspended, flip_log_rect
+    EXTERN flip_arg_x, flip_arg_y, flip_arg_w, flip_arg_h
+    EXTERN HDR_ADDR, HDR_ASSET_PAGE0_OFFSET
     EXTERN gfx_clear_buffer
     EXTERN PIECE_X_BYTE_OFFSET, PIECE_Y_OFFSET, PIECE_STRIDE, PIECE_H
     EXTERN back_base
@@ -389,20 +397,10 @@ draw_square_into:
     add a,BOARD_Y
     ld (@y),a
 
-    ld a,(@x_byte)
-    ld b,a
-    ld a,(@y)
-    ld c,a
-    ld d,CELL_W_BYTES
-    ld e,BOARD_CELL_H
-    ld hl,(@dest_base)
-    ld a,(hilite_bg)           ; move-flash override (0 = none)
+    ld a,(board_background_done)
     or a
-    jr nz,@fill_ready
-    ld a,(@bg)
-@fill_ready:
-    call gfx_fill_rect
-
+    jp z,@composed_cell
+@piece_lookup:
     ld a,(@row)
     add a,a
     add a,a
@@ -455,6 +453,51 @@ draw_square_into:
     ld a,VRAM_ALIAS_OPAQUE
     ld (tile_alias),a
     jp gfx_draw_tile
+@composed_cell:
+    ld a,(@row)
+    add a,a
+    add a,a
+    add a,a
+    ld e,a
+    ld a,(@col)
+    add a,e
+    ld e,a
+    ld d,0
+    ld hl,LOWRAM_CHESS_BOARD_ADDR
+    add hl,de
+    ld a,(hl)
+    call char_to_piece_index
+    jr nc,@have_piece
+    ld a,$FF
+@have_piece:
+    ld (cell_piece),a
+    ld a,(hilite_bg)
+    or a
+    ld a,2
+    jr nz,@have_background
+    ld a,(@bg)
+    sub 2
+@have_background:
+    ld (cell_background),a
+    ld hl,$C003
+    call render_aux_call
+    ld hl,(@dest_base)
+    ld (tile_dest_base),hl
+    ld a,(@x_byte)
+    ld (tile_x_byte),a
+    xor a
+    ld (tile_x_hi),a
+    ld a,(@y)
+    ld (tile_y),a
+    ld a,CELL_W_BYTES
+    ld (tile_width),a
+    ld (tile_stride),a
+    ld a,BOARD_CELL_H
+    ld (tile_rows),a
+    ld a,VRAM_ALIAS_OPAQUE
+    ld (tile_alias),a
+    ld hl,(tile_src_offset)
+    jp gfx_draw_tile_offset
 @dest_base: dw 0
 @row: defb 0
 @col: defb 0
@@ -535,52 +578,6 @@ render_square:
     ld hl,(back_base)
     jp draw_square_into
 @index: defb 0
-@row: defb 0
-@col: defb 0
-
-; No arguments: repaints every square from LOWRAM_CHESS_BOARD (the initial
-; "new game" paint, and -- S5-finish plan D12 -- a menu RESET's full-board
-; repaint -- see the file banner for why this is scene_s4.asm's proven
-; per-cell loop, not the faster but unproven-for-pieces strip strategy).
-;
-; Single-pass (back_base) as of D12: the boot call happens before the
-; first flip (same reasoning render_cursor_marker's own boot call already
-; relies on, main.c's own comment on that), and RESET is a live menu
-; action, not a second boot -- painting 64 squares logs far more than the
-; 16-entry dirty-rect ring holds, so this always takes the already-MAME-
-; proven dirty_all/flip_sync path (checkpoint F0), never the per-rect one.
-; Clobbers everything.
-    PUBLIC render_board_full
-render_board_full:
-    PUBLIC _render_board_full
-    defc _render_board_full = render_board_full
-    ld hl,(back_base)
-    ld (@dest_base),hl
-    xor a
-    ld (@row),a
-@row_loop:
-    xor a
-    ld (@col),a
-@col_loop:
-    ld a,(@row)
-    ld b,a
-    ld a,(@col)
-    ld c,a
-    ld hl,(@dest_base)
-    call draw_square_into
-
-    ld hl,@col
-    inc (hl)
-    ld a,(hl)
-    cp BOARD_COLS
-    jp c,@col_loop
-    ld hl,@row
-    inc (hl)
-    ld a,(hl)
-    cp BOARD_ROWS
-    jp c,@row_loop
-    ret
-@dest_base: dw 0
 @row: defb 0
 @col: defb 0
 

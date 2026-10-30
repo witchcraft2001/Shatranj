@@ -2033,7 +2033,31 @@ $(SPRINTER_RESIDENT_BIN): $(SPRINTER_TRAMPOLINE_BIN) $(SPRINTER_RESIDENT_C_BIN) 
 		--platform-primitives $(SPRINTER_PLATFORM_PRIMITIVES_BIN) \
 		--net-frame-c $(SPRINTER_NET_FRAME_C_BIN) --output $(SPRINTER_RESIDENT_BIN)
 
-$(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
+# Additional rendering allocation: four cell pages, one code page, two
+# precoloured glyph pages and one four-entry text cache (exactly 128 KiB).
+SPRINTER_RENDER_PAGES := $(addprefix $(SPRINTER_BUILD_DIR)/,cell_page0.bin cell_page1.bin cell_page2.bin cell_page3.bin render_aux.bin glyph_page0.bin glyph_page1.bin text_cache_page.bin)
+SPRINTER_RENDER_ASSETS := $(filter-out $(SPRINTER_BUILD_DIR)/render_aux.bin,$(SPRINTER_RENDER_PAGES))
+SPRINTER_RENDER_ASSET_DEPS := tools/build_sprinter_render_assets.py tools/gen_sprinter_palette.py $(SPRINTER_PIECE_TILES_DEPS) extern/sprinter-libs/afnt640/font.bin
+
+SPRINTER_RENDER_MANIFEST := $(SPRINTER_BUILD_DIR)/render_assets_manifest.json
+.PHONY: sprinter-render-assets-force
+# One writer for the whole output group, including under GNU make 3.81 -j.
+# The cheap ensure pass repairs missing outputs without touching valid files.
+$(SPRINTER_RENDER_MANIFEST): $(SPRINTER_RENDER_ASSET_DEPS) sprinter-render-assets-force | $(SPRINTER_GENERATED_DIR)
+	$(PYTHON) tools/build_sprinter_render_assets.py --out-dir $(SPRINTER_BUILD_DIR) --ensure --inputs $(SPRINTER_RENDER_ASSET_DEPS)
+
+$(SPRINTER_RENDER_ASSETS) $(SPRINTER_GENERATED_DIR)/board_bands.inc $(SPRINTER_GENERATED_DIR)/cell_locations.inc $(SPRINTER_GENERATED_DIR)/glyph_locations.inc $(SPRINTER_GENERATED_DIR)/glyph_layout.inc $(SPRINTER_GENERATED_DIR)/glyph_biases.inc: $(SPRINTER_RENDER_MANIFEST)
+	@test -f $@
+
+$(SPRINTER_COLD_IMAGE_BIN): $(SPRINTER_GENERATED_DIR)/board_bands.inc
+
+$(SPRINTER_GENERATED_DIR)/render_aux_defs.inc: tools/gen_sprinter_render_aux_defs.py tools/gen_sprinter_cold_defs.py tools/gen_sprinter_cold_thunks.py $(SPRINTER_PLATFORM_PRIMITIVES_SYM) $(SPRINTER_RESIDENT_C_BIN)
+	$(PYTHON) tools/gen_sprinter_render_aux_defs.py --sym $(SPRINTER_PLATFORM_PRIMITIVES_SYM) --out $@
+
+$(SPRINTER_BUILD_DIR)/render_aux.bin: $(SPRINTER_ASM_DIR)/render_aux.asm $(SPRINTER_GENERATED_DIR)/render_aux_defs.inc $(SPRINTER_GENERATED_DIR)/cell_locations.inc $(SPRINTER_GENERATED_DIR)/glyph_locations.inc $(SPRINTER_GENERATED_DIR)/glyph_biases.inc
+	$(SJASMPLUS) --nologo $(SJASMPLUS_INCLUDES) --raw=$@ --sym=$(SPRINTER_BUILD_DIR)/render_aux.sym $(SPRINTER_ASM_DIR)/render_aux.asm
+
+$(SPRINTER_EXE): $(SPRINTER_RENDER_PAGES) $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSETS_PAGE) \
                  $(SPRINTER_PIECE_PAGE1) $(SPRINTER_PIECE_PAGE2) $(SPRINTER_OVL_WIN3_PAGE) \
                  $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_WIN3_PAGE2) \
                  $(SPRINTER_ABOUT_PAGE0) $(SPRINTER_ABOUT_PAGE1) \
@@ -2049,6 +2073,7 @@ $(SPRINTER_EXE): $(SPRINTER_LOADER_BIN) $(SPRINTER_RESIDENT_BIN) $(SPRINTER_ASSE
 		--assets $(SPRINTER_ABOUT_PAGE0) --assets $(SPRINTER_ABOUT_PAGE1) \
 		--assets $(SPRINTER_ABOUT_PAGE2) --assets $(SPRINTER_ABOUT_PAGE3) \
 		--assets $(SPRINTER_PIECE_PAGE3) --assets $(SPRINTER_PIECE_PAGE4) \
+		$(foreach page,$(SPRINTER_RENDER_PAGES),--assets $(page)) \
 		--layout $(SPRINTER_LAYOUT_JSON) \
 		--version-file VERSION --output $(SPRINTER_EXE)
 	cp $(SPRINTER_DLLS) $(SPRINTER_RELEASE_DIR)/
@@ -2082,7 +2107,7 @@ sprinter-resident-test: tests/tools/test_sprinter_resident.py $(SPRINTER_RESIDEN
 sprinter-z80-test: tools/run_sprinter_z80_tests.sh $(SPRINTER_LAYOUT_INC) \
                    $(SPRINTER_RENDER_LAYOUT_INC) $(SPRINTER_PALETTE_INC) \
                    $(SPRINTER_NET_FRAME_C_BIN) $(SPRINTER_RESIDENT_BIN) \
-                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_OVL_ABOUT_BIN) $(SPRINTER_OVL_NET_BIN) $(SPRINTER_BUILD_DIR)/overlay_menu.bin $(SPRINTER_BUILD_DIR)/overlay_menu.map
+                   $(SPRINTER_COLD_WIN3_PAGE) $(SPRINTER_BUILD_DIR)/render_aux.bin $(SPRINTER_OVL_ABOUT_BIN) $(SPRINTER_OVL_NET_BIN) $(SPRINTER_BUILD_DIR)/overlay_menu.bin $(SPRINTER_BUILD_DIR)/overlay_menu.map
 	tools/run_sprinter_z80_tests.sh
 
 # net_frame.c (S7 step 2) builds and behaves identically under gcc: no
@@ -2264,3 +2289,30 @@ sprinter-piece-baseline-image:
 		--exe $(SPRINTER_BUILD_DIR)/pieces40-baseline/SHATRANJ.EXE \
 		$(foreach dll,$(SPRINTER_DLLS),--dll $(dll)) \
 		--output $(SPRINTER_SMOKE_IMG)
+
+.PHONY: sprinter-render-mame
+sprinter-render-mame: sprinter-smoke-image
+	$(PYTHON) tools/profile_sprinter_render.py prepare
+	bash tools/run_sprinter_render_mame.sh
+	$(MAKE) -W $(SPRINTER_EXE) sprinter-smoke-image sprinter-hw-zip
+	$(PYTHON) tools/profile_sprinter_render.py report
+
+$(SPRINTER_PLATFORM_PRIMITIVES_BIN) $(SPRINTER_PLATFORM_PRIMITIVES_SYM): $(SPRINTER_GENERATED_DIR)/glyph_layout.inc
+
+sprinter-tools-test: sprinter-render-assets-test
+.PHONY: sprinter-render-assets-test
+sprinter-render-assets-test:
+	$(PYTHON) tests/tools/test_sprinter_render_assets.py
+
+.PHONY: sprinter-render-baseline-mame
+sprinter-render-baseline-mame: exe
+	$(PYTHON) tools/run_sprinter_render_baseline.py
+
+.PHONY: sprinter-render-archive
+sprinter-render-archive: sprinter-smoke-image
+	$(PYTHON) tools/archive_sprinter_render.py
+
+.PHONY: sprinter-render-package-check
+sprinter-render-package-check: exe tools/check_sprinter_render_package.py
+	$(PYTHON) tools/check_sprinter_render_package.py
+sprinter-check: sprinter-render-package-check

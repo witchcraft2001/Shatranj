@@ -84,7 +84,7 @@ local function frames(n) for _=1,n do coroutine.yield() end end
 local function press(name, shift)
  if not fields[name] then
   for key,field in pairs(fields) do
-   if key:lower():find(name:lower(),1,true) then fields[name]=field; print("KEY_ALIAS "..name.."="..key); break end
+   if key:lower()==name:lower() or key:lower()=="cursor "..name:lower() then fields[name]=field; break end
   end
  end
  if not fields[name] then for key,_ in pairs(fields) do print("KEY "..key) end end
@@ -103,7 +103,7 @@ local function menu(index)
 end
 local co=coroutine.create(function()
  while machine.time:as_double()<10 do frames(1) end
- line("b:\\\\shatranj.exe"); frames(1300)
+ line("b:\\\\shatranj.exe"); frames(3500)
  screen:snapshot("00-start.png")
 '''
     lua += f'local probe_base={probe_base}\nlocal saved={{}}\nfor i=0,767 do saved[i]=mem:read_u8(probe_base+i) end\n'

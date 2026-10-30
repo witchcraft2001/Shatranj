@@ -40,7 +40,10 @@ PLATFORM_SYMBOLS = [
     "gfx_clear_buffer",
     "gfx_fill_rect",
     "gfx_hline",
-    "gfx_draw_tile",
+    "gfx_draw_tile", "gfx_draw_tile_offset", "render_aux_call",
+    "flip_log_suspended", "flip_log_rect", "flip_arg_x", "flip_arg_y",
+    "flip_arg_w", "flip_arg_h", "flip_ring", "flip_ring_count",
+    "flip_dirty_all", "tile_src_offset", "cell_piece", "cell_background",
     "gfx_blit_rows",
     # text640.asm
     "text_print",
@@ -50,7 +53,7 @@ PLATFORM_SYMBOLS = [
     # S5-finish plan D11 (buffer flip): main() calls this once, right
     # after resolve_buffers(), to start the dirty-rect ring clean before
     # any drawing begins -- see buffers.asm's own flip_ring_reset comment.
-    "flip_ring_reset",
+    "flip_ring_reset", "flip_sync",
     "bench_asset_page",
     "piece_page1",
     "piece_page2",
@@ -59,7 +62,7 @@ PLATFORM_SYMBOLS = [
     # whole of render_core.asm/render_core_cold.asm. Read by the trampoline
     # tools/gen_sprinter_cold_thunks.py generates into the WIN1 resident,
     # which maps it into WIN3 for the duration of one painter call.
-    "cold_win3_page",
+    "cold_win3_page", "cold_win3_page2", "board_background_done",
     # S8 step 8b: the NET overlay's own second WIN3 page (sixth asset page,
     # >=6 gate) -- overlay_loader_sprinter.asm's ovl_atlas_page_table reads
     # this cell instead of ovl_win3_page for id 3 only; every other mode-1
@@ -568,6 +571,10 @@ def self_test() -> None:
         if "gfx_swap_buffers.local" not in symbols:
             raise SystemExit("[ERR] platform-defs self-test: dotted local label not parsed")
 
+        # Synthetic addresses for additional renderer exports. The runtime
+        # addresses are checked separately against the built .sym bridge.
+        for index, name in enumerate(PLATFORM_SYMBOLS):
+            symbols.setdefault(name, 0x8100 + index)
         out1 = render(symbols, PLATFORM_SYMBOLS)
         out2 = render(symbols, PLATFORM_SYMBOLS)
         if out1 != out2:

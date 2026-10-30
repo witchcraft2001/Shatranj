@@ -34,52 +34,27 @@ gfx_swap_buffers:
 
 ; --- clear -------------------------------------------------------------
 
-; Fills a whole 256-row VRAM buffer with 320 vertical accelerator bursts of
-; 256 rows each (ported from gfx640.asm's clear_mapped).
+; Clear a whole buffer with two 160-byte-wide, 256-row fill passes.
+; The shared fill engine yields every four rows, bounding keyboard latency.
 ;
 ; A=color(0-15), HL=dest_base (#C000 buf0 or #C140 buf1). Clobbers
 ; AF, BC, DE, HL.
 gfx_clear_buffer:
-        ld      b,a
-        rlca
-        rlca
-        rlca
-        rlca
-        or      b
-        ld      (.fill_byte),a
-
-        di
-        in      a,(WIN3_PORT)
-        ld      (.saved_win3),a
-        ld      a,VRAM_ALIAS_OPAQUE
-        out     (WIN3_PORT),a
-
-        xor     a
-        out     (PORT_Y),a
-        ld      a,(.fill_byte)
-        ld      e,a
-        ACC_SET_SIZE
-        ld      a,0                     ; immediate operand; 0 means 256 rows
-        ACC_OFF
-        ld      bc,320
-.col:   ACC_FILL_V
-        ld      (hl),e
-        ACC_OFF
-        inc     hl
-        dec     bc
-        ld      a,b
-        or      c
-        jr      nz,.col
-
-        acc_park_y
-        ld      a,(.saved_win3)
-        out     (WIN3_PORT),a
-        call    flip_mark_dirty_all     ; S5-finish plan D11: a strict
-                                         ; superset of any ring entry
-        ei
-        ret
-.fill_byte:  DB 0
-.saved_win3: DB 0
+        push    af
+        push    hl
+        ld      b,0
+        ld      c,0
+        ld      d,160
+        ld      e,0                     ; 256 rows
+        call    gfx_fill_rect
+        pop     hl
+        pop     af
+        ld      b,160
+        ld      c,0
+        ld      d,160
+        ld      e,0
+        call    gfx_fill_rect
+        jp      flip_mark_dirty_all
 
 ; --- fill_rect / hline -------------------------------------------------
 
@@ -203,8 +178,11 @@ gfx_fill_rect:
         ld      (.col_addr),hl
         ld      hl,.op_count
         dec     (hl)
-        jr      nz,.col_loop
-        jr      .done
+        jr      z,.done
+        ld      a,(.op_count)
+        and     3
+        call    z,irq_yield_vram
+        jr      .col_loop
 .row_setup:
         ld      a,(.y)
         ld      (.row),a
@@ -224,7 +202,11 @@ gfx_fill_rect:
         inc     (hl)
         ld      hl,.op_count
         dec     (hl)
-        jr      nz,.row_loop
+        jr      z,.done
+        ld      a,(.op_count)
+        and     3
+        call    z,irq_yield_vram
+        jr      .row_loop
 .done:
         acc_park_y
         ld      a,(.saved_win3)
@@ -396,6 +378,23 @@ tile_alias:     DB 0    ; VRAM_ALIAS_OPAQUE or VRAM_ALIAS_KEY
 ; selects opaque (VRAM_ALIAS_OPAQUE) or hardware-key transparent
 ; (VRAM_ALIAS_KEY) writes (port.md section 3.3). Clobbers AF, BC, DE, HL.
 gfx_draw_tile:
+        ld      a,(tile_src_slot)
+        ld      h,a
+        ld      l,0
+        jr      gfx_draw_tile_offset
+
+; Internal packed-asset entry: HL is a full 16-bit WIN0 source offset.
+; Existing slot-based callers retain their original ABI.
+tile_src_offset: DW 0
+gfx_draw_tile_offset:
+        ld      a,1
+        jr      gfx_blit_common
+
+gfx_blit_rows:
+        xor     a
+gfx_blit_common:
+        ld      (gfx_blit_maps_win0),a
+        ld      (tile_src_offset),hl
         ld      a,(tile_width)
         ld      (.copy_size+1),a
         ld      a,(tile_stride)
@@ -403,9 +402,13 @@ gfx_draw_tile:
         xor     a
         ld      (.stride16+1),a         ; zero-extend the byte stride to a word
 
+        di
+        ld      a,(gfx_blit_maps_win0)
+        or      a
+        jr      z,.source_ready
         ld      a,(tile_src_page)
         win0_map_di
-
+.source_ready:
         in      a,(WIN3_PORT)
         ld      (.saved_win3),a
         ld      a,(tile_alias)
@@ -419,9 +422,7 @@ gfx_draw_tile:
         add     hl,de
         ex      de,hl                   ; DE = dest column address (constant)
 
-        ld      a,(tile_src_slot)
-        ld      h,a
-        ld      l,0                     ; HL = WIN0 + slot*256 (source)
+        ld      hl,(tile_src_offset)
 
         ld      a,(tile_y)
         ld      c,a                     ; C = current row (PORT_Y)
@@ -442,8 +443,41 @@ gfx_draw_tile:
         add     hl,de
         pop     de
         inc     c
-        djnz    .row
-
+        dec     b
+        jr      z,.rows_done
+        ; At most 32 remaining narrow rows (<=1024 bytes) finish inside
+        ; one short DI span. Large bands still yield every four rows.
+        ld      a,b
+        cp      32
+        jr      nc,.yield_check
+        ld      a,(tile_width)
+        cp      33
+        jr      c,.row
+.yield_check:
+        ld      a,c
+        and     3
+        jr      nz,.row
+        push    bc
+        push    hl
+        push    de
+        ld      a,(gfx_blit_maps_win0)
+        or      a
+        jr      z,.yield_ram
+        acc_park_y
+        win0_restore
+        ld      a,(tile_src_page)
+        win0_map_di
+        jr      .yield_done
+.yield_ram:
+        call    irq_yield_vram
+.yield_done:
+        ld      a,(tile_alias)
+        out     (WIN3_PORT),a
+        pop     de
+        pop     hl
+        pop     bc
+        jr      .row
+.rows_done:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
@@ -457,93 +491,74 @@ gfx_draw_tile:
         ld      (flip_arg_w),hl
         ld      a,(tile_rows)
         ld      (flip_arg_h),a
-        call    flip_log_rect
+        ld      a,(gfx_blit_maps_win0)
+        or      a
+        jr      z,.log_unmapped
         win0_restore
+.log_unmapped:
+        ei
+        call    flip_log_rect
         ret
 .stride16:   DW 0
 .saved_win3: DB 0
 
-; --- blit_rows ------------------------------------------------------------
+gfx_blit_maps_win0: DB 0
 
-; Copies tile_width bytes into each of tile_rows consecutive VRAM rows from
-; a source that is ALREADY CPU-addressable (resident RAM, or whatever the
-; caller has mapped), advancing the source by tile_stride per row. A stride
-; of 0 repeats the same source row, which is how one composed row is
-; stretched down a band.
-;
-; This is gfx_draw_tile's row loop without the WIN0 remap: it cannot source
-; from an asset page, and in exchange it is the path for content composed
-; in RAM. The point of composing is operation size -- the accelerator's cost
-; is dominated by a fixed per-operation overhead (see gfx_fill_rect), so a
-; 192-byte row copy moves a board-width strip for roughly what a 24-byte one
-; costs. Measured on MAME 2026-08-09: 0.304 us/byte at 192-byte blocks
-; against 1.024 us/byte at 24-byte blocks.
-;
-; HL=source address; tile_dest_base/tile_x_byte/tile_x_hi/tile_y/
-; tile_stride/tile_width/tile_rows/tile_alias as for gfx_draw_tile.
-; Clobbers AF, BC, DE, HL.
-gfx_blit_rows:
-        ld      (.src),hl
-        ld      a,(tile_width)
-        ld      (.copy_size+1),a
-        ld      a,(tile_stride)
-        ld      (.stride16),a
-        xor     a
-        ld      (.stride16+1),a
-
-        di
+; Read a VRAM rectangle back into one 160-byte-stride cache plane in WIN0.
+; CPU reads are deliberate: the accelerator has no RAM destination burst.
+; Each row yields after at most 160 LDIR bytes, restoring system WIN0.
+gfx_capture_rows:
+        ld      a,(tile_src_page)
+        win0_map_di
         in      a,(WIN3_PORT)
         ld      (.saved_win3),a
-        ld      a,(tile_alias)
+        ld      a,VRAM_ALIAS_OPAQUE
         out     (WIN3_PORT),a
-
         ld      hl,(tile_dest_base)
-        ld      a,(tile_x_byte)
-        ld      e,a
-        ld      a,(tile_x_hi)
-        ld      d,a
+        ld      de,(tile_x_byte)
         add     hl,de
-        ex      de,hl                   ; DE = dest column (constant)
-        ld      hl,(.src)
+        ld      (.source),hl
+        ld      hl,(tile_src_offset)
+        ld      (.dest),hl
         ld      a,(tile_y)
-        ld      c,a
-        ld      a,(tile_rows)
-        ld      b,a
-.row:
-        ld      a,c
+        ld      (.row),a
+        ld      a,8
+        ld      (.left),a
+.loop:
+        ld      a,(.row)
         out     (PORT_Y),a
-        ACC_SET_SIZE
-.copy_size:
-        ld      a,0
-        ACC_COPY_H
-        ld      a,(hl)
-        ld      (de),a
-        ACC_OFF
-        push    de
-        ld      de,(.stride16)
+        ld      hl,(.source)
+        ld      de,(.dest)
+        ld      a,(tile_width)
+        ld      c,a
+        ld      b,0
+        ldir
+        ld      hl,(.dest)
+        ld      de,160
         add     hl,de
-        pop     de
-        inc     c
-        djnz    .row
-
+        ld      (.dest),hl
+        ld      hl,.row
+        inc     (hl)
+        ld      hl,.left
+        dec     (hl)
+        jr      z,.done
+        acc_park_y
+        win0_restore
+        ld      a,(tile_src_page)
+        win0_map_di
+        ld      a,VRAM_ALIAS_OPAQUE
+        out     (WIN3_PORT),a
+        jr      .loop
+.done:
         acc_park_y
         ld      a,(.saved_win3)
         out     (WIN3_PORT),a
-        ld      hl,(tile_x_byte)        ; S5-finish plan D11 (see the
-        ld      (flip_arg_x),hl         ; matching comment in gfx_draw_tile)
-        ld      a,(tile_y)
-        ld      (flip_arg_y),a
-        ld      a,(tile_width)
-        ld      l,a
-        ld      h,0
-        ld      (flip_arg_w),hl
-        ld      a,(tile_rows)
-        ld      (flip_arg_h),a
-        call    flip_log_rect
-        ei
+        win0_restore
         ret
-.src:        DW 0
-.stride16:   DW 0
+.source: DW 0
+.dest: DW 0
+.row: DB 0
+.left: DB 0
 .saved_win3: DB 0
 
         ENDIF

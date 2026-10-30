@@ -45,3 +45,10 @@ actual C-image overrun, not on a tier estimate looking large. There is no
 tracked baseline/diff mechanism here (unlike `docs/size_report.baseline.json`
 on the ZX/Next side) — S5's size question is "does it fit today", not
 "did it grow since last commit"; add a baseline later if that changes.
+
+The S13 additional rendering allocation is checked independently by
+`make sprinter-render-package-check`, also a prerequisite of
+`make sprinter-check`. `build/sprinter/render_memory_report.json` records
+all twenty HDR asset indices, hashes and page sizes, the second rendering
+code page including its tables/metadata, and the exact eight-page
+(128 KiB) growth. See [the rendering contract](sprinter-render-contract.md).

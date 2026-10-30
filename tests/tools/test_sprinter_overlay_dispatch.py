@@ -14,8 +14,8 @@ specific) source text -- but works from the compiled machine code instead,
 since overlay_loader_sprinter.asm's source is z88dk-z80asm, not the
 SDCC-oriented shape that check expects (no IY/IX frame-pointer unwinding:
 Sprinter's flat-window model never needed it). Confirms the DISPATCH ABI
-port.md documents matches asm/esxdos/overlay_loader.asm: context in both
-DE and HL, DI before the dispatch RET, EI on return via ovl_return. The
+docs/sprinter-render-contract.md documents: context in both DE and HL,
+EI before the dispatch RET and EI on return via ovl_return. The
 CALLER-side argument layout is intentionally NOT byte-for-byte the same as
 ZX/Next -- see overlay_loader_sprinter.asm's file banner: z88dk's
 -clib=default (Small-C-derived) convention promotes every scalar argument
@@ -122,15 +122,15 @@ class SprinterOverlayDispatchTests(unittest.TestCase):
     def test_dispatch_sets_context_in_both_de_and_hl(self) -> None:
         # ld de,ovl_ctx / ld hl,ovl_ctx -- the same absolute address loaded
         # into both registers (native ASM entries read DE; a future C
-        # fastcall entry would read HL), then di; ret (jumps into the
+        # fastcall entry would read HL), then ei; ret (jumps into the
         # entry via the address pushed just before).
         ctx_addr = _map_symbol(self.map_text, "ovl_ctx")
-        de_hl_di_ret = (
+        de_hl_ei_ret = (
             bytes([0x11]) + ctx_addr.to_bytes(2, "little")   # ld de,ovl_ctx
             + bytes([0x21]) + ctx_addr.to_bytes(2, "little")  # ld hl,ovl_ctx
-            + bytes([0xF3, 0xC9])                             # di; ret
+            + bytes([0xFB, 0xC9])                             # ei; ret
         )
-        self.assertIn(de_hl_di_ret, self.data)
+        self.assertIn(de_hl_ei_ret, self.data)
 
     def test_ovl_return_is_ei_ret(self) -> None:
         window = self._bytes_at("ovl_return", 2)
@@ -186,6 +186,9 @@ class SprinterOverlayDispatchTests(unittest.TestCase):
         )
         self.assertIn(capture, self.data,
                       "WIN3 must be captured under DI before being replaced")
+
+        self.assertEqual(self._bytes_at("ovl_return_win3", 2),
+                         bytes([0xF5, 0xF3]), "WIN3 return must save AF and DI")
 
         # ld a,(ovl_v_saved_win3) / out (#E2),a -- restore the captured
         # value. Must appear on BOTH exit paths: the normal return

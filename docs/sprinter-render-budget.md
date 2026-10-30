@@ -1,4 +1,165 @@
-# Sprinter render budget (S2)
+# Sprinter production render budget
+
+## S13: production paths, 2026-10-30 report
+
+The baseline is the shipping **40×20** renderer, archived before changes in
+`build/sprinter/render-baseline/`, including the EXE, symbols, maps, assets
+and ZX/Next SHA-256 values. The retired 13.9 ms empty checkerboard is not a
+baseline or a pass for the initial board with 32 pieces.
+
+Both matched runs use turbo **21 MHz**, the initial chess position and
+**30 samples per scenario**. `tools/profile_sprinter_render.py` injects a
+restored-on-exit diagnostic into the inactive WIN2 overlay slot. Calls go
+through actual release entry points. MAME debugger `totalcycles` markers
+separate draw, frame wait, `flip_sync` and total cycle; host speed is not a
+clock. Wait includes the short resolve/dispatch work before `flip_sync`.
+The two phases use the sole canonical smoke image, each verified against
+the EXE in `release/Sprinter/` at the time. The current image is restored
+after the baseline run and after disk correctness tests.
+
+Raw samples, maxima and operation counts are in
+`build/sprinter/render-profile{,-baseline}/report.json`; debugger logs and
+screenshots sit beside them. This is automated **MAME evidence**, separate
+from automated CPU/host tests and real hardware acceptance.
+
+### Budget results
+
+| Draw operation | Target | First output | Repeat median | Deviation |
+| --- | ---: | ---: | ---: | ---: |
+| Initial board (32 pieces) | 20 ms | 42.644 ms | 42.642 ms | **+22.642 ms — missed** |
+| 38-character line | 1 ms | 5.153 ms | 5.153 ms | **+4.153 ms — missed** |
+| String cache, first/miss | 1 ms | 8.252 ms | 8.252 ms | **+7.252 ms — missed** |
+| String cache, repeat/hit | 1 ms | 1.257 ms | 1.257 ms | **+0.257 ms — missed** |
+
+The 5-character short line is within 1 ms. The 38-character probe is
+`The quick brown fox jumps over the dog` (102 packed byte-columns), so its
+numbers must not be compared directly with the retired S2 95-column probe.
+Precolour and string caching remain **disabled in normal gameplay**:
+precolour is slower and the string-cache miss is expensive. Repetition
+improves with the cache, but still misses 1 ms; its default was not changed
+on the strength of a hit-only result. No CPU AND/XOR text compositor was
+introduced.
+
+### Matched baseline comparison
+
+| Scenario | Baseline draw | Current draw | Draw change | Baseline total | Current total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 40×20 tile | 0.477 | 0.633 | +32.6% | 22.079 | 21.499 |
+| Empty cell | 0.945 | 0.952 | +0.8% | 22.605 | 21.717 |
+| Occupied cell | 1.466 | 0.991 | -32.4% | 24.169 | 21.717 |
+| Cursor movement | 2.588 | 3.652 | +41.1% | 26.773 | 21.870 |
+| Selection + hints | 3.075 | 3.829 | +24.5% | 28.337 | 21.705 |
+| Initial board (32 pieces) | 71.131 | 42.642 | -40.1% | 277.114 | 80.091 |
+| PIECES + repaint | 83.571 | 82.702 | -1.0% | 297.594 | 122.365 |
+| FLIP + repaint | 80.437 | 79.455 | -1.2% | 277.112 | 101.883 |
+| Short line, White | 0.723 | 0.863 | +19.3% | 21.033 | 20.910 |
+| 38-character line | 4.524 | 5.153 | +13.9% | 22.660 | 21.114 |
+| Chat/input row repaint | 5.172 | 6.301 | +21.8% | 27.328 | 21.429 |
+
+All times are milliseconds. Isolated tiles, cursor/selection draws and text
+have additional bookkeeping and interrupt-yield cost. These regressions
+are retained in the table. The board draw improves by about 40%; its full
+cycle improves by about 71%, primarily by avoiding full-screen CPU copies.
+
+### Current phase timings
+
+Cells show **median / maximum**, except wait (median), in milliseconds.
+
+| Scenario | Draw | Wait | Synchronize | Full cycle |
+| --- | ---: | ---: | ---: | ---: |
+| 40×20 tile | 0.633 / 0.633 | 19.860 | 1.006 / 1.006 | 21.499 / 21.502 |
+| Empty cell | 0.952 / 0.953 | 19.540 | 1.225 / 1.225 | 21.717 / 21.721 |
+| Occupied cell | 0.991 / 0.991 | 19.502 | 1.224 / 1.225 | 21.717 / 21.721 |
+| Cursor movement | 3.652 / 3.653 | 16.829 | 1.389 / 1.389 | 21.870 / 21.874 |
+| Selection + hints | 3.829 / 19.714 | 16.649 | 1.225 / 3.570 | 21.705 / 24.054 |
+| Initial board (32 pieces) | 42.642 / 42.645 | 18.811 | 18.638 / 18.639 | 80.091 / 80.095 |
+| PIECES + repaint | 82.702 / 82.709 | 19.709 | 19.952 / 19.953 | 122.365 / 122.369 |
+| FLIP + repaint | 79.455 / 79.458 | 2.477 | 19.952 / 19.953 | 101.883 / 101.887 |
+| Short line, White | 0.863 / 0.863 | 19.630 | 0.418 / 0.418 | 20.910 / 20.914 |
+| 38-character line | 5.153 / 5.154 | 15.339 | 0.621 / 0.621 | 21.114 / 21.117 |
+| 38 characters, precoloured | 6.030 / 6.031 | 14.462 | 0.621 / 0.621 | 21.113 / 21.117 |
+| Chat/input row repaint | 6.301 / 6.302 | 14.191 | 0.936 / 0.936 | 21.429 / 21.432 |
+| String cache, first/miss | 8.252 / 8.252 | 11.556 | 0.621 / 0.621 | 20.428 / 20.432 |
+| String cache, repeat/hit | 1.257 / 1.257 | 19.236 | 0.621 / 0.621 | 21.113 / 21.117 |
+| String cache, eviction | 8.525 / 8.526 | 11.970 | 0.621 / 0.621 | 21.114 / 21.117 |
+
+### Actual raster traffic and accelerator operations
+
+Values below are sample medians. Maxima and individual burst lengths are
+in the raw report. Output bytes count fill/copy payload and glyph output;
+CPU bytes count raster capture/copy payload, not instruction fetches or
+metadata accesses. Text compositor latch/AND/XOR/store passes count as
+separate hardware operations. A repeat/hit includes key validation and
+raster output; first/miss includes rendering and capture into the cache.
+
+| Scenario | Draw output bytes | Draw accelerator operations | CPU raster bytes | Sync bytes | Sync accelerator operations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 40×20 tile | 400 | 20 | 0 | 400 | 20 |
+| Empty cell | 576 | 24 | 0 | 576 | 24 |
+| Occupied cell | 576 | 24 | 0 | 576 | 24 |
+| Cursor movement | 1728 | 72 | 0 | 1152 | 24 |
+| Selection + hints | 1728 | 72 | 0 | 576 | 24 |
+| Initial board (32 pieces) | 49664 | 832 | 0 | 36864 | 192 |
+| PIECES + repaint | 54008 | 1093 | 0 | 39996 | 202 |
+| FLIP + repaint | 54008 | 1093 | 0 | 39996 | 202 |
+| Short line, White | 104 | 39 | 0 | 104 | 8 |
+| 38-character line | 816 | 306 | 0 | 816 | 8 |
+| 38 characters, precoloured | 816 | 204 | 0 | 816 | 8 |
+| Chat/input row repaint | 2736 | 314 | 0 | 1920 | 8 |
+| String cache, first/miss | 816 | 306 | 816 | 816 | 8 |
+| String cache, repeat/hit | 816 | 8 | 0 | 816 | 8 |
+| String cache, eviction | 816 | 306 | 816 | 816 | 8 |
+
+The initial board draws 36864 background bytes and 12800 piece bytes in
+832 bursts, then synchronizes only 36864 bytes in 192 bursts. The archived
+baseline instead synchronized all 81920 screen bytes through CPU LDIR.
+
+### Correctness, interrupts and allocation
+
+- Host/CPU tests: `make sprinter-check` and `make full-check` pass. New
+  raster tests cover all 108 cells, margins, empty cells and checker rows,
+  plus all 256 glyph offsets for five attributes. Shipped-code CPU tests
+  cover region merging, containment, area arithmetic above 65535,
+  overflow, cross-page arguments/registers and nesting.
+- MAME: 255/256/320-byte copies, 256 rows, both directions, unchanged source
+  and destination guards pass. All 1785 non-NUL glyph/attribute pairs
+  match the reference compositor through precolour, cache miss and hit.
+  Clipping/row guards, font generation and four-entry LRU pass.
+- MAME: 300 set changes preserve WIN0/WIN3; 100/100 three-frame keypresses
+  are received both in the idle control and during repaint stress.
+  Maximum observed continuous render/stress DI span is
+  **0.907 ms**, including a conservative 2 µs allowance
+  after EI. The initial 10.22 ms hint-generation and 3.80 ms text/logging
+  spans were fixed. DSS disk-I/O timing is outside this render DI probe.
+- MAME: all three sets/five themes, hints/selection, flash, FLIP and
+  About/fade restoration pass. Real local save/load/erase restores a
+  deliberately damaged display model. Session-begin repaint and
+  disconnect cleanup pass without a network peer. Pixel checks cover
+  608 rectangles
+  (486400 piece pixels) and exact flash frames.
+- Additional allocation is **exactly 128 KiB**, eight pages including code,
+  tables, cache metadata and padding. Resident page count, stack and
+  network buffers are unchanged. WIN1 is 15999/16000 bytes, the original
+  cold image 16383/16384 bytes, and WIN2 has two bytes free before its code boundary.
+- The four archived ZX/Next release artifacts retain identical SHA-256.
+
+Layout, APIs and the interruptible Sprinter overlay contract are in
+[the renderer contract](sprinter-render-contract.md). Hardware timings,
+keyboard reliability, visual acceptance and memory allocation remain
+**pending on real hardware**. Networked end-to-end session replay for this
+revision is not claimed by the no-peer renderer check.
+
+Reproduction entry points: `make sprinter-render-archive` before editing;
+`make sprinter-render-mame` for the current release;
+`make sprinter-render-baseline-mame` for the archived release, with
+canonical current packages restored automatically afterwards.
+
+Current EXE SHA-256: `7235715b71ce7ab82247e6c067a000a0f8709b7760c5e199ee7a28c039aef645`.
+Tester instructions and both delivery paths: [S13](sprinter-testnotes/S13.md).
+
+---
+
+# Historical S2 stand measurements
 
 Both hotkeys measure the same way: run a fixed **4-second window** off the
 CMOS clock (DSS SysTime) and report **how many iterations fitted in it**.

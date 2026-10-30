@@ -289,6 +289,12 @@ def render(symbols: dict[str, int], names: list[str]) -> str:
         lines.append(f"defc _{name} = ${addr:04X}")
         lines.append(f"PUBLIC {name}")
         lines.append(f"defc {name} = ${addr:04X}")
+    # Cross-page board painter: resolve the resident thunk under the same
+    # names so both C and assembly callers take the page-aware trampoline.
+    if "render_board_full" in symbols:
+        addr = symbols["render_board_full"]
+        lines += ["PUBLIC render_board_full", f"defc render_board_full = ${addr:04X}",
+                  "PUBLIC _render_board_full", f"defc _render_board_full = ${addr:04X}"]
     lines.append("")
     return "\n".join(lines)
 

@@ -101,14 +101,17 @@ class ColdThunkGenerationTest(unittest.TestCase):
         self.assertEqual(self.thunks.count("    jp cold_call"),
                          len(thunks.COLD_THUNK_SYMBOLS))
         self.assertEqual(self.table.count("    jp _"),
-                         len(thunks.COLD_THUNK_SYMBOLS))
+                         len(thunks.COLD_THUNK_SYMBOLS)-len(thunks.SECOND_PAGE_ENTRIES))
 
     def test_the_two_halves_agree_slot_for_slot(self):
         # The one failure mode neither the linker nor the runtime can
         # catch: a stub that calls the address of a DIFFERENT entry.
         for index, name in enumerate(thunks.COLD_THUNK_SYMBOLS):
             addr = thunks.entry_addr(index)
-            self.assertIn(f"ld hl,${addr:04X}   ; cold entry {index}", self.thunks)
+            target = thunks.SECOND_PAGE_ENTRIES.get(name, addr)
+            if name in thunks.SECOND_PAGE_ENTRIES:
+                target -= 0x4000
+            self.assertIn(f"ld hl,${target:04X}   ; cold entry {index}", self.thunks)
             self.assertIn(f"_cold_e_{name}:            ; ${addr:04X}", self.table)
 
     def test_the_table_fits_the_window(self):
@@ -265,7 +268,7 @@ class ColdPageSourceAgreementTest(unittest.TestCase):
             name for name in thunks.COLD_THUNK_SYMBOLS
             if name.startswith(("spectrum_gui_", "spectrum_net_"))
         } | (set(thunks.COLD_THUNK_SYMBOLS) & self.SESSION_SPRINTER_C_SIDE)
-        missing = sorted(set(thunks.COLD_THUNK_SYMBOLS) - asm - c_side)
+        missing = sorted(set(thunks.COLD_THUNK_SYMBOLS) - asm - c_side - set(thunks.SECOND_PAGE_ENTRIES))
         self.assertEqual(missing, [],
                          "COLD_THUNK_SYMBOLS names an entry no cold-page "
                          "source provides")
