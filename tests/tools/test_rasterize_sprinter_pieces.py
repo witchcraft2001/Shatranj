@@ -292,6 +292,90 @@ class SourceClassificationTests(unittest.TestCase):
         self.assertIn(OUTLINE + (255,), set(pixels(result)))
 
 
+class OutlinePolicyTests(unittest.TestCase):
+    """The outline is derived at output resolution, continuous by construction
+    -- the property the coverage-only pipeline could not deliver (5% of white
+    silhouette edges had no outline, 48% of black ones had no rim)."""
+
+    @staticmethod
+    def _edge_pixels(image):
+        w, h = image.size
+        px = image.load()
+        return [(x, y) for y in range(h) for x in range(w) if px[x, y][3]
+                and any(not (0 <= x + dx < w and 0 <= y + dy < h and px[x + dx, y + dy][3])
+                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))]
+
+    def _white_square(self):
+        # 1024-equivalent white square with a thin black border: the border
+        # is 0.6 of an output row tall, i.e. thinner than one row -- a
+        # coverage contest drops it.
+        square = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+        for y in range(200, 824):
+            for x in range(200, 824):
+                thin = x < 230 or x >= 794 or y < 230 or y >= 794
+                square.putpixel((x, y), ((0, 0, 0) if thin else (255, 255, 255)) + (255,))
+        return square
+
+    def test_white_silhouette_edge_is_always_dark_outline(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        alpha, masks = rsp.source_masks(self._white_square(), "california", "w", fit_size=1024)
+        tile, _, _ = rsp.select_grid_phase(alpha, masks, rsp.piece_palette(palette, "california"))
+        edge = self._edge_pixels(tile)
+        self.assertTrue(edge)
+        self.assertTrue(all(tile.getpixel(p) == OUTLINE + (255,) for p in edge))
+        self.assertIn(BODY + (255,), set(pixels(tile)))      # the body survived inside
+
+    def test_black_silhouette_edge_is_always_light_rim(self) -> None:
+        palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
+        square = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+        for y in range(200, 824):
+            for x in range(200, 824):
+                square.putpixel((x, y), (76, 76, 76, 255))
+        alpha, masks = rsp.source_masks(square, "california", "b", fit_size=1024)
+        tile, _, _ = rsp.select_grid_phase(alpha, masks, rsp.piece_palette(palette, "california"),
+                                           side="b", set_name="california")
+        edge = self._edge_pixels(tile)
+        self.assertTrue(all(tile.getpixel(p) == BLACK_OUTLINE + (255,) for p in edge))
+        self.assertEqual(rsp.topology(tile), (1, 0))
+
+    def test_rim_fills_a_notch_but_never_bridges_parts(self) -> None:
+        img = Image.new("RGBA", (9, 7), (0, 0, 0, 0))
+        for x in range(1, 8):
+            for y in range(1, 6):
+                if not (x == 4 and y < 4):          # a one-pixel notch from the top
+                    img.putpixel((x, y), BLACK_BODY + (255,))
+        out = rsp.guarantee_outline(img, BLACK_OUTLINE, keep_narrow_gaps=False)
+        self.assertEqual(out.getpixel((4, 2)), BLACK_OUTLINE + (255,))   # notch takes rim colour
+        self.assertEqual(rsp.topology(out), (1, 0))
+        parts = Image.new("RGBA", (9, 5), (0, 0, 0, 0))
+        parts.putpixel((3, 2), BLACK_BODY + (255,))
+        parts.putpixel((5, 2), BLACK_BODY + (255,))
+        out = rsp.guarantee_outline(parts, BLACK_OUTLINE, keep_narrow_gaps=False)
+        self.assertEqual(rsp._opaque_components(out)[1], 2)
+
+    def test_thin_lines_put_a_sub_row_stroke_on_exactly_one_row(self) -> None:
+        cov = Image.new("F", (rsp.TILE_W, rsp.TILE_H), 0)
+        for x in range(10, 30):
+            cov.putpixel((x, 7), 255 * 0.45)            # a 0.9-row stroke straddling two rows
+            cov.putpixel((x, 8), 255 * 0.40)
+            cov.putpixel((x, 12), 255 * 0.9)            # a thick stroke: 1.8 rows
+            cov.putpixel((x, 13), 255 * 0.9)
+        lines = rsp.thin_lines(cov)
+        self.assertIn((15, 7), lines)
+        self.assertNotIn((15, 8), lines)
+        self.assertIn((15, 12), lines)
+        self.assertIn((15, 13), lines)
+        self.assertNotIn((15, 6), lines)
+
+    def test_interior_ring_is_the_outermost_silhouette_pixels(self) -> None:
+        cells = [[1 <= x <= 4 and 1 <= y <= 3 for x in range(6)] for y in range(5)]
+        ring = rsp.interior_ring(cells)
+        self.assertIn((1, 1), ring)
+        self.assertIn((4, 3), ring)
+        self.assertNotIn((2, 2), ring)
+        self.assertNotIn((0, 0), ring)
+
+
 class PreviewTests(unittest.TestCase):
     def test_actual_cell_geometry_both_theme_squares_and_flash(self) -> None:
         palette = rsp.gsp.load_palette_file(rsp.DEFAULT_PALETTE)
@@ -368,7 +452,7 @@ class SourceFeatureRegressionTests(unittest.TestCase):
             if shape=="cross":
                 draw.rectangle((76,12,83,68),fill="black"); draw.rectangle((44,24,116,28),fill="black")
             alpha,masks=rsp.source_masks(image,"mpchess","b")
-            result,phase,candidates=rsp.select_grid_phase(alpha,masks,refs)
+            result,phase,candidates=rsp.select_grid_phase(alpha,masks,refs,side="b",set_name="mpchess")
             with self.subTest(shape=shape):
                 self.assertEqual(len(candidates),9)
                 if shape=="cross":
@@ -380,7 +464,7 @@ class SourceFeatureRegressionTests(unittest.TestCase):
                     self.assertTrue(all(any(result.getpixel((x,y))[3] for y in (8,9,10))
                                         for x in range(14,25)))
                 self.assertEqual(rsp.topology(result),rsp.topology(image))
-                again,again_phase,_=rsp.select_grid_phase(alpha,masks,refs)
+                again,again_phase,_=rsp.select_grid_phase(alpha,masks,refs,side="b",set_name="mpchess")
                 self.assertEqual((result.tobytes(),phase),(again.tobytes(),again_phase))
 
     def test_equal_phase_scores_prefer_zero(self):

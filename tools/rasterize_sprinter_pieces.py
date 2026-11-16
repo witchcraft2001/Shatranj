@@ -13,9 +13,32 @@ tools -- see CLAUDE.md's asset-pipeline note).
 Pipeline: Chrome renders a fixed 1024x1024 viewport via DevTools; empty or
 clipped source images are fatal. Source alpha, semantic colour and stroke
 masks share one 8% bbox fit. Nine quarter-pixel grid phases are scored by
-source topology, silhouette error, then stroke coverage, with zero preferred
-on ties. Black pieces receive a source-derived, aspect-correct exterior rim.
-Profiles record intentional per-piece exceptions; candidates go under build/.
+source topology, silhouette error, then stroke placement, with zero
+preferred on ties. Profiles record intentional per-piece exceptions;
+candidates go under build/.
+
+Outlines are a structural requirement, not a coverage contest (2026-10-31).
+The tile is 40x20 on 1x2 pixels, so one output row is 51 source pixels tall
+and every set's horizontal strokes are THINNER than that (mpchess 0.8 rows,
+totoy 0.95, california 1.2). Deciding each pixel by "which class covers the
+most area" therefore drops the outline exactly where it is thinnest -- a
+stroke straddling two rows covers 40% of each and loses to the body in both
+-- and the old sub-pixel exterior rim (three pixels at 4x, i.e. 0.375 of a
+row) could never reach a 50% threshold vertically at all, so black pieces
+got a dotted rim. Measured over the 36 committed tiles: 5% of white
+silhouette edges had no dark outline, 48% of black ones had no light rim.
+
+So the silhouette (alpha >= 50%) is decided first, and the outline is
+derived from it at OUTPUT resolution: a white piece's outline is the
+silhouette's own interior 4-boundary ring (the SVG stroke lies inside the
+silhouette, so this is where it was), a black piece's rim is the exterior
+4-boundary ring, topology-guarded. Both are continuous by construction.
+Interior detail lines are then taken from dark-stroke coverage at a lower
+threshold and thinned to one row where the source stroke is thinner than
+1.5 rows, so a sub-row line lands on exactly one row instead of vanishing
+or doubling. All of that happens INSIDE the phase search, so the phase is
+chosen for where the lines land, not for a tile the outline step then
+repaints.
 
 Chrome/Edge discovery order: $CHROME or $EDGE env var, common macOS
 install paths, common Windows install paths (matching the Next pipeline's
@@ -55,6 +78,12 @@ RENDER_SIZE_LADDER = (1024,)
 PROFILE_PATH = ROOT / "assets/sprinter/piece_conversion.json"
 _RENDERER = None
 ALPHA_THRESHOLD = 255 / 2  # exactly 50% coverage, including float masks
+# Interior dark lines: a pixel is a line candidate from this much stroke
+# coverage (not from winning the per-pixel class contest, which a sub-row
+# stroke never does), and a vertical run of candidates whose summed
+# coverage is thinner than LINE_THICK_ROWS collapses to its best row.
+LINE_THRESHOLD = 255 * 0.35
+LINE_THICK_ROWS = 1.5
 CLIP_ALPHA_THRESHOLD = 40   # lower bar: catch faint AA fringes at the border
 MARGIN_FRAC = 0.08          # fraction of the square canvas reserved as margin
 
@@ -140,12 +169,21 @@ def fit_to_square(image: Image.Image, size: int, margin_frac: float = MARGIN_FRA
     return canvas
 
 
-def guarantee_outline(image: Image.Image, outline_rgb: tuple[int, int, int]) -> Image.Image:
+def guarantee_outline(image: Image.Image, outline_rgb: tuple[int, int, int],
+                      keep_narrow_gaps: bool = True) -> Image.Image:
     """Add an outer rim to black pieces without filling internal holes.
 
     Only transparency connected to the canvas edge is eligible. Existing
     opaque pixels are immutable. Added pixels may not join two disconnected
     silhouette parts or seal an open transparent passage.
+
+    keep_narrow_gaps additionally refuses any one- or two-pixel gap between
+    opaque pixels, so a slot or notch stays TRANSPARENT. The real rim passes
+    False: a notch between two crown spikes is then filled with rim colour
+    -- which differs from the body, so the notch stays readable -- and the
+    rim stays continuous around it. The two guards that matter for shape
+    (never bridge separate parts, never seal a passage: the re-open pass
+    below) apply either way.
     """
     w, h = image.size
     src = image.load()
@@ -180,7 +218,7 @@ def guarantee_outline(image: Image.Image, outline_rgb: tuple[int, int, int]) -> 
                 if all(d is not None for d in distances) and sum(distances) <= 3:
                     narrow_gap = True
                     break
-            if not narrow_gap:
+            if not (narrow_gap and keep_narrow_gaps):
                 candidates[x, y] = next(iter(owners))
     # Two individually eligible rim pixels must not join separate parts.
     # Reject both sides of such a conflict, avoiding scan-order bias.
@@ -414,19 +452,106 @@ def binary_image(alpha, size):
     return out
 
 
-def source_rim(alpha):
-    """Derive the light rim before reduction, with square physical pixels.
+def silhouette_cells(image: Image.Image) -> list[list[bool]]:
+    px = image.load()
+    return [[bool(px[x, y][3]) for x in range(image.width)] for y in range(image.height)]
 
-    At 4x physical resolution, three pixels are 0.75 output columns or
-    0.375 output rows. Topology protection acts on SOURCE passages and
-    components, so quantization cracks never become protected features.
+
+def interior_ring(cells: list[list[bool]]) -> set[tuple[int, int]]:
+    """The silhouette's own outermost pixels: opaque with a transparent
+    4-neighbour (the canvas edge counts as transparent)."""
+    h, w = len(cells), len(cells[0])
+    ring = set()
+    for y in range(h):
+        for x in range(w):
+            if not cells[y][x]:
+                continue
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if not (0 <= nx < w and 0 <= ny < h and cells[ny][nx]):
+                    ring.add((x, y))
+                    break
+    return ring
+
+
+def thin_lines(coverage: Image.Image, threshold: float = LINE_THRESHOLD,
+               thick_rows: float = LINE_THICK_ROWS) -> set[tuple[int, int]]:
+    """Interior line pixels from dark-stroke coverage, one row per thin line.
+
+    Candidates are pixels at or above `threshold`. Within each column, a
+    vertical run of candidates is kept whole if its summed coverage amounts
+    to `thick_rows` or more (a genuinely thick stroke, or a vertical one
+    seen along its length); a thinner run collapses to its single
+    best-covered row. That is what a horizontal stroke 0.8-1.2 rows thick
+    needs: it is always ONE row of output, placed where most of it fell,
+    never two half-covered rows and never none. Horizontal thinning is not
+    needed -- every set's strokes are at least 1.9 output pixels wide.
     """
-    size = TILE_W * 4
-    source = binary_image(alpha, (size, size))
-    expanded = source
-    for _ in range(3):
-        expanded = guarantee_outline(expanded, (255, 255, 255))
-    return expanded.getchannel("A").convert("F").resize(alpha.size, Image.Resampling.BOX)
+    w, h = coverage.size
+    px = coverage.load()
+    lines = set()
+    for x in range(w):
+        y = 0
+        while y < h:
+            if px[x, y] < threshold:
+                y += 1
+                continue
+            start = y
+            while y < h and px[x, y] >= threshold:
+                y += 1
+            run = range(start, y)
+            if sum(px[x, ry] for ry in run) >= 255 * thick_rows:
+                lines.update((x, ry) for ry in run)
+            else:
+                lines.add((x, max(run, key=lambda ry: (px[x, ry], -ry))))
+    return lines
+
+
+def compose_tile(silhouette: Image.Image, strokes: Image.Image, refs: dict,
+                 side: str, set_name: str,
+                 muted_highlight: tuple[int, int, int] | None = None) -> Image.Image:
+    """Outline and detail lines on top of a classified silhouette.
+
+    `silhouette` is paint_masks' output: every opaque pixel already carries
+    the class that covered it most. This keeps that for shading and body,
+    and decides the outline and the dark lines structurally (see the module
+    docstring for why coverage alone cannot).
+    """
+    cells = silhouette_cells(silhouette)
+    lines = thin_lines(strokes)
+    out = silhouette.copy()
+    src = silhouette.load()
+    dst = out.load()
+    dark = refs[5] + (255,)
+    if side == "w":
+        ring = interior_ring(cells)
+        for y in range(TILE_H):
+            for x in range(TILE_W):
+                if not cells[y][x]:
+                    continue
+                if (x, y) in ring or (x, y) in lines:
+                    dst[x, y] = dark
+                elif src[x, y] == refs[7] + (255,):
+                    dst[x, y] = src[x, y]            # white-piece shading
+                else:
+                    dst[x, y] = refs[4] + (255,)     # a lost contest is body
+        return out
+    solid = set_name == "mpchess"       # a solid silhouette has no lines to find
+    for y in range(TILE_H):
+        for x in range(TILE_W):
+            if not cells[y][x]:
+                continue
+            colour = src[x, y]
+            if muted_highlight is not None and colour == refs[7] + (255,):
+                colour = muted_highlight + (255,)
+            if not solid:
+                if (x, y) in lines:
+                    colour = dark
+                elif colour == dark:
+                    colour = refs[6] + (255,)        # not a line: charcoal body
+            dst[x, y] = colour
+    # Exterior rim at output resolution, continuous by construction; the
+    # guard keeps separate source parts separate and passages open.
+    return guarantee_outline(out, refs[7], keep_narrow_gaps=False)
 
 
 def reopen_source_passages(image, alpha, phase):
@@ -473,8 +598,16 @@ def reopen_source_passages(image, alpha, phase):
     return out
 
 
-def select_grid_phase(alpha, masks, refs, profile=None):
-    """Lexicographic source-feature, silhouette, stroke error; stable ties."""
+def select_grid_phase(alpha, masks, refs, profile=None, side="w", set_name="",
+                      muted_highlight=None):
+    """Lexicographic source-feature, silhouette, stroke error; stable ties.
+
+    Each candidate is the FINISHED tile -- silhouette, outline, lines, rim
+    -- so the stroke term scores where the detail lines actually landed for
+    that phase, not where an outline pass would later repaint them.
+    Topology and silhouette are scored on the silhouette alone, against the
+    unshifted source, so a phase cannot move the goal.
+    """
     profile = profile or {}
     reference = binary_image(alpha, (TILE_W*4, TILE_H*4))
     expected = topology(reference)
@@ -483,15 +616,16 @@ def select_grid_phase(alpha, masks, refs, profile=None):
     for dy in (-0.25, 0, 0.25):
         for dx in (-0.25, 0, 0.25):
             phase = (dx, dy)
-            candidate = reopen_source_passages(paint_masks(alpha, masks, refs, phase, threshold), alpha, phase)
-            actual = topology(candidate)
+            silhouette = reopen_source_passages(paint_masks(alpha, masks, refs, phase, threshold), alpha, phase)
+            actual = topology(silhouette)
             # Source components/holes outrank pixel error. Compare silhouette
             # against the unshifted source so phases cannot move the goal.
             feature_error = abs(actual[0]-expected[0]) + abs(actual[1]-expected[1])
-            up = candidate.getchannel("A").resize(reference.size, Image.Resampling.NEAREST)
+            up = silhouette.getchannel("A").resize(reference.size, Image.Resampling.NEAREST)
             silhouette_error = sum(value*count for value,count in enumerate(
                 ImageChops.difference(up, reference.getchannel("A")).histogram()))
             strokes = reduce_mask(masks[5], phase)
+            candidate = compose_tile(silhouette, strokes, refs, side, set_name, muted_highlight)
             stroke_error = sum(abs(strokes.getpixel((x, y)) -
                                    (255 if candidate.getpixel((x, y)) == refs[5]+(255,) else 0))
                                for y in range(TILE_H) for x in range(TILE_W))
@@ -509,25 +643,13 @@ def process_piece(browser: Path, svg: Path, set_name: str, side: str,
     profile = json.loads(PROFILE_PATH.read_text())
     exceptions = profile.get("pieces", {}).get(set_name + "/" + svg.stem, {})
     refs = piece_palette(palette, set_name)
-    quantized, phase, candidates = select_grid_phase(alpha, masks, refs, exceptions)
     # California's SVG gray highlights use the shared gray, distinct from
     # the brighter ADDED rim. This is a source-class override, not pixels.
+    muted = None
     if side == "b" and set_name in profile.get("muted_source_highlights", []):
-        gray = gsp._parse_rgb(profile["muted_source_highlights"][set_name], "highlight")
-        for y in range(TILE_H):
-            for x in range(TILE_W):
-                if quantized.getpixel((x, y)) == refs[7]+(255,):
-                    quantized.putpixel((x, y), gray+(255,))
-    if side == "b":
-        rim = reduce_mask(source_rim(alpha), phase)
-        # The source-derived coverage limits rim thickness; the digital
-        # topology guard keeps the already source-checked passages/parts.
-        safe_rim = guarantee_outline(quantized, refs[7])
-        for y in range(TILE_H):
-            for x in range(TILE_W):
-                if (not quantized.getpixel((x, y))[3] and safe_rim.getpixel((x, y))[3]
-                        and rim.getpixel((x, y)) >= ALPHA_THRESHOLD):
-                    quantized.putpixel((x, y), refs[7]+(255,))
+        muted = gsp._parse_rgb(profile["muted_source_highlights"][set_name], "highlight")
+    quantized, phase, candidates = select_grid_phase(
+        alpha, masks, refs, exceptions, side=side, set_name=set_name, muted_highlight=muted)
     for x, y, index in exceptions.get("pixels", []):
         quantized.putpixel((x, y), refs[index]+(255,) if index is not None else (0, 0, 0, 0))
     cache = DEFAULT_PREVIEW_OUT.parent / "source1024"
